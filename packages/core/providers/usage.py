@@ -12,7 +12,7 @@ import threading
 from dataclasses import dataclass
 from pathlib import Path
 
-from .base import Usage
+from .base import Health, Provider, ProviderResult, ResolvedCall, Usage
 
 
 def _utc_day() -> str:
@@ -153,3 +153,65 @@ def estimate_cost(
         usage.prompt_tokens / 1_000_000 * (price_in or 0.0)
         + usage.completion_tokens / 1_000_000 * (price_out or 0.0)
     )
+
+
+class RecordingProvider:
+    """Wraps a transport so every completion is recorded, without the agent knowing.
+
+    The point is that usage attribution cannot be forgotten: an agent that calls ``complete`` is
+    recorded because the recording happens at the boundary, not in the agent. That is what makes
+    "which provider and model actually served this agent" answerable from the database rather than
+    from a config file.
+    """
+
+    def __init__(
+        self,
+        inner: Provider,
+        *,
+        tracker: UsageTracker,
+        agent: str,
+        job_id: str | None,
+        price_in: float | None = None,
+        price_out: float | None = None,
+        worst_case_tokens: int = 8000,
+    ) -> None:
+        self.inner = inner
+        self.tracker = tracker
+        self.agent = agent
+        self.job_id = job_id
+        self.price_in = price_in
+        self.price_out = price_out
+        self.worst_case_tokens = worst_case_tokens
+        self.transport = inner.transport
+        self.name = inner.name
+
+    def health(self, call: ResolvedCall) -> Health:
+        return self.inner.health(call)
+
+    def list_models(self, call: ResolvedCall) -> list[str] | None:
+        return self.inner.list_models(call)
+
+    def complete(
+        self, call: ResolvedCall, *, system: str, user: str, task: str
+    ) -> ProviderResult:
+        # Pre-call budget check: a budget enforced after the money is spent is not a budget.
+        worst_cost = estimate_cost(
+            Usage(prompt_tokens=len(user) // 3, completion_tokens=self.worst_case_tokens),
+            price_in=self.price_in,
+            price_out=self.price_out,
+        )
+        self.tracker.assert_can_spend(
+            worst_case_tokens=self.worst_case_tokens, worst_case_cost_usd=worst_cost
+        )
+        result = self.inner.complete(call, system=system, user=user, task=task)
+        cost = estimate_cost(result.usage, price_in=self.price_in, price_out=self.price_out)
+        self.tracker.record(
+            job_id=self.job_id,
+            agent=self.agent,
+            provider=result.provider,
+            model=result.model,
+            usage=result.usage,
+            est_cost_usd=cost,
+            elapsed_ms=result.elapsed_ms,
+        )
+        return result

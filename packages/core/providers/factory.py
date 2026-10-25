@@ -6,7 +6,7 @@ Kept out of ``__init__`` so tests can import a transport without building a regi
 from __future__ import annotations
 
 from .anthropic import AnthropicProvider
-from .base import Provider
+from .base import Capability, Provider
 from .cli import CLIProvider
 from .mock import MockProvider
 from .ollama import OllamaProvider
@@ -39,6 +39,10 @@ def default_registry() -> ProviderRegistry:
             label="Mock (offline)",
             transport="mock",
             model="mock-1",
+            # The mock returns well-formed JSON by construction, so it genuinely provides these.
+            # It does not declare vision: it cannot see, and claiming otherwise is the exact
+            # failure the vision-capability rule exists to prevent.
+            capabilities=[Capability.CHAT, Capability.JSON_SCHEMA],
             enabled=False,
         )
     )

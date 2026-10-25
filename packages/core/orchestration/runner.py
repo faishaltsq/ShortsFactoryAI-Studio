@@ -104,7 +104,11 @@ def run_stages(
     cancel = cancel or NullCancel()
     report: dict[str, Any] = {"job_id": job_id, "stages": [], "ok": True, "stopped": None}
 
-    _validate_chain(store.get(job_id).state, stages)
+    # A resume over a finished job must be a no-op, not an illegal transition. Stages whose
+    # artifacts already validate are dropped from chain validation (they will report ``reused``),
+    # and only the remaining work has to be reachable from the current state.
+    pending = [stage for stage in stages if not _is_done(store, job_id, stage)]
+    _validate_chain(store.get(job_id).state, pending)
 
     for stage in stages:
         if cancel.is_cancelled():
@@ -197,11 +201,21 @@ def run_stages(
             report["ok"] = False
             report["stopped"] = "lease_lost"
             return report
-        if store.get(job_id).state != stage.state:
+        current = store.get(job_id).state
+        if current != stage.state:
             store.transition(job_id, stage.state, detail=f"{stage.name} completed")
 
     report["finished_at"] = _now()
     return report
+
+
+def _is_done(store: JobStore, job_id: str, stage: Stage) -> bool:
+    """A stage is done when every declared artifact exists and its contract validates."""
+    if not stage.produces:
+        return False
+    if not all(store.has_artifact(job_id, name) for name in stage.produces):
+        return False
+    return _validate_produced(store, job_id, stage) is None
 
 
 def _validate_chain(start: JobState, stages: list[Stage]) -> None:

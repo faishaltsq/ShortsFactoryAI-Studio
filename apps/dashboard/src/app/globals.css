@@ -1,0 +1,171 @@
+@import "tailwindcss";
+
+/* One token set for both the 2D UI and the 3D studio, so the room and the panels read as one
+   product. Warm neutrals + deep teal, amber for attention. */
+@theme {
+  --color-ink-950: #0e1117;
+  --color-ink-900: #151a23;
+  --color-ink-800: #1d2430;
+  --color-ink-700: #2a3340;
+  --color-ink-600: #3d4756;
+  --color-ink-500: #5b6678;
+  --color-ink-400: #8b95a6;
+  --color-ink-300: #b6bfcd;
+  --color-ink-200: #dde3ec;
+  --color-ink-100: #f4f1ea;
+
+  --color-teal-700: #1f4f4b;
+  --color-teal-600: #2a6560;
+  --color-teal-500: #2f6f6a;
+  --color-teal-400: #4a938c;
+
+  --color-amber-500: #f4bc68;
+  --color-amber-600: #d99a3f;
+
+  --color-clay-100: #f0e9dd;
+  --color-clay-200: #e2d7c6;
+  --color-clay-300: #cbb99f;
+  --color-wood-500: #b08454;
+
+  --color-ok-500: #4a9d7f;
+  --color-warn-500: #d9a03f;
+  --color-bad-500: #c05c56;
+
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 14px;
+}
+
+:root {
+  color-scheme: dark;
+  --surface: #0e1117;
+  --panel: #151a23;
+  --panel-raised: #1d2430;
+  --edge: #2a3340;
+  --text: #f4f1ea;
+  --muted: #8b95a6;
+}
+
+html,
+body {
+  background: var(--surface);
+  color: var(--text);
+  height: 100%;
+}
+
+body {
+  font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  font-feature-settings: "cv02", "cv03";
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Focus is visible everywhere: a studio with an invisible focus ring is unusable by keyboard. */
+:focus-visible {
+  outline: 2px solid var(--color-teal-400);
+  outline-offset: 2px;
+  border-radius: var(--radius-sm);
+}
+
+.panel {
+  background: color-mix(in srgb, var(--panel) 92%, transparent);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-lg);
+  backdrop-filter: blur(8px);
+}
+
+.panel-raised {
+  background: var(--panel-raised);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-md);
+}
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  padding: 0.45rem 0.85rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--edge);
+  background: var(--panel-raised);
+  color: var(--text);
+  font-size: 0.875rem;
+  font-weight: 500;
+  transition: background 120ms ease, border-color 120ms ease;
+  min-height: 2.25rem;
+}
+.btn:hover:not(:disabled) {
+  background: var(--color-ink-700);
+  border-color: var(--color-ink-600);
+}
+.btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+.btn-primary {
+  background: var(--color-teal-600);
+  border-color: var(--color-teal-500);
+}
+.btn-primary:hover:not(:disabled) {
+  background: var(--color-teal-500);
+}
+.btn-danger {
+  background: transparent;
+  border-color: var(--color-bad-500);
+  color: var(--color-bad-500);
+}
+
+.field {
+  width: 100%;
+  padding: 0.45rem 0.6rem;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--edge);
+  background: var(--surface);
+  color: var(--text);
+  font-size: 0.875rem;
+  min-height: 2.25rem;
+}
+.field:focus {
+  border-color: var(--color-teal-400);
+}
+
+.label {
+  display: block;
+  font-size: 0.75rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-bottom: 0.3rem;
+}
+
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+.badge-working { background: color-mix(in srgb, var(--color-teal-500) 25%, transparent); color: #8fd3cb; border-color: var(--color-teal-500); }
+.badge-waiting { background: color-mix(in srgb, var(--color-ink-600) 40%, transparent); color: var(--color-ink-300); border-color: var(--color-ink-600); }
+.badge-completed { background: color-mix(in srgb, var(--color-ok-500) 22%, transparent); color: #8fd3b1; border-color: var(--color-ok-500); }
+.badge-blocked { background: color-mix(in srgb, var(--color-warn-500) 22%, transparent); color: #f0cf92; border-color: var(--color-warn-500); }
+.badge-failed { background: color-mix(in srgb, var(--color-bad-500) 22%, transparent); color: #e8a09c; border-color: var(--color-bad-500); }
+.badge-reviewing { background: color-mix(in srgb, var(--color-amber-600) 22%, transparent); color: #f0cf92; border-color: var(--color-amber-600); }
+
+/* A list that grows the page instead of scrolling pushes its own footer below the fold. */
+.scroll-area {
+  max-height: calc(100dvh - 13rem);
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001ms !important;
+    transition-duration: 0.001ms !important;
+  }
+}

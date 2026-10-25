@@ -8,8 +8,25 @@ No Docker. No VPS. No mandatory cloud.
 
 ## Status
 
-**Phase 1 (foundation) — in progress.** Nothing here is claimed to work until its gate passes;
-see `docs/IMPLEMENTATION_ROADMAP.md` for the exact state of every task.
+**Phase 1 (foundation) — backend complete, dashboard in progress.** Nothing here is claimed to
+work until its gate passes; see `docs/IMPLEMENTATION_ROADMAP.md` for the exact state of every task.
+
+What is verified today:
+
+| Area | State | Evidence |
+| --- | --- | --- |
+| Contracts | done | 34 tests, incl. camera-target and contiguous-scene rejection |
+| Netguard + redaction | done | CIDR deny, resolve-then-pin, DNS-rebinding, redirect refusal |
+| Credentials | done | DPAPI round-trip on this host; sentinel never appears in output |
+| Providers | done | 5 transports, immutable resolution, capability-before-call |
+| Orchestration | done | WAL jobstore, atomic artifacts, token-owned leases, honest runner |
+| Events + studio projection | done | stale worker reads `waiting`, never `working` |
+| API | done | jobs, cancel, approve/reject gate, Range video, providers, SSE |
+| Pipeline | done to `STORYBOARD_READY` | 5 agent stages, real usage attribution, resume with 0 duplicate calls |
+| Dashboard | **in progress** | shell, tokens, api client, proxy, 3D scene, 2D fallback written; pages next |
+| Render / audio / QA / publishing | not started | Phase 2 and 4 |
+
+205 Python tests, ruff clean.
 
 ## Read first
 
@@ -17,7 +34,8 @@ see `docs/IMPLEMENTATION_ROADMAP.md` for the exact state of every task.
 | --- | --- |
 | `PRODUCT_REQUIREMENTS.md` | What the product must do, with measurable success criteria |
 | `docs/ARCHITECTURE.md` | Layering, and the eleven decisions that shape it |
-| `AGENTS.md` | Agent inventory, rules, failure taxonomy |
+| `AGENTS.md` | Rules for the coding agent working in this repo |
+| `docs/AGENT_CONTRACTS.md` | The product's agent inventory, rules, failure taxonomy |
 | `docs/DATA_CONTRACTS.md` | Every artifact schema; the boundary between model output and code |
 | `docs/PROVIDER_SYSTEM.md` | Transports, capabilities, credentials, SSRF policy |
 | `docs/ANIMATION_ENGINE.md` · `docs/MOTION_SKILLS.md` · `docs/CHARACTER_SYSTEM.md` | How pixels are made |

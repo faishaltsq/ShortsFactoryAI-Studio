@@ -70,7 +70,7 @@ class MockProvider:
                 "scores": {"hook": 4, "coherence": 4, "pacing": 4, "originality": 4, "payoff": 4},
                 "findings": [],
             }
-        if task.startswith("research"):
+        if task.startswith("research") or task.startswith("topic"):
             return {
                 "topic": f"topik-{seed}",
                 "content_kind": "fictional",
@@ -86,6 +86,56 @@ class MockProvider:
                 "category_id": "22",
                 "made_for_kids": False,
                 "synthetic_media": True,
+            }
+        if task.startswith("storyboard"):
+            return {
+                "schema_version": 1,
+                "fps": 30,
+                "width": 1080,
+                "height": 1920,
+                "theme": "dusk",
+                "scenes": [
+                    {
+                        "sceneId": f"sc{index}",
+                        "template": "IllustratedStory",
+                        "segment": f"s{index}",
+                        "startFrame": (index - 1) * 300,
+                        "durationInFrames": 300,
+                        "assetRefs": ["character:maya", "bg:desert-dusk"],
+                        "text": [
+                            {"id": f"t{index}", "text": f"Adegan {index} {seed}", "role": "title"}
+                        ],
+                        "camera": {
+                            "shot": "wide" if index == 1 else "medium",
+                            "move": "static",
+                            "amplitude": 0.12,
+                            "ease": "power2.out",
+                        },
+                        "motion": {
+                            "energy": 0.5,
+                            "continuity": "cut" if index == 1 else "carry",
+                            "beats": [
+                                {"atFrame": 0, "kind": "enter", "subject": f"t{index}"},
+                                {"atFrame": 150, "kind": "emphasis", "subject": f"t{index}"},
+                            ],
+                        },
+                        "transition": {"kind": "cut", "frames": 0},
+                    }
+                    for index in (1, 2, 3)
+                ],
+                "subtitles": [],
+            }
+        if task.startswith("motion"):
+            return {
+                "schema_version": 1,
+                "renderer": "remotion",
+                "style_brief": {
+                    "palette": ["#2f6f6a", "#f4bc68", "#e8e0d4"],
+                    "fonts": ["Archivo", "IBM Plex Mono"],
+                    "signature_move": "push into the subject on each reveal",
+                },
+                "scenes": [],
+                "anti_patterns_checked": ["static_slideshow", "generic_fade", "text_wall"],
             }
         if task.startswith("vision"):
             return {"status": "passed", "findings": [], "frames_inspected": 0}
