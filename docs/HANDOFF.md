@@ -85,29 +85,37 @@ flakes. It is logged as R-02; do not "fix" it in the new repo, which does not sh
 
 ## 6. The prompt to give OMP
 
+Run from anywhere; `--cwd` takes a **native** path (the POSIX `/c/Users/...` form is rejected by
+native tools, and `--cwd` is passed to one):
+
 ```bash
-cd /c/Users/cubeb/orca/projects/ShortsFactoryAI-Studio
-omp --approval-mode=write --max-time=2h \
-  @AGENTS.md @docs/HANDOFF.md \
-  "Continue the ShortsFactoryAI Studio build from docs/HANDOFF.md §4, starting at step 1.
-   Read AGENTS.md rules first: no credential in output, no unverified success, no silent mock,
-   layering checked by tests/test_architecture.py.
-   Work step by step. After each step run the gate commands from AGENTS.md §2 and report the real
-   output. Do not claim a command passed if you did not run it. Do not touch git remotes, do not
-   publish anything, do not install global tools.
-   Start by running: npm --prefix apps/dashboard run typecheck"
+omp --cwd "C:/Users/cubeb/orca/projects/ShortsFactoryAI-Studio" \
+    --approval-mode=write --max-time=2h \
+  "Continue the ShortsFactoryAI Studio build from docs/HANDOFF.md section 4, starting at step 1.
+   Read AGENTS.md and docs/HANDOFF.md in the working directory first.
+   Rules that are not negotiable: no credential in any output, no unverified success, no silent
+   mock, and the layering in tests/test_architecture.py stays intact.
+   Work step by step. After each step run the gate commands from AGENTS.md section 2 and report the
+   real output. Do not claim a command passed if you did not run it. Do not touch git remotes, do
+   not publish anything, do not install global tools.
+   Step 1: run npm --prefix apps/dashboard run typecheck and report every error it emits."
 ```
 
 Notes on the flags:
 
+- `--cwd` sets the working directory without relying on the shell's `cd`, and OMP auto-discovers
+  `AGENTS.md` there. That auto-discovery is exactly why the product's agent inventory was moved to
+  `docs/AGENT_CONTRACTS.md`: otherwise the coding agent reads "ResearchAgent → research.json" as an
+  instruction addressed to itself.
 - `--approval-mode=write` lets it edit files and run non-destructive commands without a prompt per
   edit, while still asking before anything dangerous. Use `always-ask` if you want to watch.
 - `--max-time=2h` bounds the session; a bounded agent reports honestly instead of drifting.
-- `@AGENTS.md @docs/HANDOFF.md` loads both files into the first message explicitly, so it does not
-  depend on rules auto-discovery.
-- OMP auto-discovers `AGENTS.md` in the working directory. That is why the product's agent
-  inventory was moved to `docs/AGENT_CONTRACTS.md` — otherwise the coding agent reads
-  "ResearchAgent → research.json" as an instruction addressed to itself.
+- Do **not** use `@file` syntax on the first prompt for files under `docs/` — OMP resolves `@` as a
+  file attachment and a trailing sentence after it is parsed as part of the filename. Point at the
+  files in prose instead, as above.
+
+Expect step 1 to fail with real type errors in `StudioScene.tsx`, `StudioFallback.tsx` and
+`states.tsx` (typecheck has never been run). That failure is the task, not a blocker.
 
 ## 7. Things that will bite the next agent
 
