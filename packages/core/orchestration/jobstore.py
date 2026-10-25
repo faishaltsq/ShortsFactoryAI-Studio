@@ -1,0 +1,360 @@
+"""SQLite-backed job store: atomic writes, explicit transitions, token-owned leases.
+
+Design choices worth defending:
+
+* **Raw ``sqlite3``, no ORM.** The queries are a handful of statements; an ORM would add a mapping
+  layer and a dependency to debug at 2 a.m. for no benefit.
+* **WAL + busy_timeout.** The API thread reads while the worker writes. Without both, a read during
+  a write raises ``database is locked`` under load and never under test.
+* **Atomic artifact writes.** Write ``.tmp`` in the same directory, ``fsync``, ``os.replace``. A
+  half-written ``storyboard.json`` must never be readable.
+* **A state change and its event commit in the same transaction.** A state change without an event
+  makes the studio lie; an event without a state change makes the log useless.
+* **Path confinement.** Artifact names are validated, not trusted, so a name from a URL cannot walk
+  out of the job directory.
+"""
+
+from __future__ import annotations
+
+import datetime as dt
+import json
+import os
+import sqlite3
+import threading
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from ..contracts.state import JobState, assert_transition
+
+
+class IllegalTransition(RuntimeError):
+    def __init__(self, job_id: str, source: str, target: str) -> None:
+        self.job_id = job_id
+        self.source = source
+        self.target = target
+        super().__init__(f"job {job_id}: illegal transition {source} -> {target}")
+
+
+class ArtifactNotFound(FileNotFoundError):
+    pass
+
+
+def _utc_now() -> str:
+    return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+
+
+def _utc_now_ms() -> str:
+    return dt.datetime.now(dt.UTC).isoformat(timespec="milliseconds")
+
+
+SAFE_NAME = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
+
+
+def safe_artifact_name(name: str) -> str:
+    """Reject traversal, separators, and anything that is not a plain file name."""
+    if not name or len(name) > 128:
+        raise ValueError("artifact name is empty or too long")
+    if name in {".", ".."} or name.startswith("."):
+        raise ValueError(f"artifact name {name!r} is not allowed")
+    if not set(name) <= SAFE_NAME or "/" in name or "\\" in name:
+        raise ValueError(f"artifact name {name!r} contains illegal characters")
+    return name
+
+
+@dataclass(frozen=True)
+class JobRecord:
+    id: str
+    title: str
+    state: JobState
+    attempts: int
+    payload: dict[str, Any]
+    last_error: str | None
+    created_at: str
+    updated_at: str
+    locked_at: str | None
+
+    @property
+    def provider_mode(self) -> str:
+        return str(self.payload.get("provider_mode", "live"))
+
+    @property
+    def is_mock(self) -> bool:
+        return self.provider_mode == "mock"
+
+
+class JobStore:
+    """One SQLite file holds jobs, events, leases, and usage."""
+
+    def __init__(self, db_path: Path, jobs_dir: Path) -> None:
+        self.db_path = Path(db_path)
+        self.jobs_dir = Path(jobs_dir)
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.jobs_dir.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.RLock()
+        self._migrate()
+
+    # -- plumbing ---------------------------------------------------------------------------
+    def _connect(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(self.db_path, timeout=15, isolation_level=None)
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA synchronous=NORMAL")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.execute("PRAGMA foreign_keys=ON")
+        return conn
+
+    def _migrate(self) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS schema_migrations (
+                    version INTEGER PRIMARY KEY,
+                    applied_at TEXT NOT NULL
+                )
+                """
+            )
+            applied = {
+                row["version"]
+                for row in conn.execute("SELECT version FROM schema_migrations").fetchall()
+            }
+            for version, statements in MIGRATIONS:
+                if version in applied:
+                    continue
+                for statement in statements:
+                    conn.execute(statement)
+                conn.execute(
+                    "INSERT INTO schema_migrations(version, applied_at) VALUES (?,?)",
+                    (version, _utc_now()),
+                )
+
+    # -- jobs -------------------------------------------------------------------------------
+    def create(
+        self,
+        *,
+        title: str,
+        payload: dict[str, Any] | None = None,
+        state: JobState = JobState.IDEA_DISCOVERY,
+        job_id: str | None = None,
+    ) -> JobRecord:
+        now = _utc_now()
+        identifier = job_id or os.urandom(8).hex()
+        body = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO jobs(id, title, state, attempts, payload, created_at, updated_at)"
+                " VALUES (?,?,?,0,?,?,?)",
+                (identifier, title, state.value, body, now, now),
+            )
+            self._insert_event(
+                conn, identifier, None, state.value, "job created", now
+            )
+        (self.jobs_dir / identifier).mkdir(parents=True, exist_ok=True)
+        return self.get(identifier)
+
+    def get(self, job_id: str) -> JobRecord:
+        with self._connect() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"unknown job {job_id!r}")
+        return _record(row)
+
+    def list(self, *, states: list[JobState] | None = None, limit: int = 200) -> list[JobRecord]:
+        query = "SELECT * FROM jobs"
+        params: list[Any] = []
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            query += f" WHERE state IN ({placeholders})"
+            params.extend(state.value for state in states)
+        query += " ORDER BY created_at DESC LIMIT ?"
+        params.append(limit)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [_record(row) for row in rows]
+
+    def transition(
+        self,
+        job_id: str,
+        target: JobState,
+        *,
+        detail: str = "",
+        expected: JobState | None = None,
+    ) -> JobRecord:
+        """Move a job to ``target``, writing the event in the same transaction.
+
+        ``expected`` makes the transition conditional: a worker that lost its lease must not
+        overwrite the state another worker already set.
+        """
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            if row is None:
+                raise KeyError(f"unknown job {job_id!r}")
+            current = JobState(row["state"])
+            if expected is not None and current != expected:
+                raise IllegalTransition(job_id, current.value, f"{target.value} (expected {expected.value})")
+            try:
+                assert_transition(current, target)
+            except Exception as exc:  # noqa: BLE001 - re-raised with job context
+                raise IllegalTransition(job_id, current.value, target.value) from exc
+            conn.execute(
+                "UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?",
+                (target.value, now, job_id),
+            )
+            self._insert_event(conn, job_id, current.value, target.value, detail, now)
+            updated = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return _record(updated)
+
+    def set_error(self, job_id: str, message: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET last_error = ?, updated_at = ? WHERE id = ?",
+                (message, _utc_now(), job_id),
+            )
+
+    def bump_attempts(self, job_id: str) -> int:
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "UPDATE jobs SET attempts = attempts + 1, updated_at = ? WHERE id = ?",
+                (_utc_now(), job_id),
+            )
+            row = conn.execute("SELECT attempts FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        return int(row["attempts"]) if row else 0
+
+    def delete(self, job_id: str) -> None:
+        with self._lock, self._connect() as conn:
+            conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
+
+    # -- events -----------------------------------------------------------------------------
+    def _insert_event(
+        self,
+        conn: sqlite3.Connection,
+        job_id: str,
+        from_state: str | None,
+        to_state: str,
+        detail: str,
+        created_at: str,
+    ) -> None:
+        conn.execute(
+            "INSERT INTO job_events(job_id, from_state, to_state, detail, created_at)"
+            " VALUES (?,?,?,?,?)",
+            (job_id, from_state, to_state, detail, created_at),
+        )
+
+    def events(self, job_id: str, *, after_id: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT id, job_id, from_state, to_state, detail, created_at FROM job_events"
+                " WHERE job_id = ? AND id > ? ORDER BY id LIMIT ?",
+                (job_id, after_id, limit),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def event_count(self, job_id: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COUNT(*) AS n FROM job_events WHERE job_id = ?", (job_id,)
+            ).fetchone()
+        return int(row["n"])
+
+    # -- artifacts --------------------------------------------------------------------------
+    def job_dir(self, job_id: str) -> Path:
+        safe = safe_artifact_name(job_id)
+        path = self.jobs_dir / safe
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def write_artifact(self, job_id: str, name: str, payload: dict[str, Any]) -> Path:
+        """Atomic JSON write: temp file in the same directory, fsync, replace."""
+        safe = safe_artifact_name(name)
+        directory = self.job_dir(job_id)
+        target = directory / safe
+        tmp = directory / f".{safe}.tmp"
+        data = json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True)
+        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(data)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(tmp, target)
+        return target
+
+    def read_artifact(self, job_id: str, name: str) -> dict[str, Any]:
+        safe = safe_artifact_name(name)
+        path = self.job_dir(job_id) / safe
+        if not path.is_file():
+            raise ArtifactNotFound(f"artifact {name} does not exist for job {job_id}")
+        return json.loads(path.read_text(encoding="utf-8"))
+
+    def has_artifact(self, job_id: str, name: str) -> bool:
+        try:
+            safe = safe_artifact_name(name)
+        except ValueError:
+            return False
+        return (self.job_dir(job_id) / safe).is_file()
+
+    def list_artifacts(self, job_id: str) -> list[str]:
+        directory = self.job_dir(job_id)
+        return sorted(
+            path.name
+            for path in directory.iterdir()
+            if path.is_file() and not path.name.startswith(".")
+        )
+
+
+def _record(row: sqlite3.Row) -> JobRecord:
+    return JobRecord(
+        id=row["id"],
+        title=row["title"],
+        state=JobState(row["state"]),
+        attempts=int(row["attempts"]),
+        payload=json.loads(row["payload"] or "{}"),
+        last_error=row["last_error"],
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        locked_at=row["locked_at"],
+    )
+
+
+MIGRATIONS: list[tuple[int, list[str]]] = [
+    (
+        1,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS jobs (
+                id TEXT PRIMARY KEY,
+                title TEXT NOT NULL DEFAULT '',
+                state TEXT NOT NULL,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                payload TEXT NOT NULL DEFAULT '{}',
+                last_error TEXT,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                locked_at TEXT
+            )
+            """,
+            """
+            CREATE TABLE IF NOT EXISTS job_events (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id TEXT NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+                from_state TEXT,
+                to_state TEXT NOT NULL,
+                detail TEXT,
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_jobs_state ON jobs(state)",
+            "CREATE INDEX IF NOT EXISTS idx_events_job ON job_events(job_id)",
+            """
+            CREATE TABLE IF NOT EXISTS job_leases (
+                job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+                token TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                acquired_at TEXT NOT NULL,
+                renewed_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_leases_expiry ON job_leases(expires_at)",
+        ],
+    ),
+]

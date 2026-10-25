@@ -1,0 +1,37 @@
+# python
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.ruff_cache/
+*.egg-info/
+
+# node
+node_modules/
+.next/
+out/
+.turbo/
+
+# operator runtime state — never commit
+config/studio.json
+config/studio-history/
+data/jobs/*
+data/assets/*
+data/renders/*
+data/motion-skills/*
+data/secrets/*
+data/*.db
+data/*.db-*
+!data/jobs/.gitkeep
+!data/assets/.gitkeep
+!data/renders/.gitkeep
+
+# env and secrets
+.env
+.env.*
+!.env.example
+
+# misc
+*.log
+Thumbs.db
+.DS_Store
