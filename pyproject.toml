@@ -8,11 +8,19 @@ dependencies = [
     "httpx==0.28.1",
     "fastapi==0.150.0",
     "uvicorn==0.54.0",
-    "edge-tts==7.3.1",
 ]
 
 [dependency-groups]
-dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "ruff==0.14.3"]
+dev = ["pytest==9.1.1", "pytest-asyncio==1.4.0", "ruff==0.14.3", "mypy==1.18.2"]
+
+[tool.mypy]
+python_version = "3.12"
+packages = ["packages.core"]
+strict = true
+# Tests exercise contracts loosely by design; the gate covers the product only.
+exclude = ["tests", "apps", "scripts", "e2e"]
+# Tolerated pydantic/py tedium is rejected wholesale, not by loosening: no per-error disables
+# are allowed below without a written reason in docs/IMPLEMENTATION_ROADMAP.md.
 
 [tool.uv]
 package = false
@@ -23,6 +31,13 @@ testpaths = ["tests"]
 addopts = "-q"
 filterwarnings = ["ignore::DeprecationWarning"]
 asyncio_mode = "auto"
+markers = [
+    # Real browser, real ffmpeg, seconds per test. Deselect with `-m "not slow"` for the fast loop.
+    "slow: drives chrome-headless-shell and ffmpeg end to end",
+    # Drives Windows PowerShell SAPI. Must not run concurrently with another serial test: several
+    # processes binding the same SAPI COM object make sapi_tts.ps1 fail with NamedParameterNotFound.
+    "serial: spawns PowerShell SAPI; must not run concurrently with another serial test",
+]
 
 [tool.ruff]
 line-length = 110
