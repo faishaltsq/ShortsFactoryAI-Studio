@@ -16,6 +16,7 @@ Design choices worth defending:
 
 from __future__ import annotations
 
+import builtins
 import datetime as dt
 import json
 import os
@@ -38,6 +39,20 @@ class IllegalTransition(RuntimeError):
 
 class ArtifactNotFound(FileNotFoundError):
     pass
+
+
+class ApprovalEvidenceMissing(IllegalTransition):
+    """``APPROVED`` was requested without the gate's recorded evidence.
+
+    Distinct from a plain illegal edge: the transition is in the allow-list, but the artifact that
+    proves the gate ran is absent, unparseable, or about different bytes. The store does not decide
+    whether the gate *should* pass — that is ``_approval_checks`` in ``apps/api``, which reads
+    artifacts and hashes them. It only refuses to record the outcome without the evidence.
+    """
+
+    def __init__(self, job_id: str, source: str, reason: str) -> None:
+        self.reason = reason
+        IllegalTransition.__init__(self, job_id, source, f"APPROVED ({reason})")
 
 
 def _utc_now() -> str:
@@ -159,7 +174,7 @@ class JobStore:
             raise KeyError(f"unknown job {job_id!r}")
         return _record(row)
 
-    def list(self, *, states: list[JobState] | None = None, limit: int = 200) -> list[JobRecord]:
+    def list(self, *, states: builtins.list[JobState] | None = None, limit: int = 200) -> builtins.list[JobRecord]:
         query = "SELECT * FROM jobs"
         params: list[Any] = []
         if states:
@@ -197,6 +212,14 @@ class JobStore:
                 assert_transition(current, target)
             except Exception as exc:  # noqa: BLE001 - re-raised with job context
                 raise IllegalTransition(job_id, current.value, target.value) from exc
+            if target is JobState.APPROVED:
+                # A legal edge is not evidence. ``_approval_checks`` runs in ``apps/api`` and only
+                # on the approve route, so any other caller that reaches the gate state — a resume
+                # path, a scheduler, a maintenance script — would otherwise approve a job by
+                # transitioning it. Require the artifact the gate writes.
+                problem = self._approval_evidence_problem(job_id)
+                if problem is not None:
+                    raise ApprovalEvidenceMissing(job_id, current.value, problem)
             conn.execute(
                 "UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?",
                 (target.value, now, job_id),
@@ -204,6 +227,44 @@ class JobStore:
             self._insert_event(conn, job_id, current.value, target.value, detail, now)
             updated = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return _record(updated)
+
+    def _approval_evidence_problem(self, job_id: str) -> str | None:
+        """Return why ``approval.json`` does not authorise ``APPROVED``, or ``None`` when it does.
+
+        Existence and minimal shape only. The store does not know what a valid gate result looks
+        like beyond "it says approved, an operator signed it, the gate marked it publishable, and
+        it names the render it judged" — deciding more would put policy in the persistence layer.
+        """
+        try:
+            approval = self.read_artifact(job_id, "approval.json")
+        except ArtifactNotFound:
+            return "APPROVED requires approval.json, which does not exist for this job"
+        except (OSError, ValueError) as exc:
+            return f"approval.json cannot be read: {type(exc).__name__}"
+
+        decision = approval.get("decision")
+        if decision != "approved":
+            return f"approval.json decision is {decision!r}, not 'approved'"
+        if not str(approval.get("operator") or "").strip():
+            return "approval.json records no operator"
+        checks = approval.get("checks")
+        if not isinstance(checks, dict) or checks.get("publishable") is not True:
+            return "approval.json does not record checks.publishable == true"
+
+        recorded = approval.get("render_sha256")
+        if not recorded:
+            return "approval.json records no render_sha256, so it cannot prove which render it approved"
+        try:
+            render = self.read_artifact(job_id, "render.json")
+        except (ArtifactNotFound, OSError, ValueError):
+            return "approval.json names a render_sha256 but render.json is missing or unreadable"
+        current = render.get("sha256")
+        if current != recorded:
+            return (
+                f"stale approval: approval.json was decided against render_sha256 {recorded}, "
+                f"but render.json.sha256 is {current}"
+            )
+        return None
 
     def set_error(self, job_id: str, message: str) -> None:
         with self._lock, self._connect() as conn:
@@ -241,7 +302,7 @@ class JobStore:
             (job_id, from_state, to_state, detail, created_at),
         )
 
-    def events(self, job_id: str, *, after_id: int = 0, limit: int = 500) -> list[dict[str, Any]]:
+    def events(self, job_id: str, *, after_id: int = 0, limit: int = 500) -> builtins.list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT id, job_id, from_state, to_state, detail, created_at FROM job_events"
@@ -283,7 +344,8 @@ class JobStore:
         path = self.job_dir(job_id) / safe
         if not path.is_file():
             raise ArtifactNotFound(f"artifact {name} does not exist for job {job_id}")
-        return json.loads(path.read_text(encoding="utf-8"))
+        artifact: dict[str, Any] = json.loads(path.read_text(encoding="utf-8"))
+        return artifact
 
     def has_artifact(self, job_id: str, name: str) -> bool:
         try:
@@ -292,13 +354,63 @@ class JobStore:
             return False
         return (self.job_dir(job_id) / safe).is_file()
 
-    def list_artifacts(self, job_id: str) -> list[str]:
+    def list_artifacts(self, job_id: str) -> builtins.list[str]:
         directory = self.job_dir(job_id)
         return sorted(
             path.name
             for path in directory.iterdir()
             if path.is_file() and not path.name.startswith(".")
         )
+
+    # -- topic discoveries ------------------------------------------------------------------
+    def record_topic_discovery(
+        self, *, discovery_id: str, payload: dict[str, Any], titles: builtins.list[str]
+    ) -> None:
+        """Persist one discovery run. ``titles`` seeds the next run's avoid list."""
+        now = _utc_now()
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO topic_discoveries (id, payload, candidates_json, created_at)
+                VALUES (?,?,?,?)
+                """,
+                (
+                    discovery_id,
+                    json.dumps(payload, ensure_ascii=False),
+                    json.dumps(titles, ensure_ascii=False),
+                    now,
+                ),
+            )
+
+    def topic_discovery(self, discovery_id: str) -> dict[str, Any] | None:
+        row = self._connect().execute(
+            "SELECT payload FROM topic_discoveries WHERE id = ?", (discovery_id,)
+        ).fetchone()
+        return json.loads(row["payload"]) if row else None
+
+    def topic_avoid_list(self, *, limit: int = 10) -> builtins.list[str]:
+        """Candidate titles from the last ``limit`` discoveries, newest first.
+
+        Seeded initially from job titles (the plan's rule); once discoveries exist they dominate,
+        because repeating a *proposed* title is as bad as repeating a produced one.
+        """
+        conn = self._connect()
+        rows = conn.execute(
+            "SELECT candidates_json FROM topic_discoveries ORDER BY created_at DESC, id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        if rows:
+            out: list[str] = []
+            for row in rows:
+                titles = json.loads(row["candidates_json"])
+                if isinstance(titles, list):
+                    out.extend(str(t) for t in titles if str(t).strip())
+            return out
+        return [
+            job.title
+            for job in reversed(self.list(limit=limit))
+            if job.title.strip()
+        ]
 
 
 def _record(row: sqlite3.Row) -> JobRecord:
@@ -355,6 +467,20 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_leases_expiry ON job_leases(expires_at)",
+        ],
+    ),
+    (
+        2,
+        [
+            """
+            CREATE TABLE IF NOT EXISTS topic_discoveries (
+                id TEXT PRIMARY KEY,
+                payload TEXT NOT NULL DEFAULT '{}',
+                candidates_json TEXT NOT NULL DEFAULT '[]',
+                created_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX IF NOT EXISTS idx_discoveries_time ON topic_discoveries(created_at)",
         ],
     ),
 ]
