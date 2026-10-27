@@ -94,6 +94,12 @@ export type ProviderView = {
   cli_command: string;
 };
 
+export type AgentBinding = {
+  agent: string;
+  primary: string | null;
+  fallback: string[];
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -176,7 +182,14 @@ export const api = {
     request<{ events: StudioEvent[] }>(`/api/studio/history?job_id=${jobId}&limit=${limit}`),
 
   providers: () =>
-    request<{ providers: ProviderView[]; vision_available: boolean }>("/api/providers"),
+    request<{ providers: ProviderView[]; vision_available: boolean; bindings: AgentBinding[] }>(
+      "/api/providers",
+    ),
+  saveBindings: (bindings: AgentBinding[]) =>
+    request<{ status: string; bindings: AgentBinding[] }>("/api/providers/bindings", {
+      method: "PUT",
+      body: JSON.stringify({ bindings }),
+    }),
   saveProvider: (body: Record<string, unknown>) =>
     request<{ provider: ProviderView }>("/api/providers", {
       method: "PUT",

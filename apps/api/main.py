@@ -28,6 +28,7 @@ from packages.core.security.redact import redact
 from .jobs import JobService
 from .schemas import (
     ApproveBody,
+    BindingsBody,
     CancelBody,
     CreateJobBody,
     DiscoverTopicsBody,
@@ -326,7 +327,22 @@ def create_app(state: AppState | None = None) -> FastAPI:
         return {
             "providers": app_state.provider_specs(),
             "vision_available": app_state.vision_available(),
+            "bindings": [
+                {"agent": agent, **binding} for agent, binding in app_state.bindings.items()
+            ],
         }
+
+    @app.put("/api/providers/bindings")
+    def put_bindings(body: BindingsBody, _: None = Depends(require_token)) -> dict[str, Any]:
+        """Replace the whole binding set. Unknown agents fail here, before anything binds."""
+        known = set(AGENT_IDS)
+        for binding in body.bindings:
+            if binding.agent not in known:
+                raise HTTPException(status_code=422, detail=f"unknown agent {binding.agent}")
+        app_state.bindings = {
+            b.agent: {"primary": b.primary, "fallback": list(b.fallback)} for b in body.bindings
+        }
+        return {"status": "ok", "bindings": body.bindings}
 
     @app.put("/api/providers")
     def upsert_provider(

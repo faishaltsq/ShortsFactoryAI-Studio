@@ -115,6 +115,24 @@ class TestProviderBody(BaseModel):
     id: str = Field(min_length=1, max_length=64)
 
 
+class AgentBindingBody(BaseModel):
+    """One per-agent provider binding. A credential is never part of a binding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    agent: str = Field(min_length=1, max_length=64)
+    primary: str | None = Field(default=None, min_length=1, max_length=64)
+    fallback: list[str] = Field(default_factory=list, max_length=8)
+
+
+class BindingsBody(BaseModel):
+    """The full binding list replaces the current set; empty list clears all bindings."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    bindings: list[AgentBindingBody] = Field(default_factory=list)
+
+
 class StudioPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

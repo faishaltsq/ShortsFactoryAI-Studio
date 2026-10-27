@@ -10,7 +10,7 @@ import threading
 from dataclasses import dataclass, field
 from typing import Any
 
-from packages.core.observability.events import StudioEventStore
+from packages.core.observability.events import AGENT_IDS, StudioEventStore
 from packages.core.orchestration.jobstore import JobStore
 from packages.core.orchestration.scheduler import SchedulerConfig, SchedulerLoop
 from packages.core.providers.base import Capability, Provider
@@ -33,6 +33,11 @@ class AppState:
     transports: dict[str, Provider]
     cancel_flags: dict[str, threading.Event] = field(default_factory=dict)
     running: dict[str, threading.Thread] = field(default_factory=dict)
+    #: Per-agent provider bindings from ``studio.json``: agent name -> {"primary": id,
+    #: "fallback": [ids]}. Empty dict means "no operator preference"; resolution then stays
+    #: first-enabled-provider. Unknown agent names are rejected at load (a binding that binds
+    #: nothing is a silent misconfiguration).
+    bindings: dict[str, dict[str, Any]] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock)
     #: Off unless the operator set ``SHORTS_SCHEDULER_ENABLED``. ``None`` means "not built yet":
     #: the loop needs the service to hand jobs to, and the service needs this object.
@@ -86,6 +91,50 @@ class AppState:
             except (KeyError, ValueError):
                 continue  # a malformed entry is skipped, never silently half-applied
             self.registry.add(spec)
+        self._load_configured_bindings(payload if isinstance(payload, dict) else {})
+
+    def _load_configured_bindings(self, payload: dict[str, Any]) -> None:
+        """Load per-agent provider bindings.
+
+        Two failure classes, handled differently on purpose: a binding for an agent that can
+        never run would bind silently to nothing, so an unknown agent name is a hard error at
+        build time, before any HTTP traffic. A malformed *field* is skipped with a persisted
+        event noting it — one broken entry must not stop the studio from starting, but it must
+        not vanish silently either.
+        """
+        entries = payload.get("bindings", [])
+        if not isinstance(entries, list):
+            raise ValueError("config/studio.json: 'bindings' must be a list")
+        for entry in entries:
+            if not isinstance(entry, dict) or not isinstance(entry.get("agent"), str):
+                self._note_skipped_binding(f"malformed binding entry {entry!r}")
+                continue
+            agent = entry["agent"]
+            if agent not in AGENT_IDS:
+                raise ValueError(f"config/studio.json: binding names unknown agent {agent!r}")
+            primary = entry.get("primary")
+            fallback = entry.get("fallback", [])
+            if primary is not None and not isinstance(primary, str):
+                self._note_skipped_binding(f"binding for {agent}: non-string primary")
+                continue
+            if not isinstance(fallback, list) or not all(isinstance(f, str) for f in fallback):
+                self._note_skipped_binding(f"binding for {agent}: malformed fallback")
+                continue
+            self.bindings[agent] = {"primary": primary, "fallback": fallback}
+
+    def _note_skipped_binding(self, detail: str) -> None:
+        """Persist one bounded event about a skipped binding. Best effort: a failing event
+        store must not block startup for a configuration warning."""
+        try:
+            self.events.emit(
+                job_id="studio-config",
+                agent_id="FactoryOrchestrator",
+                event_type="failed",
+                status="failed",
+                description=f"binding dilewati: {detail}"[:500],
+            )
+        except Exception:  # noqa: BLE001 - startup must not die on a warning
+            pass
 
     # -- scheduler -------------------------------------------------------------------------
     def scheduler_config(self) -> SchedulerConfig:

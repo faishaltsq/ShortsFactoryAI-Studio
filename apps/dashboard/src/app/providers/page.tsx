@@ -2,7 +2,8 @@
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Empty, ErrorState, Loading } from "@/components/states";
-import { api, type ProviderView } from "@/lib/api";
+import { api, type AgentBinding, type ProviderView } from "@/lib/api";
+import { BindingsEditor } from "@/app/providers/bindings-editor";
 
 const CAPABILITIES = ["chat", "json_schema", "tools", "vision"] as const;
 const TRANSPORTS = ["openai_compat", "anthropic", "ollama", "cli", "mock"] as const;
@@ -68,6 +69,7 @@ function providerDraft(provider: ProviderView): ProviderDraft {
 export default function ProvidersPage() {
   const [providers, setProviders] = useState<ProviderView[] | null>(null);
   const [visionAvailable, setVisionAvailable] = useState(false);
+  const [bindings, setBindings] = useState<AgentBinding[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [draft, setDraft] = useState<ProviderDraft>(EMPTY_DRAFT);
   const [error, setError] = useState<string | null>(null);
@@ -81,6 +83,7 @@ export default function ProvidersPage() {
       const result = await api.providers();
       setProviders(result.providers);
       setVisionAvailable(result.vision_available);
+      setBindings(result.bindings ?? []);
       setError(null);
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "gagal memuat provider");
@@ -262,6 +265,12 @@ export default function ProvidersPage() {
           onFetchModels={() => void fetchModels()}
         />
       </div>
+
+      <BindingsEditor
+        bindings={bindings}
+        providerIds={providers.map((provider) => provider.id)}
+        onChanged={() => void loadProviders()}
+      />
     </div>
   );
 }

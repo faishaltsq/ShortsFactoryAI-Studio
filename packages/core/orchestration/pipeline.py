@@ -102,6 +102,11 @@ def _primary_for(state: Any, agent: str) -> str | None:
 
 
 def _fallback_for(state: Any, agent: str) -> list[str]:
+    """Operator-declared fallback order for one agent; empty when no binding pins one."""
+    override = getattr(state, "bindings", {}).get(agent) if hasattr(state, "bindings") else None
+    fallback = override.get("fallback") if isinstance(override, dict) else None
+    if isinstance(fallback, list):
+        return [f for f in fallback if isinstance(f, str)]
     return []
 
 
