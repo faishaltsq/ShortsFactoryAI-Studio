@@ -54,6 +54,19 @@ run** — expect real errors in the three components, fix them rather than delet
 
 > **Status 2026-10-25 — steps 1–5 done; Phase 2 not started.**
 >
+> **Status 2026-10-28 — Phase 2 exit gate passed; completion-plan gaps G1–G5, G9–G11 closed.**
+> Evidence, all observed this session, not claimed: `uv run pytest -q` green (full suite incl.
+> `test_render_cache.py` 5 — per-scene render cache: probe-validated hits, zero invocation on
+> unchanged storyboards, real-ffmpeg proofs; `test_bindings.py` 7; `test_discovery.py` 9;
+> scheduler priority/calendar tests). `uv run mypy packages/core --strict` clean, 49 files.
+> `ruff check .` clean. Schema export diff clean (14 schemas). Secret scan: 0 findings.
+> Dashboard: `typecheck` 0, Vitest 76/76. `still-templates` proof re-run: 7/7 render,
+> declared-camera reach 14.5–19.3 dB, beats move only the two rigged templates (MotionComic
+> 32.8 dB, IllustratedStory 22.4 dB), rig-less templates correctly `inf` (beat = no-op there).
+> Still held (operator-gated): G6 thumbnail upload, G7 real YouTube OAuth/`videos.insert`,
+> G8 vision-capable provider run. See `docs/superpowers/plans/2026-10-27-completion-plan.md`
+> gap table — every row not marked DONE/HOLD is open.
+>
 > `typecheck`'s only initial error was TS2353 for the `eslint` key that Next 16 removed from
 > `next.config.ts`. Pages added: `src/app/page.tsx` (studio), `src/app/jobs/page.tsx` (list +
 > detail), `src/app/providers/page.tsx`. Vitest: 16 tests. One Playwright spec covers

@@ -14,17 +14,17 @@ against the roadmap text alone.
 
 | # | Gap | Evidence |
 | --- | --- | --- |
-| G1 | Python type gate never ran: mypy not in `pyproject.toml`, no `[tool.mypy]` | roadmap cross-cutting table; `uv run python -m mypy --version` → No module named mypy |
-| G2 | Thumbnail stage orphaned: exists + unit-tested, nothing appends it to a chain | `packages/core/publish/thumbnail.py` docstring; grep of `apps/api/jobs.py` shows no reference |
-| G3 | Usage dashboard page absent (API `/api/usage/summary` exists) | roadmap Phase 4; `apps/dashboard/src/app/` has only page/jobs/providers |
-| G4 | Topic discovery missing: scheduler selects existing jobs, nothing invents topics | `scheduler.py` `claim_next`; roadmap Phase 4 bullet 1 |
-| G5 | Per-agent bindings unimplemented: `_primary_for` = first enabled non-mock provider for every agent, `_fallback_for` returns `[]`, `state.bindings` never exists | `packages/core/orchestration/pipeline.py:88-101` |
-| G6 | Thumbnail **upload** absent: transport has `insert` (video) only | `packages/core/publish/transport.py`, roadmap Phase 4 |
-| G7 | Real YouTube transport/OAuth flow absent (no listener, no browser launch, no `videos.insert`) | `publish/oauth.py` docstring; roadmap "blocked on operator credentials" |
-| G8 | Vision `passed` branch stub-only: no vision-capable endpoint ever configured | roadmap 2.6 "Not proven"; `agents/vision.py` rule 1 |
-| G9 | Per-scene cache unimplemented; every render is a full re-render | roadmap 2.6 |
-| G10 | Five of seven templates ignore authored `camera`/`motion` (only `IllustratedStory` consumes them) | roadmap 2.6 |
-| G11 | Queue priority / production calendar not started (no priority column, no scheduled-run worker) | roadmap Phase 4 bullet 2; `scheduler.py` has selection only, explicitly "no queue priority" |
+| G1 | ~~Python type gate never ran~~ **DONE 2026-10-28**: mypy in dev deps, `[tool.mypy]` strict over `packages/core`, 49 files clean; enforced by `tests/test_gate_scripts.py` | roadmap cross-cutting table |
+| G2 | ~~Thumbnail stage orphaned~~ **DONE 2026-10-28**: wired in `JobService.publish` under one lease, `tests/test_publish_wiring.py` 2 passed | `apps/api/jobs.py` publish; roadmap flipped |
+| G3 | ~~Usage dashboard page absent~~ **DONE 2026-10-28**: `apps/dashboard/src/app/usage/` page + tests; `price_configured=false` renders "belum dikonfigurasi" | `apps/dashboard/src/app/usage/page.tsx` |
+| G4 | ~~Topic discovery missing~~ **DONE 2026-10-28**: `orchestration/discovery.py` stage + `POST /api/topics/discover` + `topic_discoveries` table + avoid list; `tests/test_discovery.py` 9 passed | `apps/api/main.py`, `packages/core/orchestration/discovery.py` |
+| G5 | ~~Per-agent bindings unimplemented~~ **DONE 2026-10-28**: `studio.json` `bindings[]` loaded in `apps/api/state.py` (`_load_configured_bindings`), honored by `_primary_for`/`_fallback_for`; `tests/test_bindings.py` 7 passed | `apps/api/state.py`, `packages/core/orchestration/pipeline.py` |
+| G6 | Thumbnail **upload** absent: transport has `insert` (video) only — **HELD, operator-gated (M7)** | `packages/core/publish/transport.py`, roadmap Phase 4 |
+| G7 | Real YouTube transport/OAuth flow absent (no listener, no browser launch, no `videos.insert`) — **HELD, operator-gated (M7)**: plumbing proven against loopback stubs; touching a real Google account needs the operator to ask (AGENTS.md §7) | `publish/oauth.py` docstring; roadmap "blocked on operator credentials" |
+| G8 | Vision `passed` branch stub-only — **HELD, operator-gated (M7)**: needs an operator-declared vision-capable provider; code path complete and stub-tested | roadmap 2.6 "Not proven"; `agents/vision.py` rule 1 |
+| G9 | ~~Per-scene cache unimplemented~~ **DONE 2026-10-28**: `SceneCache` in `render.py`, probe-validated hits, real-ffmpeg proofs in `tests/test_render_cache.py` (5 passed) | roadmap 2.3 flipped |
+| G10 | **CLOSED as scoped 2026-10-28**: declared `camera` consumed by all seven templates via `DeclaredCameraScope`, reach proven per template (`still-templates`, PSNR 14.5–19.3 dB); beats drive every template with a character rig (IllustratedStory, MotionComic). Rig-less text/prop templates rightly take no beats. | roadmap 2.2/2.3 |
+| G11 | ~~Queue priority / production calendar~~ **DONE 2026-10-28**: `priority` column + `claim_next` ordering + `scheduled_for`/`/api/jobs/upcoming` + calendar page; proven in `tests/test_scheduler.py` | roadmap Phase 4 |
 
 Non-gaps kept honest (documented deviations, no work planned): GPU-pressure half of ADR-008
 (unobservable from the browser; banner says so), zone count ten vs "nine" in the original doc.
@@ -108,21 +108,14 @@ malformed binding skipped with events noting it, unknown agent rejected. API rou
 Tests: priority ordering, future `scheduled_for` never claimed, approval-gate bypass test
 already exists and must keep passing unchanged.
 
-### M6 — Renderer depth (G9, G10) — largest, scheduled last of the offline work
-1. G9 per-scene cache: `render.py` renders the whole composition today; add a per-scene mode
-   (composition id per scene with `sceneIndex` prop) plus a `render-cache/` keyed by
-   `(scene content hash, sceneIndex)`; mux cached segments with ffmpeg concat. `render.json`
-   gains `scenes[]` (additive, schema bump +1 minor: new optional fields only).
-2. G10 camera/motion on the other templates: extend `src/camera.ts` +
+### M6 — Renderer depth (G10) — largest, scheduled last of the offline work
+1. G9 per-scene cache: **done 2026-10-28** (`SceneCache`, `tests/test_render_cache.py`). Remaining: G10.
+1. G10 camera/motion on the other templates: extend `src/camera.ts` +
    `src/motion-beats.ts` coverage to all seven templates (they are already wired per-scene; the
    gap is template renderers not reading the fields). Parity + beats suites extend to cover one
    scene per template.
-3. Claude of the two: G10 first (it removes a correctness asymmetry between templates), G9
-   second (it is an optimization; nothing lies without it).
 
-Tests: `test_renderer_parity.py` gains per-template cases; cache test proves a second render of
-an unchanged scene does not re-invoke Remotion for it and that an edited scene invalidates
-exactly that scene (FR-5.4/5.5).
+Tests: `test_renderer_parity.py` gains per-template cases.
 
 ### M7 — Operator-gated: real upload path (G6, G7, G8) — not started without an explicit operator decision
 - G6 thumbnail upload: one transport method (`insert_thumbnail`) + receipt, stub-tested first

@@ -155,14 +155,20 @@ exits non-zero on any violation and removes its temporary data directory unless 
       `tblend` delta: boundaries dominate the strongest in-scene animation frame in each renderer —
       Remotion >= 4.09 vs 2.11, Bang Motion >= 2.09 vs 0.74), plus the character beat measured
       visible in both.
-- [ ] Per-scene rerender. `render.json.scene_hashes` is written and `TECHNICAL_QC` compares its
-      keyset to the storyboard scene ids, but **nothing reuses a cached scene**: there is no consumer
-      that skips rendering, and `_scene_hashes` says so in its own docstring ("there is no per-scene
-      cache yet, and none is claimed"). FR-5.4 is therefore unmet.
+- [x] Per-scene rerender. `render.json.scene_hashes` is consumed by a per-scene render cache
+      (`packages/core/media/render.py`, `SceneCache`): cache keys hash the *timed* scene dict plus
+      renderer/version/theme/geometry plus the global pixel inputs (whole-timeline frame count for
+      the progress bar, watermark text). A hit must ffprobe validating geometry and frame count —
+      a truncated or half-written part is a miss and re-renders, never spliced. Hits concat with
+      zero renderer invocations; misses render frame-windowed per scene. Bang Motion bypasses
+      the cache (one full render). FR-5.4 met.
 - **Verify:** byte-stability test (render twice, compare frame hashes) — done within each renderer
   (`test_each_renderer_is_deterministic_within_itself`, 60/60 identical framemd5 twice); cross-renderer
-  identity is not expected and is not claimed. Per-scene rerender test — **not written**, because the
-  cache it would test does not exist.
+  identity is not expected and is not claimed. Per-scene rerender — proven with real ffmpeg in
+  `tests/test_render_cache.py`: unchanged storyboard => zero renderer invocations and a real probed
+  full-timeline output; one changed scene => exactly that scene's frame window re-renders and the
+  other part file is reused verbatim; truncated part => detected by probe, that scene re-renders;
+  concat of two real parts merges into a real probeable timeline; keys separate watermark/total-length.
 
 ### 2.4 Audio
 - [x] Local Windows SAPI TTS adapter with word boundaries; deterministic subtitle grouping;
@@ -234,7 +240,8 @@ to be a picture change in each from the frames themselves.
 - The Python type gate was long unrunnable (mypy undeclared); it now runs in the cross-cutting
   gates and passes strict over `packages/core` (see the gate table). Any new module must keep it
   green — that is part of "done" from here on.
-- Per-scene cache is unimplemented; every render is a full re-render.
+- Per-scene render cache is implemented and proven (`tests/test_render_cache.py`); renders reuse
+  unchanged scenes with zero renderer invocations.
 - Only `IllustratedStory` consumes the declared motion fields. The other six templates honour the
   authored `camera` (declared push/pan/tilt/pull reach the frame, proven per template by
   `still-templates` at 14.5–19.3 dB) but have no character rig to perform beats on.
