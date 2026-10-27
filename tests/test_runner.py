@@ -247,3 +247,33 @@ def test_an_unreachable_stage_chain_is_refused_before_anything_runs(store):
     assert "not reachable from IDEA_DISCOVERY" in str(exc.value)
     assert calls["n"] == 0
     assert store.get(job.id).state is JobState.IDEA_DISCOVERY
+
+
+def test_a_qa_blocked_failure_needs_an_operator_decision(store):
+    """A failed technical gate is not a crash; it is a decision the operator must make."""
+    job = store.create(title="x")
+    stage, _calls = _stage(
+        "qc",
+        JobState.TOPIC_SELECTED,
+        behaviour=lambda *_a: StageOutcome(
+            ok=False, detail="technical QC failed: audio_streams", error_code="qa_blocked"
+        ),
+    )
+    report = run_stages(store=store, job_id=job.id, stages=[stage])
+    assert report["ok"] is False
+    assert report["stopped"] == "qa_blocked"
+    assert store.get(job.id).state is JobState.BLOCKED
+
+
+def test_a_generic_non_retryable_failure_still_fails(store):
+    job = store.create(title="x")
+    stage, _calls = _stage(
+        "boom",
+        JobState.TOPIC_SELECTED,
+        behaviour=lambda *_a: StageOutcome(
+            ok=False, detail="unexpected", error_code="stage_exception"
+        ),
+    )
+    report = run_stages(store=store, job_id=job.id, stages=[stage])
+    assert report["stopped"] == "stage_exception"
+    assert store.get(job.id).state is JobState.FAILED

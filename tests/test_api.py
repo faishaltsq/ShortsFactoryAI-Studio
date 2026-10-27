@@ -295,3 +295,34 @@ def test_token_is_enforced_when_configured(tmp_path):
     assert client.get("/api/jobs").status_code == 200, "reads stay open"
     response = client.post("/api/jobs", json={"title": "x"})
     assert response.status_code == 401
+
+
+# -- render_video: a job-level request, never a provider setting -------------------------------
+
+
+def test_render_video_true_is_echoed_in_the_job_payload(client):
+    job = _create(client, render_video=True)
+    fetched = client.get(f"/api/jobs/{job['id']}").json()
+    assert fetched["payload"]["render_video"] is True
+
+
+def test_render_video_defaults_to_false_and_is_recorded_explicitly(client):
+    """The field is a declared default, so it is present as False rather than absent.
+
+    ``CreateJobBody.model_dump()`` includes defaults, and the API stores that dump verbatim, so a
+    job created without the flag records ``render_video: False``. Asserting "absent" here would
+    encode a guess about the serialiser rather than the behaviour that exists.
+    """
+    job = _create(client)
+    fetched = client.get(f"/api/jobs/{job['id']}").json()
+    assert fetched["payload"]["render_video"] is False
+
+
+def test_render_video_rejects_a_non_boolean(client):
+    response = client.post("/api/jobs", json={"title": "x", "render_video": "yes"})
+    assert response.status_code == 422, response.text
+
+
+def test_create_job_body_forbids_unknown_fields(client):
+    response = client.post("/api/jobs", json={"title": "x", "render_videoo": True})
+    assert response.status_code == 422, response.text

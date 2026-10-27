@@ -16,6 +16,25 @@ def _scene(**overrides):
         startFrame=0,
         durationInFrames=300,
         text=[{"id": "t1", "text": "Halo", "role": "title"}],
+        # IllustratedStory is data-driven, so the fixture carries a minimal valid payload.
+        data={
+            "setting": "desert",
+            "timeOfDay": "dusk",
+            "actors": [
+                {
+                    "pose": "stand",
+                    "x": 0.5,
+                    "ground": 0.72,
+                    "scale": 1,
+                    "facing": "right",
+                    "tone": "primary",
+                    "silhouette": False,
+                }
+            ],
+            "props": [],
+            "fx": [],
+            "shots": [{"framing": "wide", "camera": "static", "weight": 1}],
+        },
     )
     base.update(overrides)
     return base
@@ -101,3 +120,28 @@ def test_storyboard_total_frames_sums_scenes():
         }
     )
     assert board.total_frames == 300
+
+
+DATA_DRIVEN = ("MotionComic", "HistoricalTimeline", "ParallaxStory", "InfographicMotion",
+               "IllustratedStory")
+
+
+@pytest.mark.parametrize("template", DATA_DRIVEN)
+def test_a_data_driven_template_without_data_is_rejected(template):
+    """The renderer throws for these five, so the contract must refuse them one layer earlier."""
+    with pytest.raises(ValidationError) as exc:
+        SceneSpec.model_validate(_scene(template=template, data=None))
+    message = str(exc.value)
+    assert "requires scene.data" in message
+    assert template in message
+
+
+def test_a_text_template_without_data_is_accepted():
+    scene = SceneSpec.model_validate(_scene(template="KineticTypography", data=None))
+    assert scene.data is None
+
+
+def test_empty_data_is_not_presence():
+    with pytest.raises(ValidationError) as exc:
+        SceneSpec.model_validate(_scene(template="IllustratedStory", data={}))
+    assert "requires scene.data" in str(exc.value)

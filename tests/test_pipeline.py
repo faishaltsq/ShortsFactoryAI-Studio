@@ -117,11 +117,16 @@ def test_progress_one_only_appears_with_a_completed_stage(state, client):
 def test_a_second_run_reuses_artifacts_without_repeating_work(state, client):
     job = client.post("/api/jobs", json={"title": "Uji", "provider_mode": "mock"}).json()
     client.post(f"/api/jobs/{job['id']}/run")
+    # Wait for the run to finish, not for a state name. ``MetadataAgent`` targets
+    # STORYBOARD_READY — the state the job is already in — so polling on that state can observe a
+    # run that is still in flight, and the reuse assertions below would race it.
     deadline = time.time() + 60
-    while time.time() < deadline and state.store.get(job["id"]).state not in {
+    while time.time() < deadline and job["id"] in state.running:
+        time.sleep(0.05)
+    assert job["id"] not in state.running, "the first run did not finish"
+    assert state.store.get(job["id"]).state in {
         JobState.STORYBOARD_READY, JobState.FAILED, JobState.BLOCKED
-    }:
-        time.sleep(0.1)
+    }
     before = state.store.event_count(job["id"])
     usage_before = len(state.usage.for_job(job["id"]))
 
@@ -160,4 +165,82 @@ def test_stages_target_reachable_states(state, client):
         JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW,
         JobState.STORYBOARD_READY,
+        # MetadataAgent has no state of its own in the allow-list; it targets the state the job is
+        # already in, which ``run_stages`` treats as a no-op rather than an illegal edge.
+        JobState.STORYBOARD_READY,
     ]
+
+
+def test_render_stages_are_absent_unless_the_job_asks_for_video(state, client):
+    """A default job must never depend on Node being installed.
+
+    Asserting on stage names rather than mocking the renderer is deliberate: the guarantee is
+    that the chain does not contain the render stage at all, so nothing can reach a subprocess.
+    """
+    job = client.post("/api/jobs", json={"title": "Uji", "provider_mode": "mock"}).json()
+    stages = build_stages(state, job["id"])
+    names = [stage.name for stage in stages]
+    assert "EditorAgent" not in names, "no render stage without render_video"
+    assert "QualityAgent" not in names, "no technical QC without render_video"
+    assert names == [
+        "ResearchAgent",
+        "TopicSelectionAgent",
+        "ScriptAgent",
+        "CreativeDirectorAgent",
+        "StoryboardAgent",
+        # Metadata is a provider call, not a render: it belongs in the agent-only chain, and the
+        # publish stage reads it. It is last because it is derived from the script.
+        "MetadataAgent",
+    ]
+
+
+def test_render_stages_walk_through_assets_audio_and_both_qc_gates(state, client):
+    """The real chain: assets, audio, render, technical QC, editorial QC.
+
+    Exactly one technical stage exists. The old one in ``media/render.py`` wrote ``qc.json``
+    before any detector ran; it is gone, so ``QualityAgent`` appears once per gate and the
+    artifacts are ``technical-qc.json`` then ``qc.json`` + ``readiness.json``.
+    """
+    job = client.post(
+        "/api/jobs",
+        json={
+            "title": "Uji",
+            "provider_mode": "mock",
+            "render_video": True,
+            "voice": "system-default",
+        },
+    ).json()
+    stages = build_stages(state, job["id"])
+    assert [stage.name for stage in stages][-6:] == [
+        "AssetAgent",
+        "AudioAgent",
+        "RenderAgent",
+        "QualityAgent",
+        "QualityAgent",
+        "DirectorAgent",
+    ]
+    assert [stage.state for stage in stages][-6:] == [
+        JobState.ASSETS_READY,
+        JobState.AUDIO_READY,
+        JobState.RENDERING,
+        JobState.TECHNICAL_QC,
+        JobState.EDITORIAL_QC,
+        JobState.READY_FOR_APPROVAL,
+    ]
+    assert stages[-3].produces == ("technical-qc.json",)
+    assert stages[-2].produces == ("qc.json",)
+    assert stages[-1].produces == ("readiness.json",)
+
+
+def test_the_render_chain_is_reachable_without_an_illegal_transition(state, client):
+    """The runner refuses a chain whose targets are not reachable; this proves the wiring."""
+    from packages.core.orchestration.runner import _validate_chain
+
+    job = client.post(
+        "/api/jobs",
+        json={"title": "Uji", "provider_mode": "mock", "render_video": True,
+              "voice": "system-default"},
+    ).json()
+    stages = build_stages(state, job["id"])
+    _validate_chain(JobState.STORYBOARD_READY, stages[5:])
+    assert stages[-1].state is JobState.READY_FOR_APPROVAL

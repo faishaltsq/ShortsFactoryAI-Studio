@@ -379,3 +379,37 @@ def test_origin_is_computed_from_the_base_url():
         id="p", transport="openai_compat", base_url="https://API.Example.com:8443/v1", model="m"
     )
     assert spec.origin == ("https", "api.example.com", 8443)
+
+
+# --------------------------------------------------------------------------- mock timing knob
+
+
+def test_mock_delay_defaults_to_zero(monkeypatch):
+    monkeypatch.delenv("SHORTS_MOCK_DELAY_MS", raising=False)
+    assert build_transports()["mock"].delay_ms == 0
+
+
+def test_mock_delay_is_read_from_the_environment(monkeypatch):
+    monkeypatch.setenv("SHORTS_MOCK_DELAY_MS", "1500")
+    assert build_transports()["mock"].delay_ms == 1500
+
+
+@pytest.mark.parametrize("raw", ["", "abc", "1.5", "-1", " 5", "5x", "1e3"])
+def test_mock_delay_rejects_invalid_input_loudly(monkeypatch, raw):
+    """A malformed knob is a configuration error; it must never be coerced to 0 or to a float."""
+    monkeypatch.setenv("SHORTS_MOCK_DELAY_MS", raw)
+    with pytest.raises(ValueError, match="SHORTS_MOCK_DELAY_MS"):
+        build_transports()
+
+
+def test_mock_delay_does_not_make_mock_reachable_for_a_live_job(store, monkeypatch):
+    monkeypatch.setenv("SHORTS_MOCK_DELAY_MS", "1500")
+    registry = default_registry()
+    transports = build_transports()
+    with pytest.raises(NoProviderAvailable):
+        resolve_call(
+            binding=Binding(agent="ScriptAgent", primary="mock"),
+            registry=registry,
+            store=store,
+            transports=transports,
+        )

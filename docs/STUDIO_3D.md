@@ -8,7 +8,7 @@ inspector. Neither starts, stops, or advances work.
 
 ## 2. Layout
 
-Isometric room, 16 × 12 units, nine zones:
+Isometric room, 16 × 12 units, ten zones:
 
 | Zone | Agent(s) | Workstation prop | Working animation |
 | --- | --- | --- | --- |
@@ -90,6 +90,20 @@ Additional rules:
   progress — studio paused" banner rather than silently freezing.
 - The 2D fallback is not a degraded grid of boxes: it is the same room layout in flat SVG with
   the same state colours, so the operator can still see who is doing what.
+
+**What is actually implemented, and what is not.** The pause is real and it is narrower than the
+rule above: `renderingActive(agents)` pauses and shows a "render sedang berjalan — studio dijeda"
+banner whenever an agent's `stage` is `RENDERING` and its resolved state is `working`
+(`apps/dashboard/src/three/sceneState.ts`); a stale lease resolves to `waiting` and does **not**
+pause, and no other stage pauses anything. The GPU-memory half of ADR-008 is **not implemented:
+free GPU memory is not observable from the browser** here, so the banner's `title` says so and
+claims no measurement. Auto-downgrade is one `useFrame` sampler in `StudioScene` that accumulates
+frame deltas and evaluates the median of each 3 s window; a median above 33 ms drops exactly one
+tier (`nextTierOnFrameTime`), `low` is the floor, and 33 ms or below changes nothing. The
+downgrade is **session-only**: it never writes `shorts-studio-quality`, so the operator's stored
+tier — and the dropdown, which still shows that tier — is untouched; the effective tier is
+observable as `data-effective-quality` on `[data-studio-scene]` while `data-quality` keeps
+reporting the operator's choice.
 
 ## 7. Testing
 

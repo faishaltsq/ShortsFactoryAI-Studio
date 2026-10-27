@@ -52,6 +52,44 @@ run** — expect real errors in the three components, fix them rather than delet
 
 ## 4. The next task, in order
 
+> **Status 2026-10-25 — steps 1–5 done; Phase 2 not started.**
+>
+> `typecheck`'s only initial error was TS2353 for the `eslint` key that Next 16 removed from
+> `next.config.ts`. Pages added: `src/app/page.tsx` (studio), `src/app/jobs/page.tsx` (list +
+> detail), `src/app/providers/page.tsx`. Vitest: 16 tests. One Playwright spec covers
+> create → `STORYBOARD_READY`, cancel of a running job, and projection parity (rendered
+> `data-state` against the persisted snapshot). Three consecutive full gate runs were green:
+> pytest 215, ruff 0, typecheck 0, Vitest 16, Playwright 1 passed.
+>
+> **Phase 2 (same day, later).** `packages/video` is ported: 49 files under `src/` (47 donor +
+> `product-adapter.ts` and `storyboard-props.ts`), 10 scripts, 2 fixtures. The donor's
+> `public/jobs/*.wav` were deliberately excluded; only `public/sample/narration-test.mp3` came
+> across. The package is standalone — React 18.3.1 / Remotion 4.0.537, installed with
+> `--include=dev` — and after a fresh install `npx remotion browser ensure` must run before the
+> first render (Chrome headless shell 157.0.8080.0, 295 MB on disk here).
+>
+> `src/product-adapter.ts` maps our persisted `storyboard.json` onto the donor contract: text
+> roles, transition kinds, theme, subtitles, and assetRefs limited to content-addressed rasters
+> (non-content-addressed refs such as `character:maya` are dropped rather than turned into image
+> requests). `src/storyboard-props.ts` resolves props inside `calculateMetadata`, because Remotion
+> merges `--props` last and it overrides `defaultProps` — adapting only in `RemotionRoot` fixed the
+> Studio preview but not a real render.
+>
+> `packages/core/media/render.py` is the single subprocess boundary: one `remotion render` call
+> with an absolute `--props`, an explicit free port, `--concurrency=1`, `--pixel-format=yuv420p`
+> and `--color-space=bt709` (both are needed: without the color space Remotion emits no
+> `-color_range` and libx264 tags the output `yuvj420p`). ffprobe validates the file before
+> `render.json` is written.
+>
+> Real proof: one API job with `render_video: true` produced a 1080×1920 h264 900-frame MP4 in
+> ~70 s; `render.json` validates as `RenderArtifact`; the job ends `BLOCKED` at `TECHNICAL_QC` on
+> `audio_streams` + `audio_codec` only, because narration/TTS (Phase 2.4) does not exist. `pix_fmt`
+> passes.
+>
+> The new `STORYBOARD_READY → RENDERING` edge is an explicit, documented shortcut; its removal
+> condition is recorded in `docs/STATE_MACHINE.md`. Still missing before the Phase 2 exit gate:
+> TTS/subtitles (2.4), the asset stage, editorial QC, creative checks, and the second renderer.
+
 1. `npm --prefix apps/dashboard run typecheck` → fix everything it reports.
 2. `src/app/page.tsx`: Studio overview. `useStudio()` → `StudioScene` when quality allows,
    `StudioFallback` when `quality === "off"`. Clicking a character opens an inspector drawer with

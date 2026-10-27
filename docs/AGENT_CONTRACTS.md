@@ -18,10 +18,17 @@ sequences itself.
 | `AnimationAgent` | worker | `storyboard.json` | `motion-plan.json` (beats, camera, continuity) | yes |
 | `AudioAgent` | none | `storyboard.json` | `audio.json` (narration, cues, mix) | no (TTS) |
 | `EditorAgent` | none | storyboard + audio + motion plan | `edit.json` (scene order, transitions, captions) | no |
-| `QualityAgent` | strategist | render + storyboard + audio | `qc.json`, `editorial_qc.json`, `visual_qc.json` | yes |
+| `QualityAgent` | strategist | render + props + audio + storyboard | `technical-qc.json` (FR-7.1, `TECHNICAL_QC`), `qc.json` + `qa-contact-sheet.jpg` (FR-7.2 and the visual pass, `EDITORIAL_QC`) | yes |
+| `DirectorAgent` | strategist | `technical-qc.json` + `qc.json` + render/audio/storyboard | `readiness.json` (the gate verdict, `READY_FOR_APPROVAL`) | no |
 | `MetadataAgent` | worker | script + storyboard | `metadata.json` (title, description, tags, thumb concept) | yes |
 | `PublisherAgent` | none | approved job | `publication.json` (receipts) | no |
 | `FactoryOrchestrator` | deterministic | job row | state transitions | no |
+
+`QualityAgent` appears twice in the render chain with two disjoint outputs: `technical-qc.json` is
+measurement (every FR-7.1 check, including the detector runs), `qc.json` is judgement (FR-7.2
+metrics plus the visual pass). `DirectorAgent` writes `readiness.json` and owns the
+`READY_FOR_APPROVAL` transition; it recomputes the input binding rather than trusting the verdict
+the editorial stage produced. Artifact schemas are in DATA_CONTRACTS §10.
 
 Tier decides the price table and the default chain, not the binding: any agent may be bound
 to any provider explicitly.

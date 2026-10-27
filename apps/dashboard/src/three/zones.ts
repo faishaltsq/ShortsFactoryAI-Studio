@@ -18,21 +18,36 @@ export type Zone = {
   /** Isometric grid position, in room units. */
   position: [number, number];
   agents: string[];
-  href: string;
+  /** Route that exists in this app; `null` means the module is not built yet. */
+  href: string | null;
   accent: string;
+  /** Low-poly workstation prop, per `docs/STUDIO_3D.md` §2. */
+  prop: WorkstationProp;
 };
 
+export type WorkstationProp =
+  | "desk-storyboard"
+  | "terminal"
+  | "typewriter"
+  | "armchair"
+  | "drafting"
+  | "dual-monitor"
+  | "mic"
+  | "timeline"
+  | "preview-wall"
+  | "chute";
+
 export const ZONES: Zone[] = [
-  { id: "director", label: "Ruang Direktur", position: [-4.5, -3], agents: ["DirectorAgent", "FactoryOrchestrator"], href: "/", accent: "#f4bc68" },
-  { id: "research", label: "Meja Riset", position: [-1.5, -3], agents: ["ResearchAgent", "TopicSelectionAgent"], href: "/agents", accent: "#4a938c" },
-  { id: "writing", label: "Ruang Tulis", position: [1.5, -3], agents: ["ScriptAgent"], href: "/create", accent: "#f4bc68" },
-  { id: "review", label: "Sudut Review", position: [4.5, -3], agents: ["CreativeDirectorAgent"], href: "/storyboard", accent: "#d99a3f" },
-  { id: "storyboard", label: "Meja Storyboard", position: [-4.5, 0], agents: ["StoryboardAgent"], href: "/storyboard", accent: "#4a938c" },
-  { id: "animation", label: "Bay Animasi", position: [-1.5, 0], agents: ["AnimationAgent", "AssetAgent"], href: "/assets", accent: "#2f6f6a" },
-  { id: "audio", label: "Booth Audio", position: [1.5, 0], agents: ["AudioAgent"], href: "/assets", accent: "#4a938c" },
-  { id: "edit", label: "Suite Editing", position: [4.5, 0], agents: ["EditorAgent"], href: "/jobs", accent: "#2f6f6a" },
-  { id: "qc", label: "Ruang QC", position: [-3, 3], agents: ["QualityAgent"], href: "/jobs", accent: "#d9a03f" },
-  { id: "publishing", label: "Dermaga Publikasi", position: [3, 3], agents: ["MetadataAgent", "PublisherAgent"], href: "/calendar", accent: "#f4bc68" },
+  { id: "director", label: "Ruang Direktur", position: [-4.5, -3], agents: ["DirectorAgent", "FactoryOrchestrator"], href: "/", accent: "#f4bc68", prop: "desk-storyboard" },
+  { id: "research", label: "Meja Riset", position: [-1.5, -3], agents: ["ResearchAgent", "TopicSelectionAgent"], href: null, accent: "#4a938c", prop: "terminal" },
+  { id: "writing", label: "Ruang Tulis", position: [1.5, -3], agents: ["ScriptAgent"], href: null, accent: "#f4bc68", prop: "typewriter" },
+  { id: "review", label: "Sudut Review", position: [4.5, -3], agents: ["CreativeDirectorAgent"], href: null, accent: "#d99a3f", prop: "armchair" },
+  { id: "storyboard", label: "Meja Storyboard", position: [-4.5, 0], agents: ["StoryboardAgent"], href: null, accent: "#4a938c", prop: "drafting" },
+  { id: "animation", label: "Bay Animasi", position: [-1.5, 0], agents: ["AnimationAgent", "AssetAgent"], href: null, accent: "#2f6f6a", prop: "dual-monitor" },
+  { id: "audio", label: "Booth Audio", position: [1.5, 0], agents: ["AudioAgent"], href: null, accent: "#4a938c", prop: "mic" },
+  { id: "edit", label: "Suite Editing", position: [4.5, 0], agents: ["EditorAgent"], href: "/jobs", accent: "#2f6f6a", prop: "timeline" },
+  { id: "qc", label: "Ruang QC", position: [-3, 3], agents: ["QualityAgent"], href: "/jobs", accent: "#d9a03f", prop: "preview-wall" },
+  { id: "publishing", label: "Dermaga Publikasi", position: [3, 3], agents: ["MetadataAgent", "PublisherAgent"], href: null, accent: "#f4bc68", prop: "chute" },
 ];
 
 export const AGENT_ZONE: Record<string, ZoneId> = ZONES.reduce(

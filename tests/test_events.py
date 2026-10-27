@@ -149,3 +149,26 @@ def test_artifact_reuse_never_emits_working(store):
     event = store.page()[-1]
     assert event.status == "completed"
     assert event.event_type == "artifact_reused"
+
+
+def test_an_agent_with_an_event_always_carries_its_timestamp(store):
+    """`updated_at` is the only thing the studio can age an event by.
+
+    A view whose ``status`` came from an event but whose ``updated_at`` is null would force the
+    browser to guess an age, and guessing is how a live character reads as idle.
+    """
+    store.emit(job_id="j1", agent_id="ResearchAgent", event_type="stage_completed")
+    views = project_agents(store, job_id="j1")
+    for view in views:
+        if view.status == "waiting" and view.updated_at is None:
+            continue  # no event at all: nothing to timestamp, and `waiting` is the honest answer
+        assert view.updated_at is not None, f"{view.agent_id} reports a status with no timestamp"
+        assert view.job_id is not None
+
+
+def test_a_completed_stage_keeps_its_own_status_and_timestamp(store):
+    """Server truth is not decayed: the two-second reaction is the browser's, not the projection's."""
+    event = store.emit(job_id="j1", agent_id="ScriptAgent", event_type="stage_completed")
+    view = next(v for v in project_agents(store, job_id="j1") if v.agent_id == "ScriptAgent")
+    assert view.status == "completed"
+    assert view.updated_at == event.created_at

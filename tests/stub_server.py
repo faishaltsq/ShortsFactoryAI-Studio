@@ -20,6 +20,13 @@ class Recorded:
     path: str
     headers: dict[str, str]
     body: dict[str, Any] | None
+    #: The exact bytes received. ``body`` is the JSON parse, which is ``None`` for a form or a
+    #: binary upload — those tests need the raw payload.
+    raw: bytes = b""
+
+    @property
+    def text(self) -> str:
+        return self.raw.decode("utf-8", errors="replace")
 
 
 @dataclass
@@ -76,6 +83,7 @@ class StubServer:
                         path=self.path,
                         headers={k.lower(): v for k, v in self.headers.items()},
                         body=parsed,
+                        raw=raw,
                     )
                 )
                 spec = outer.routes.get((self.command, self.path))

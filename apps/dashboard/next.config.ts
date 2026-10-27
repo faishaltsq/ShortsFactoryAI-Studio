@@ -6,7 +6,6 @@ const config: NextConfig = {
   reactStrictMode: true,
   poweredByHeader: false,
   env: { STUDIO_API_ORIGIN: apiOrigin },
-  eslint: { ignoreDuringBuilds: true },
 };
 
 export default config;

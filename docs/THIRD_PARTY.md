@@ -11,9 +11,9 @@
 | Tailwind CSS | 4.x | MIT | attribution |
 | FastAPI / uvicorn | 0.150 / 0.54 | MIT / BSD | attribution |
 | Pydantic | 2.14.1 | MIT | attribution |
-| edge-tts | 7.3.1 | LGPL-3.0 | Used as a library, not modified. Network required (Microsoft Edge TTS endpoint). Not usable offline. |
-| GSAP | ≥3.12.5 | Standard licence | **Free for commercial use** since 3.13 (Webflow relicensed, 2025). Vendored locally, not CDN. |
-| bang-motion | 1.19.0 (`c1aa65e`) | MIT © 2026 Bang Tutorial | Design law and frame-export technique reused with attribution; CDN references rewritten to local vendored copies. |
+| Windows SAPI (System.Speech) | OS component | OS licence | Narration runs through the offline `scripts/sapi_tts.ps1` helper: no network, no third-party package. The `edge-tts` dependency was removed because nothing imported it. |
+| GSAP | not vendored | Standard licence | **Not vendored, and not needed.** ADR-0012 makes the secondary renderer emit its own document, so no GSAP is shipped, loaded or fetched. The licence note stays for the day someone ingests the upstream starters: free for commercial use since 3.13 (Webflow relicensed, 2025), and if that path is taken GSAP plus the named woff2 subsets must be vendored locally at ingest, never loaded from a CDN at render time. |
+| bang-motion | 1.19.0 (`c1aa65e`) | MIT © 2026 Bang Tutorial | **Design reference only, no code shipped.** ADR-0012: the `window.OPENER` interface, the 9:16 layout law and the seek→2×rAF→screenshot technique are reused as knowledge; zero upstream executable lines are copied and no starter HTML is ingested, so there are no CDN references to rewrite. |
 | Chrome for Testing (`chrome-headless-shell`) | 157.0.8080.0 | BSD-3 (Chromium) | Already present under `packages/video/node_modules/.remotion/`; used for motion-skill frame capture. No extra download. |
 
 ## Fonts

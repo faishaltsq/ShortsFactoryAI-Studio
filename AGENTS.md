@@ -26,6 +26,9 @@ this way" is not a justification.** Every ported module is re-argued against thi
 ## 2. The commands that define "done"
 
 ```bash
+pwsh -File scripts/check.ps1           # every gate below, one PASS/FAIL line each
+bash scripts/check.sh                  # same, for a POSIX shell
+
 uv run ruff check .                    # 0 findings
 uv run pytest -q                       # all green
 npm --prefix apps/dashboard run typecheck
@@ -33,8 +36,17 @@ npm --prefix apps/dashboard run test
 npm --prefix apps/dashboard run test:e2e
 ```
 
+`scripts/check.ps1` / `check.sh` run all of those plus the schema diff, the secret scan and the
+video suites, and exit non-zero if any gate failed. Use `-Quick` / `--quick` to skip the two gates
+that need a browser. Reach for the individual commands when you are iterating on one gate.
+
 A change is not done because it compiles. Run the suite. If you cannot run a command, say so
 plainly and leave the tree working — do not claim a result you did not observe.
+
+**The Python type gate does not run.** `uv run mypy packages/core --strict` fails with
+`program not found`: mypy is not in the dev dependency group and there is no `[tool.mypy]` section.
+A green `pytest` therefore says nothing about types on the Python side. `docs/IMPLEMENTATION_ROADMAP.md`
+records what would make it runnable and which modules are in scope.
 
 Three consecutive green runs are required before a phase gate is declared passed. One flake is a
 failure: quarantine it with a written cause in `docs/TEST_STRATEGY.md`.

@@ -33,7 +33,7 @@ export function Empty({ title, hint }: { title: string; hint?: string }) {
 }
 
 export function StatusBadge({ status }: { status: string }) {
-  const known = ["working", "waiting", "completed", "blocked", "failed", "reviewing"];
+  const known = ["working", "waiting", "idle", "completed", "blocked", "failed"];
   const cls = known.includes(status) ? `badge badge-${status}` : "badge badge-waiting";
   return <span className={cls}>{status}</span>;
 }

@@ -111,3 +111,53 @@ def test_acquire_on_unknown_job_is_refused_by_the_foreign_key(db):
     store, _ = db
     with pytest.raises(sqlite3.IntegrityError):
         LeaseKeeper(store.db_path).acquire("does-not-exist")
+
+
+def test_ownership_does_not_outlive_expiry(db):
+    """A token match on an expired row is not ownership; the studio already says so.
+
+    Before this, ``owns()`` compared tokens only while the projection read ``expires_at``, so a
+    worker past its TTL kept writing state to a job the studio showed as dead.
+    """
+    store, job_id = db
+    keeper = LeaseKeeper(store.db_path, ttl_s=120)
+    keeper.acquire(job_id)
+    assert keeper.owns() is True
+
+    with keeper._connect() as conn:
+        past = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=5)).replace(microsecond=0).isoformat()
+        conn.execute("UPDATE job_leases SET expires_at = ? WHERE job_id = ?", (past, job_id))
+
+    assert keeper.owns() is False
+    with pytest.raises(LeaseLost):
+        keeper.assert_owned()
+    # The same token may repair its own lapse: renewal is what keeps the worker legitimate.
+    assert keeper.renew() is True
+    assert keeper.owns() is True
+
+
+def test_a_runner_renews_at_every_stage_boundary(db, tmp_path):
+    """A stage chain heartbeats, so a long stage cannot age its own lease out mid-run."""
+    from packages.core.contracts.state import JobState
+    from packages.core.orchestration.runner import Stage, StageOutcome, run_stages
+
+    store, job_id = db
+    keeper = LeaseKeeper(store.db_path, ttl_s=120)
+    keeper.acquire(job_id)
+    renewals: list[str] = []
+    original = keeper.renew
+
+    def counting() -> bool:
+        renewals.append("call")
+        return original()
+
+    keeper.renew = counting  # type: ignore[method-assign]
+
+    def noop(store_: object, job: str) -> StageOutcome:
+        return StageOutcome(ok=True, detail="done")
+
+    stages = [Stage(name="research", state=JobState.RESEARCH_COMPLETE, run=noop, produces=())]
+    store.transition(job_id, JobState.TOPIC_SELECTED)
+    run_stages(store=store, job_id=job_id, stages=stages, keeper=keeper)
+    assert len(renewals) >= 2, "before and after the stage, at minimum"
+    assert keeper.owns() is True

@@ -2,6 +2,7 @@
   "name": "shorts-studio-dashboard",
   "version": "0.1.0",
   "private": true,
+  "type": "module",
   "scripts": {
     "dev": "cross-env NODE_ENV=development NEXT_TELEMETRY_DISABLED=1 next dev --hostname 127.0.0.1 --port 3018",
     "build": "cross-env NODE_ENV=production NEXT_TELEMETRY_DISABLED=1 next build",

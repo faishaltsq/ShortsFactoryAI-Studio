@@ -144,6 +144,22 @@ transports:
 - `allow_private_hosts: true` is a per-provider opt-in, required for `ollama` and for any local
   router, and it is surfaced in the UI as a warning state, not a hidden default.
 - Redirects are not followed for provider calls. A 3xx is an error.
+- **One narrow exception, opt-in per call.** A resumable upload endpoint answers `308 Resume
+  Incomplete` to mean "keep sending from here", not "go elsewhere". `PinnedHTTP.request(...,
+  allow_resume_308=True)` returns that 308 to the caller as a `ResumeInfo` (status, `Range`,
+  `Location`) instead of raising. This does not weaken the rule: the flag is off by default, it
+  applies to exactly one status code, and every other 3xx — including `302` and `307` — still raises
+  even when the flag is set. A redirect is not a resume. Tests:
+  `tests/test_http_base.py::test_a_308_raises_when_resume_is_not_allowed`,
+  `::test_a_308_returns_resume_information_when_allowed`,
+  `::test_a_302_still_raises_even_when_resume_is_allowed`,
+  `::test_a_307_also_still_raises_when_resume_is_allowed`. The address policy is untouched: a
+  blocked target is still blocked with the flag on
+  (`::test_resume_308_does_not_apply_to_a_blocked_target`).
+- **Form and streamed bodies go through the same path.** `data=` (a form POST, which an OAuth code
+  exchange needs) and `body=UploadBody` (a chunked file upload) are encoded by this module and sent
+  through the same resolve-then-pin, no-redirect, redacted-error client as `json=`. Two body
+  encodings at once raises rather than guessing.
 
 ## 7. ADR-006 — SQLite through `sqlite3`, versioned migrations, no ORM
 

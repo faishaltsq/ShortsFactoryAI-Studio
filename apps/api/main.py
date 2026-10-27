@@ -8,6 +8,8 @@ someone opens the port beyond loopback the difference matters.
 from __future__ import annotations
 
 import json
+import uuid
+from datetime import UTC
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -28,7 +30,11 @@ from .schemas import (
     ApproveBody,
     CancelBody,
     CreateJobBody,
+    DiscoverTopicsBody,
+    MetadataBody,
     ProviderBody,
+    PublishBody,
+    ReconcileBody,
     RejectBody,
     TestProviderBody,
 )
@@ -36,6 +42,85 @@ from .settings import Settings
 from .state import AppState
 
 POLL_S = 0.5
+
+#: States where a metadata edit is meaningful: the render exists and the operator is deciding.
+#: Before ``READY_FOR_APPROVAL`` the metadata agent has not written its draft yet, so an edit would
+#: be silently overwritten; after a terminal state there is nothing left to publish.
+METADATA_EDITABLE_STATES = frozenset(
+    {
+        JobState.READY_FOR_APPROVAL,
+        JobState.APPROVED,
+        JobState.PRIVATE_UPLOAD,
+        JobState.SCHEDULED,
+        JobState.BLOCKED,
+    }
+)
+
+
+def _recover_interrupted(app_state: AppState, service: JobService) -> list[str]:
+    """Requeue jobs whose worker died mid-run.
+
+    A job whose ``state`` is a running stage but whose lease expired has no live worker: the
+    process that held it is gone, and the stage's artifacts are on disk. Such a job is re-Started
+    through the same ``JobService.start`` an operator would use — the runner then reuses completed
+    stages from their artifacts and repeats none of the paid work. This is the Phase 1 'crash
+    recovery' requirement; without it a restart strands every in-flight job in a state nothing
+    will ever advance.
+
+    Only an *expired* lease qualifies. A job whose lease is still live has a worker somewhere, and
+    stealing its work would duplicate it.
+    """
+    from packages.core.contracts.state import JobState
+    from packages.core.orchestration.leases import unexpired_jobs
+
+    running_states = [
+        job
+        for job in app_state.store.list(limit=500)
+        if job.state
+        in {
+            JobState.IDEA_DISCOVERY,
+            JobState.TOPIC_SELECTED,
+            JobState.RESEARCH_COMPLETE,
+            JobState.SCRIPT_GENERATED,
+            JobState.CREATIVE_REVIEW,
+            JobState.STORYBOARD_READY,
+            JobState.ASSETS_READY,
+            JobState.AUDIO_READY,
+            JobState.RENDERING,
+            JobState.TECHNICAL_QC,
+            JobState.EDITORIAL_QC,
+        }
+    ]
+    if not running_states:
+        return []
+
+    # Jobs whose lease expired AND that this process is not already running. The second check is
+    # what makes recovery safe to call on a live app: it never touches a thread that exists.
+    expired = unexpired_jobs.__wrapped__(app_state.store.db_path, [j.id for j in running_states]) \
+        if hasattr(unexpired_jobs, "__wrapped__") else \
+        _expired_only(app_state.store.db_path, [j.id for j in running_states])
+    already = set(app_state.running)
+    recover = [j.id for j in running_states if j.id in expired and j.id not in already]
+    for job_id in recover:
+        service.start(job_id)
+    return recover
+
+
+def _expired_only(db_path, job_ids):
+    """``unexpired_jobs`` inverted: the job ids whose lease is missing or expired."""
+    from datetime import datetime as dt
+
+    from packages.core.orchestration.leases import read_leases
+
+    leases = read_leases(db_path, job_ids)
+    now = dt.now(UTC)
+    held = {
+        job_id
+        for job_id in job_ids
+        if job_id in leases
+        and dt.fromisoformat(leases[job_id].expires_at) > now
+    }
+    return {j for j in job_ids if j not in held}
 
 
 def create_app(state: AppState | None = None) -> FastAPI:
@@ -46,6 +131,15 @@ def create_app(state: AppState | None = None) -> FastAPI:
     app = FastAPI(title="ShortsFactoryAI Studio", version="0.1.0")
     app.state.studio = app_state
     app.state.jobs = service
+
+    # Only a fresh process recovers: a caller that passed its own ``AppState`` (every test) owns
+    # its lifecycle, and a recovery sweep on construction would fight the caller's threads.
+    if state is None:
+        recovered = _recover_interrupted(app_state, service)
+        if recovered:
+            app.state.recovered_jobs = recovered
+
+
 
     # ---------------------------------------------------------------- auth
     def require_token(authorization: str | None = Header(default=None)) -> None:
@@ -261,6 +355,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 enabled=body.enabled,
                 cli_command=body.cli_command,
                 credential=credential,
+                price_in_per_mtok=body.price_in_per_mtok,
+                price_out_per_mtok=body.price_out_per_mtok,
             )
         except (ValueError, BlockedTarget) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -322,6 +418,156 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.get("/api/usage/job/{job_id}")
     def usage_job(job_id: str) -> dict[str, Any]:
         return {"rows": app_state.usage.for_job(job_id)}
+
+    # ---------------------------------------------------------------- publishing
+    def _transport(name: str):
+        """Resolve a publication transport by name.
+
+        Only the offline stub exists. A real transport is a later, separate addition; refusing an
+        unknown name here is what stops a typo from silently publishing through the stub and
+        recording an upload that never happened.
+        """
+        from packages.core.publish.stub import StubTransport
+
+        if name != "stub":
+            raise HTTPException(status_code=422, detail=f"unknown transport {name!r}")
+        return StubTransport()
+
+    @app.post("/api/jobs/{job_id}/publish")
+    def publish_job(
+        job_id: str, body: PublishBody, _: None = Depends(require_token)
+    ) -> dict[str, Any]:
+        transport = _transport(body.transport)
+        try:
+            report = service.publish(job_id, transport)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except service.ApprovalRefused as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {**report, "transport": body.transport}
+
+    @app.post("/api/jobs/{job_id}/publish/reconcile")
+    def reconcile_job(
+        job_id: str, body: ReconcileBody, _: None = Depends(require_token)
+    ) -> dict[str, Any]:
+        from packages.core.publish.reconcile import reconcile_uncertain
+
+        try:
+            app_state.store.get(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        transport = _transport(body.transport)
+        try:
+            publication = reconcile_uncertain(app_state.store, job_id, transport)
+        except ValueError as exc:
+            # A healthy record, a missing record, or an ambiguous match: all 409, because all of
+            # them are "this cannot be reconciled", not a malformed request.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except ArtifactNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+        return {
+            "job_id": job_id,
+            "phase": publication.phase,
+            "video_id": publication.video_id,
+            "idempotency_key": publication.idempotency_key,
+            "attempt": publication.attempt,
+            "receipt_steps": [str(r.get("step")) for r in publication.receipts],
+        }
+
+    # ---------------------------------------------------------------- metadata
+    METADATA_NAME = "metadata.json"
+
+    @app.get("/api/jobs/{job_id}/metadata")
+    def get_metadata(job_id: str) -> Any:
+        try:
+            return JSONResponse(app_state.store.read_artifact(job_id, METADATA_NAME))
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except ArtifactNotFound as exc:
+            raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    @app.post("/api/jobs/{job_id}/metadata")
+    def edit_metadata(
+        job_id: str, body: MetadataBody, _: None = Depends(require_token)
+    ) -> dict[str, Any]:
+        """Edit title/description/tags.
+
+        Refused before ``READY_FOR_APPROVAL`` because metadata for a video that does not exist yet
+        is metadata for nothing — and the metadata agent writes a first draft at that point, so an
+        earlier edit would be silently overwritten.
+        """
+        from packages.core.contracts.artifacts import MetadataArtifact
+        from packages.core.contracts.base import ArtifactValidationError, validate_artifact
+
+        try:
+            job = app_state.store.get(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        if job.state not in METADATA_EDITABLE_STATES:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "metadata can only be edited at or after READY_FOR_APPROVAL, "
+                    f"job is {job.state.value}"
+                ),
+            )
+        try:
+            current = app_state.store.read_artifact(job_id, METADATA_NAME)
+        except ArtifactNotFound:
+            current = MetadataArtifact(title=job.title or job.id).to_json()
+        patch = body.model_dump(exclude_none=True)
+        merged = {**current, **patch}
+        try:
+            artifact = validate_artifact(MetadataArtifact, merged)
+        except ArtifactValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        app_state.store.write_artifact(job_id, METADATA_NAME, artifact.to_json())
+        return artifact.to_json()
+
+    # ---------------------------------------------------------------- usage summary
+    @app.get("/api/usage/summary")
+    def usage_summary() -> dict[str, Any]:
+        """Per-day, per-agent and per-model totals.
+
+        ``cost_usd`` is 0.0 unless the operator configured prices on the provider
+        (``price_in_per_mtok`` / ``price_out_per_mtok``). ``price_configured`` says which case a
+        row is in, so an unpriced zero is never presented as "free".
+        """
+        return app_state.usage.summary()
+
+    # ---------------------------------------------------------------- topic discovery
+    @app.post("/api/topics/discover")
+    def discover_topics(body: DiscoverTopicsBody) -> dict[str, Any]:
+        """Run one discovery: propose candidates, record them, return them.
+
+        Proposals are metadata only — no job row is created here. Creating a job stays an
+        explicit operator action; a scheduler that spends money unattended stays off.
+        """
+        from packages.core.orchestration.discovery import build_discovery_stage
+        from packages.core.orchestration.runner import StageError
+
+        discovery_id = f"disc-{uuid.uuid4().hex[:12]}"
+        stage = build_discovery_stage(app_state, limit=body.limit)
+        try:
+            outcome = stage.run(app_state.store, discovery_id)
+        except StageError as exc:
+            payload = {
+                "discovery_id": discovery_id,
+                "status": "blocked",
+                "reason": f"{exc.code}: {exc.detail}",
+            }
+            app_state.store.record_topic_discovery(
+                discovery_id=discovery_id, payload=payload, titles=[]
+            )
+            raise HTTPException(status_code=503, detail=payload["reason"]) from exc
+        recorded = app_state.store.topic_discovery(discovery_id) or {}
+        return {
+            "discovery_id": discovery_id,
+            "status": "ok" if outcome.ok else "blocked",
+            "provider_mode": recorded.get("provider_mode"),
+            "candidates": recorded.get("candidates", []),
+            "avoid": recorded.get("avoid", []),
+        }
 
     return app
 

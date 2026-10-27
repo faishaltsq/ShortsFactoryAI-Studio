@@ -23,6 +23,11 @@ class CreateJobBody(BaseModel):
     characters: list[str] = Field(default_factory=lambda: ["maya"])
     renderer: Literal["remotion", "bang-motion"] = "remotion"
     provider_mode: Literal["live", "mock"] = "mock"
+    #: A job-level request for the Phase 2 render chain. Not a provider setting: it decides
+    #: whether the pipeline appends the Remotion + technical-QC stages at all.
+    #: ``strict`` because lax mode turns ``"yes"``/``"on"``/``1`` into True, and a string typo
+    #: must not silently start a multi-minute render.
+    render_video: bool = Field(default=False, strict=True)
 
     @field_validator("characters")
     @classmethod
@@ -36,6 +41,13 @@ class CancelBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(default="", max_length=400)
+
+class DiscoverTopicsBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    #: Operator-supplied extra titles to avoid, on top of the persisted avoid list.
+    avoid: list[str] = Field(default_factory=list, max_length=50)
+    limit: int = Field(default=5, ge=1, le=10)
 
 
 class ApproveBody(BaseModel):
@@ -77,6 +89,11 @@ class ProviderBody(BaseModel):
     cli_command: str = Field(default="", max_length=260)
     credential_env: str = Field(default="", max_length=120)
     credential_secret: str = Field(default="", max_length=4000, exclude=True)
+    #: USD per million tokens. Absent, ``estimate_cost`` returns 0.0 by design rather than
+    #: inventing a price — so every recorded cost would be 0.0 and the cost dashboard would show
+    #: a real-looking zero. Setting these is what makes ``est_cost_usd`` a measurement.
+    price_in_per_mtok: float | None = Field(default=None, ge=0, le=10_000)
+    price_out_per_mtok: float | None = Field(default=None, ge=0, le=10_000)
 
 
 class BindBody(BaseModel):
@@ -102,3 +119,43 @@ class StudioPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     patch: dict[str, Any] = Field(default_factory=dict)
+
+
+class PublishBody(BaseModel):
+    """Which transport to publish through.
+
+    Defaults to the offline stub because that is the only transport this build has. The value is
+    a closed set, so a typo cannot silently fall back to the stub and record a real upload that
+    never happened.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    #: A plain string, validated by the route's resolver rather than by a Literal. A Literal makes
+    #: pydantic produce a 422 whose ``detail`` is a list of dicts; the route's own refusal names
+    #: the offending transport in one readable sentence, which is what an operator needs.
+    transport: str = Field(default="stub", min_length=1, max_length=40)
+
+
+class ReconcileBody(BaseModel):
+    """Reconciliation takes no parameters yet; the body exists so the route is not a bare POST."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    transport: str = Field(default="stub", min_length=1, max_length=40)
+
+
+class MetadataBody(BaseModel):
+    """A metadata edit. Every field is optional; omitted fields keep their current value.
+
+    ``extra="forbid"`` is the important part: a typo in a field name must be a 422, not a silently
+    ignored key that leaves the operator believing they changed something.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    title: str | None = Field(default=None, min_length=1, max_length=100)
+    description: str | None = Field(default=None, max_length=5000)
+    tags: list[str] | None = Field(default=None, max_length=50)
+    category_id: str | None = Field(default=None, max_length=10)
+    made_for_kids: bool | None = None
