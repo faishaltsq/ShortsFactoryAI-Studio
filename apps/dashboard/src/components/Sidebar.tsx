@@ -10,6 +10,7 @@ const ROUTES = [
   { href: "/storyboard", label: "Storyboard", hint: "adegan & kamera" },
   { href: "/assets", label: "Aset", hint: "karakter & latar" },
   { href: "/providers", label: "Provider", hint: "model & kredensial" },
+  { href: "/usage", label: "Pemakaian", hint: "token & biaya" },
   { href: "/agents", label: "Agent", hint: "penugasan model" },
   { href: "/skills", label: "Skills", hint: "motion skill" },
   { href: "/calendar", label: "Kalender", hint: "jadwal terbit" },

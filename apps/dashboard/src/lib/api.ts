@@ -3,7 +3,6 @@
 export type StudioStatus =
   | "working"
   | "waiting"
-  | "reviewing"
   | "blocked"
   | "failed"
   | "completed";
@@ -104,6 +103,25 @@ export class ApiError extends Error {
   }
 }
 
+export type UsageSummaryRow = {
+  /** Group key, meaning depends on the table: `day`, `day+agent` or `day+provider+model`. */
+  day: string;
+  agent?: string;
+  provider?: string;
+  model?: string;
+  tokens: number;
+  calls: number;
+  cost_usd: number;
+};
+
+export type UsageSummary = {
+  days: UsageSummaryRow[];
+  by_agent: UsageSummaryRow[];
+  by_model: UsageSummaryRow[];
+  /** False when every row's cost is an unpriced 0.0 — "belum dikonfigurasi", not "free". */
+  price_configured: boolean;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -172,6 +190,7 @@ export const api = {
   providerModels: (id: string) => request<{ models: string[] }>(`/api/providers/${id}/models`),
 
   usageToday: () => request<{ tokens: number; cost_usd: number; calls: number }>("/api/usage/today"),
+  usageSummary: () => request<UsageSummary>("/api/usage/summary"),
 };
 
 export function videoUrl(jobId: string): string {
