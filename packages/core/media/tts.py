@@ -587,9 +587,8 @@ def _sha256_paths(paths: list[Path]) -> str:
 
 def build_asset_stage(state: Any, *, video_dir: Path) -> Stage:
     """Record only built-in Maya source bytes that really exist in packages/video."""
-    from ..orchestration.runner import Stage, StageError, StageOutcome
+    from ..orchestration.runner import Stage, StageContext, StageError, StageOutcome
 
-    store = state.store
     source = Path(video_dir) / "src"
     rig_paths = [
         source / "character" / "rig.ts",
@@ -598,7 +597,8 @@ def build_asset_stage(state: Any, *, video_dir: Path) -> Stage:
     ]
     palette_path = source / "art" / "palette.ts"
 
-    def run(_store: Any, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        job_id = ctx.job_id
         from ..orchestration.pipeline import _emit
 
         _emit(state, job_id, JobState.ASSETS_READY.value, "stage_started", "AssetAgent mulai", agent=ASSET_AGENT)
@@ -622,7 +622,7 @@ def build_asset_stage(state: Any, *, video_dir: Path) -> Stage:
                 json.dumps(payload["characters"], sort_keys=True, separators=(",", ":")).encode()
             ).hexdigest()
             validate_artifact(AssetsArtifact, payload)
-            store.write_artifact(job_id, ASSETS_NAME, payload)
+            ctx.write_artifact(ASSETS_NAME, payload)
         except Exception as exc:
             detail = redact(f"{type(exc).__name__}: {exc}", limit=400)
             _emit(state, job_id, JobState.ASSETS_READY.value, "failed", detail, agent=ASSET_AGENT)
@@ -737,17 +737,16 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
     and subtitle cue ends all come from those trimmed frame counts, so no caption can outlive the
     speech it belongs to.
     """
-    from ..orchestration.runner import Stage, StageError, StageOutcome
+    from ..orchestration.runner import Stage, StageContext, StageError, StageOutcome
 
-    store = state.store
-
-    def run(_store: Any, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, job_id = ctx.store, ctx.job_id
         from ..orchestration.pipeline import _emit
 
         _emit(state, job_id, JobState.AUDIO_READY.value, "stage_started", "AudioAgent mulai", agent=AUDIO_AGENT)
         job_dir = Path(store.job_dir(job_id))
         raw_path = job_dir / ".narration.raw.wav"
-        narration_path = job_dir / NARRATION_NAME
+        narration_path = ctx.alloc(NARRATION_NAME)
         scratch: list[Path] = []
         try:
             job = store.get(job_id)
@@ -842,7 +841,8 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
             )
             payload = artifact.model_dump()
             validate_artifact(AudioArtifact, payload)
-            store.write_artifact(job_id, AUDIO_NAME, payload)
+            ctx.write_artifact(AUDIO_NAME, payload)
+            ctx.stage_file(NARRATION_NAME, narration_path)
         except Exception as exc:
             narration_path.unlink(missing_ok=True)
             detail = redact(f"{type(exc).__name__}: {exc}", limit=400)

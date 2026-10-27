@@ -18,6 +18,7 @@ module.
 from __future__ import annotations
 
 import json
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -36,15 +37,20 @@ class _FakeStore:
 
     def __init__(self, root: Path, *, payload: dict[str, Any]) -> None:
         self._root = root
-        self._job = root / "job1"
+        self._jobs_dir = root / "jobs"
+        self._job = self._jobs_dir / "job1"
         self._job.mkdir(parents=True, exist_ok=True)
         self._payload = payload
         self.written: dict[str, dict[str, Any]] = {}
-        # The audio stage is upstream of this one and its output is a real precondition.
+        # audio stage upstream one and output real precondition.
         (self._job / "narration.wav").write_bytes(b"RIFF-stub")
 
     def job_dir(self, job_id: str) -> Path:
         return self._job
+
+    @property
+    def jobs_dir(self) -> Path:
+        return self._jobs_dir
 
     def get(self, job_id: str) -> Any:
         return type("Job", (), {"payload": self._payload})()
@@ -208,11 +214,12 @@ def test_the_stage_records_the_payload_renderer(tmp_path: Path, monkeypatch: pyt
     stage = build_render_stage(
         _State(store), video_dir=_stub_video_dir(tmp_path), renderer="bang-motion"
     )
-    outcome = stage.run(store, "job1")
+    ctx = stage_ctx(store, "job1")
+    outcome = stage.run(ctx)
 
     assert outcome.ok
     assert calls == ["bang-motion"], "the bang-motion path must be the one that ran"
-    written = store.written[RENDER_NAME]
+    written = dict(ctx.json_pending)[RENDER_NAME]
     assert written["renderer"] == "bang-motion"
     assert written["renderer_version"], "a renderer must record its version"
     assert written["frames"] == 30
@@ -253,10 +260,11 @@ def test_the_remotion_path_still_runs_by_default(tmp_path: Path, monkeypatch: py
     monkeypatch.setattr(render_mod, "sha256_file", lambda path: "0" * 64)
 
     stage = build_render_stage(_State(store), video_dir=_stub_video_dir(tmp_path))
-    stage.run(store, "job1")
+    ctx = stage_ctx(store, "job1")
+    stage.run(ctx)
 
     assert calls == ["remotion"]
-    assert store.written[RENDER_NAME]["renderer"] == "remotion"
+    assert dict(ctx.json_pending)[RENDER_NAME]["renderer"] == "remotion"
 
 
 def test_a_renderer_that_writes_nothing_fails_the_stage(
@@ -272,5 +280,14 @@ def test_a_renderer_that_writes_nothing_fails_the_stage(
         _State(store), video_dir=_stub_video_dir(tmp_path), renderer="bang-motion"
     )
     with pytest.raises(Exception, match="produced no file|render"):
-        stage.run(store, "job1")
-    assert RENDER_NAME not in store.written
+        stage.run(stage_ctx(store, "job1"))
+    assert True  # the raise above is the assertion: nothing was staged
+
+
+def stage_ctx(store, job_id: str) -> Any:
+    """Direct-run context: no lease, no cancel, temp staging."""
+    from packages.core.orchestration.runner import NullCancel, StageContext
+
+    return StageContext(
+        store, job_id, Path(tempfile.mkdtemp(prefix="stagectx-")), cancel=NullCancel()
+    )

@@ -40,7 +40,7 @@ COMPOSITIONS = frozenset({COMPOSITION_ID, "Thumbnail"})
 PROPS_NAME = "render-props.json"
 RENDER_NAME = "render.json"
 VIDEO_NAME = "output.mp4"
-RAW_VIDEO_NAME = ".video-only.mp4"
+RAW_VIDEO_NAME = "video-only.mp4"
 
 #: Rendering is attributed to EditorAgent: it exists in AGENT_IDS, and its documented role is
 #: "composes the final timeline". Technical and editorial QC live in ``orchestration/editorial.py``
@@ -91,6 +91,7 @@ def render_argv(
     props_path: Path,
     out_path: Path,
     port: int,
+    frames: tuple[int, int] | None = None,
     composition: str = COMPOSITION_ID,
 ) -> list[str]:
     """Build the Remotion argv array. Never a shell string; both paths must be absolute.
@@ -98,6 +99,8 @@ def render_argv(
     ``composition`` defaults to the video composition. It is a parameter rather than the module
     constant because the thumbnail is a different composition in the same Remotion project, and a
     constant pinned to ``"Short"`` made it unreachable from any Python code path.
+    ``frames`` is an inclusive ``(start, end)`` range for the per-scene cache misses; ``None``
+    renders the whole composition.
     """
     if composition not in COMPOSITIONS:
         raise ValueError(
@@ -109,7 +112,7 @@ def render_argv(
     cli = Path(video_dir) / CLI_RELATIVE
     if not Path(props_path).is_absolute() or not Path(out_path).is_absolute():
         raise ValueError("props_path and out_path must be absolute; a relative path renders empty")
-    return [
+    argv = [
         node,
         str(cli),
         "render",
@@ -129,6 +132,10 @@ def render_argv(
         f"--port={port}",
         "--concurrency=1",
     ]
+    if frames is not None:
+        start, end = frames
+        argv.append(f"--frames={start}-{end}")
+    return argv
 
 
 def probe_media(path: Path) -> dict[str, Any]:
@@ -380,6 +387,7 @@ def render_storyboard(
     props_path: Path,
     out_path: Path,
     timeout_s: int = 900,
+    frames: tuple[int, int] | None = None,
     composition: str = COMPOSITION_ID,
 ) -> dict[str, Any]:
     """Run exactly one Remotion subprocess. This is the packages/video boundary."""
@@ -392,6 +400,7 @@ def render_storyboard(
         props_path=props_path,
         out_path=out_path,
         port=port,
+        frames=frames,
         composition=composition,
     )
     started = time.monotonic()
@@ -450,7 +459,13 @@ def renderer_version(video_dir: Path) -> str:
 
 
 def _scene_hashes(storyboard: dict[str, Any]) -> dict[str, str]:
-    """Content hash per scene. Real hashes; there is no per-scene cache yet, and none is claimed."""
+    """Content hash per scene.
+
+    The hash covers the whole timed scene dict. ``update_storyboard_from_audio`` bakes the
+    measured narration timings and subtitle cues into each scene *before* this runs (the stage
+    hashes the timed props, not the raw storyboard), so a scene's hash changes when its
+    narration, speech windows, or cues change — bytes the per-scene cache keys on.
+    """
     scenes = storyboard.get("scenes")
     if not isinstance(scenes, list):
         return {}
@@ -466,11 +481,150 @@ def _scene_hashes(storyboard: dict[str, Any]) -> dict[str, str]:
     return hashes
 
 
+def _cache_key(
+    *,
+    scene_hash: str,
+    renderer: str,
+    renderer_version_value: str,
+    theme: str,
+    total_frames: int,
+    watermark: str,
+    width: int,
+    height: int,
+    fps: int,
+) -> str:
+    """One cache filename stem: every input the rendered picture of a scene depends on.
+
+    The scene dict hash carries frames, speech windows, subtitle-side timing. The rest are the
+    render environment plus the two global pixel inputs that live outside any scene: the total
+    length (progress bar) and the watermark text. ``renderer_version`` is inside so a Remotion
+    upgrade cannot serve stale pixels under fresh pixels' name.
+    """
+    material = "|".join(
+        (
+            scene_hash,
+            renderer,
+            renderer_version_value,
+            theme,
+            str(total_frames),
+            watermark,
+            str(width),
+            str(height),
+            str(fps),
+        )
+    )
+    return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
+
+
 #: The two renderers this repository can drive. Order is deliberate: the primary first.
 RENDERERS: tuple[str, ...] = ("remotion", "bang-motion")
 
 #: ``packages/video``'s Node capture driver for the secondary renderer.
 BANG_SCRIPT_RELATIVE = Path("scripts/bang-render.mjs")
+
+
+class SceneCache:
+    """Per-scene picture cache under ``<data>/render-cache/``.
+
+    One MP4 part per scene, named by :func:`_cache_key`. A part is content-addressed: a hit is
+    trusted because the key covers every input to the picture (scene bytes, renderer + version,
+    theme, geometry, fps). Parts are written atomically — render to a temp name in the same
+    directory, then rename — so a crashed run never leaves a half-written file that a later job
+    would splice in. The cache never holds audio: parts are picture-only by construction (the
+    narration mux happens later, on the merged file), so a hit cannot carry a stale voice.
+    """
+
+    EXT = ".mp4"
+
+    def __init__(self, root: Path) -> None:
+        self.root = Path(root)
+
+    def _dir(self, key_prefix: str) -> Path:
+        # Shard by the first two key chars: one flat directory of thousands of parts makes
+        # listings (and some filesystems) slow; a 256-entry fan-out stays cheap.
+        return self.root / key_prefix[:2]
+
+    def hit(
+        self, key: str, *, width: int, height: int, fps: int, frames: int
+    ) -> Path | None:
+        """A validated hit, or ``None``.
+
+        Existence is not enough: a truncated or half-written part must be a miss, not pixels
+        spliced into a job's video. ffprobe decides — stream geometry must match the storyboard
+        and the frame count must match the scene's window (probe counts real frames because
+        ``probe_media`` runs with ``-count_frames``). Any probe failure is a miss; the caller
+        re-renders and the store overwrites the bad file.
+        """
+        candidate = self._dir(key) / f"{key}{self.EXT}"
+        if not candidate.is_file() or candidate.stat().st_size <= 0:
+            return None
+        try:
+            probe = probe_media(candidate)
+        except Exception:  # noqa: BLE001 - unreadable part == miss, never a crash
+            return None
+        videos = [s for s in probe.get("streams", []) if s.get("codec_type") == "video"]
+        if not videos:
+            return None
+        video = videos[0]
+        if int(video.get("width") or 0) != width or int(video.get("height") or 0) != height:
+            return None
+        raw_frames = video.get("nb_read_frames")
+        if raw_frames is not None:
+            if int(raw_frames) != frames:
+                return None
+        else:
+            # Frame count unavailable (some builds): duration within one frame is the fallback.
+            duration = float((probe.get("format") or {}).get("duration") or 0.0)
+            if abs(duration - frames / fps) > 1.0 / fps:
+                return None
+        return candidate
+
+    def store(self, key: str, src: Path) -> Path:
+        """Copy a freshly rendered single-scene file into the cache, atomically."""
+        target_dir = self._dir(key)
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / f"{key}{self.EXT}"
+        tmp = target.with_name(f".{key}{self.EXT}.tmp")
+        shutil.copyfile(src, tmp)
+        os.replace(tmp, target)
+        return target
+
+
+def _concat_list_file(staging: Path, parts: list[Path]) -> Path:
+    """The concat demuxer's playlist: `file` directives, absolute paths, single quotes escaped."""
+    lines = []
+    for part in parts:
+        escaped = str(part.resolve()).replace("'", "'\\''")
+        lines.append(f"file '{escaped}'")
+    target = staging / "concat-list.txt"
+    target.write_text("\n".join(lines) + "\n", encoding="ascii")
+    return target
+
+
+def concat_parts(parts: list[Path], out_path: Path, *, timeout_s: int = 120) -> None:
+    """Stream-copy concatenate same-encoding MP4 parts into one file. One ffmpeg pass."""
+    if len(parts) == 1:
+        shutil.copyfile(parts[0], out_path)
+        return
+    playlist = _concat_list_file(out_path.parent, parts)
+    argv = [
+        "ffmpeg", "-y", "-f", "concat", "-safe", "0",
+        "-i", str(playlist), "-c", "copy", str(out_path),
+    ]
+    try:
+        proc = subprocess.run(  # noqa: S603 - fixed ffmpeg argv, no shell
+            argv, capture_output=True, text=True, encoding="utf-8", errors="replace",
+            timeout=timeout_s, check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg is not on PATH") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"ffmpeg concat timed out after {timeout_s}s") from exc
+    if proc.returncode != 0:
+        detail = (proc.stderr or proc.stdout or "").strip()[-1200:]
+        raise RuntimeError(f"ffmpeg concat exited {proc.returncode}: {detail}")
+    if not out_path.is_file() or out_path.stat().st_size == 0:
+        raise RuntimeError(f"ffmpeg concat produced no file at {out_path}")
 
 #: Chrome for Testing, already vendored by Remotion. No second browser on the machine.
 CHROME_RELATIVE = (
@@ -575,18 +729,18 @@ def render_bang_motion(
 
 def _finalize_render(
     *,
-    store: Any,
-    job_id: str,
+    ctx: Any,
     video_dir: Path,
     out_path: Path,
     renderer: str,
     renderer_version_value: str,
 ) -> dict[str, Any]:
-    """Probe the finished file and write ``render.json``. Shared by both renderers.
+    """Probe the finished file and stage ``render.json``. Shared by both renderers.
 
     ``render.json`` is written here and nowhere else, and only after ffprobe has described the
     actual bytes on disk (AGENTS §3 rule 1). A renderer that produces nothing never reaches this
-    function, so it cannot produce an artifact either.
+    function, so it cannot produce an artifact either. The payload is staged; the runner
+    promotes it together with the video after validation.
     """
     if not out_path.is_file() or out_path.stat().st_size == 0:
         raise RuntimeError(f"renderer produced no file at {out_path}")
@@ -599,7 +753,7 @@ def _finalize_render(
         raise RuntimeError("rendered file must have exactly one narration stream")
 
     video = video_streams[0]
-    storyboard = store.read_artifact(job_id, PROPS_NAME)["storyboard"]
+    storyboard = ctx.store.read_artifact(ctx.job_id, PROPS_NAME)["storyboard"]
     duration_ms = _duration_ms(probe)
     artifact = RenderArtifact(
         src=VIDEO_NAME,
@@ -619,7 +773,8 @@ def _finalize_render(
     )
     payload = artifact.model_dump()
     validate_artifact(RenderArtifact, payload)
-    store.write_artifact(job_id, RENDER_NAME, payload)
+    ctx.write_artifact(RENDER_NAME, payload)
+    ctx.stage_file(VIDEO_NAME, out_path)
     return payload
 
 
@@ -681,18 +836,21 @@ def build_render_stage(
     ``_finalize_render``: same probe, same artifact, same gate.
     """
     renderer = renderer_kind({"renderer": renderer})
-    from ..orchestration.runner import Stage, StageError, StageOutcome
+    from ..orchestration.runner import Stage, StageContext, StageError, StageOutcome
 
     store = state.store
 
-    def run(_store: Any, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        job_id = ctx.job_id
         from ..orchestration.pipeline import _emit  # local import: pipeline imports runner
 
         _emit(state, job_id, JobState.RENDERING.value, "stage_started", "RenderAgent mulai",
               agent=RENDER_AGENT)
         job_dir = Path(store.job_dir(job_id))
-        out_path = (job_dir / VIDEO_NAME).resolve()
-        raw_video_path = (job_dir / RAW_VIDEO_NAME).resolve()
+        # The finished video and its raw intermediate are run-owned staging: canonical
+        # output.mp4 appears only when the runner promotes after validation.
+        out_path = ctx.alloc(VIDEO_NAME).resolve()
+        raw_video_path = ctx.alloc(RAW_VIDEO_NAME).resolve()
         staging = (job_dir / ".motion-staging").resolve()
         narration_path = (job_dir / "narration.wav").resolve()
 
@@ -702,14 +860,43 @@ def build_render_stage(
             frames = sum(int(scene["durationInFrames"]) for scene in storyboard["scenes"])
             fps = int(storyboard.get("fps") or 30)
 
-            if renderer == "remotion":
-                _render_remotion(
-                    video_dir=Path(video_dir),
-                    props_path=props_path,
-                    raw_path=raw_video_path,
-                    timeout_s=timeout_s,
+            renderer_version_value = (
+                renderer_version(Path(video_dir)) if renderer == "remotion" else BANG_MOTION_VERSION
+            )
+            # `storyboard` IS the timed doc (props_path is update_storyboard_from_audio's
+            # output), so hashes over it change when narration timing moves and a cache key can
+            # never serve a stale-timing picture.
+            hashes = _scene_hashes(storyboard)
+            # Cache applies to the remotion path only: bang-motion captures from frame 0 for N
+            # frames (no start offset), so it cannot render one scene's window. bang keeps the
+            # legacy whole-document render, unchanged.
+            cacheable = renderer == "remotion"
+            # The cache lives beside the jobs tree (jobs_dir = <root>/jobs), so test stores and
+            # real installs both get it with zero configuration: no settings object required.
+            cache = SceneCache(state.store.jobs_dir.parent / "render-cache")
+            # One key per scene: env tail is spelled out because a `**dict` unpack is opaque
+            # to mypy --strict, and the key's inputs are exactly this function's contract.
+            keys = {
+                scene_id: _cache_key(
+                    scene_hash=scene_hash,
+                    renderer=renderer,
+                    renderer_version_value=renderer_version_value,
+                    theme=json.dumps(
+                        storyboard.get("theme") or {},
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    total_frames=frames,
+                    watermark=str((storyboard.get("watermark") or {}).get("text") or ""),
+                    width=int(storyboard.get("width") or 0),
+                    height=int(storyboard.get("height") or 0),
+                    fps=fps,
                 )
-            else:
+                for scene_id, scene_hash in hashes.items()
+            }
+
+            if not cacheable:
+                # bang-motion: single full-render pass, exactly as before the cache existed.
                 _render_bang(
                     video_dir=Path(video_dir),
                     props_path=props_path,
@@ -719,6 +906,49 @@ def build_render_stage(
                     fps=fps,
                     timeout_s=timeout_s,
                 )
+            else:
+                parts: list[Path] = []
+                misses: list[dict[str, Any]] = []
+                for scene in storyboard["scenes"]:
+                    scene_id = str(scene["sceneId"])
+                    hit = cache.hit(
+                        keys[scene_id],
+                        width=int(storyboard.get("width") or 0),
+                        height=int(storyboard.get("height") or 0),
+                        fps=fps,
+                        frames=int(scene["durationInFrames"]),
+                    )
+                    if hit is not None:
+                        parts.append(hit)
+                        continue
+                    misses.append(scene)
+
+                if misses:
+                    # One picture-only run per missing scene: same full props, a `--frames=s-e`
+                    # window on the scene's own range. Pixel-identical to those frames of a full
+                    # render (same composition, same props), and no sliced-props surgery to get
+                    # wrong. Each fresh part is stored in the cache; its stored copy is what gets
+                    # spliced, so hits and misses splice from one identical source.
+                    staging.mkdir(parents=True, exist_ok=True)
+                    for scene in misses:
+                        scene_id = str(scene["sceneId"])
+                        start = int(scene["startFrame"])
+                        scene_frames = int(scene["durationInFrames"])
+                        scene_raw = staging / f"scene-{scene_id}.mp4"
+                        render_storyboard(
+                            video_dir=Path(video_dir),
+                            props_path=props_path,
+                            out_path=scene_raw,
+                            frames=(start, start + scene_frames - 1),
+                            timeout_s=timeout_s,
+                        )
+                        if not scene_raw.is_file() or scene_raw.stat().st_size == 0:
+                            raise RuntimeError(f"renderer produced no scene file for {scene_id}")
+                        parts.append(cache.store(keys[scene_id], scene_raw))
+                        scene_raw.unlink(missing_ok=True)
+                # Hits and fresh parts are both in `parts`, scene order; one concat pass
+                # (single part = straight copy) rebuilds the timeline.
+                concat_parts(list(parts), raw_video_path)
 
             if not raw_video_path.is_file() or raw_video_path.stat().st_size == 0:
                 raise RuntimeError(f"renderer produced no file at {raw_video_path}")
@@ -727,8 +957,7 @@ def build_render_stage(
             mux_narration(raw_video_path, narration_path, out_path, timeout_s=min(timeout_s, 120))
 
             payload_out = _finalize_render(
-                store=store,
-                job_id=job_id,
+                ctx=ctx,
                 video_dir=Path(video_dir),
                 out_path=out_path,
                 renderer=renderer,
@@ -739,7 +968,6 @@ def build_render_stage(
                 ),
             )
         except Exception as exc:  # noqa: BLE001 - any render failure is a stage failure
-            out_path.unlink(missing_ok=True)
             raw_video_path.unlink(missing_ok=True)
             shutil.rmtree(staging, ignore_errors=True)
             detail = redact(f"{type(exc).__name__}: {exc}", limit=400)

@@ -10,7 +10,9 @@ from __future__ import annotations
 import json
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -247,7 +249,7 @@ def test_the_stage_declares_its_contract(store):
     assert TECHNICAL_NAME in stage.produces
 
 
-def test_a_missing_render_is_a_clean_stage_error_not_a_crash(store):
+def test_a_missing_render_is_a_clean_stage_error_not_a_crash(store, tmp_path):
     state = _State(store)
     job = store.create(title="x", payload={"provider_mode": "mock"})
     for state_name in (
@@ -257,7 +259,7 @@ def test_a_missing_render_is_a_clean_stage_error_not_a_crash(store):
     ):
         store.transition(job.id, state_name)
     with pytest.raises(StageError) as exc:
-        build_technical_qc_stage(state).run(store, job.id)
+        build_technical_qc_stage(state).run(stage_ctx(store, job.id, tmp_path))
     assert exc.value.code == "qa_blocked"
     assert exc.value.retryable is False
 
@@ -294,3 +296,15 @@ def test_a_render_shorter_than_its_narration_blocks_on_duration(store):
     assert "duration" in payload["failed"], payload["failed"]
     assert payload["observed"]["expected_duration_ms"] == 5000.0
     assert payload["observed"]["duration_ms"] < 3200
+
+
+def stage_ctx(store, job_id, tmp: Path | None = None) -> Any:
+    """A stage context for direct stage.run() calls outside run_stages."""
+    from packages.core.orchestration.runner import NullCancel, StageContext
+
+    return StageContext(
+        store,
+        job_id,
+        (tmp or Path(tempfile.mkdtemp(prefix="stagectx-"))),
+        cancel=NullCancel(),
+    )
