@@ -1,0 +1,249 @@
+{
+  "schema_version": 1,
+  "created_at": "2026-10-25T13:11:52+00:00",
+  "fps": 30,
+  "width": 1080,
+  "height": 1920,
+  "theme": "dusk",
+  "scenes": [
+    {
+      "sceneId": "sc1",
+      "template": "IllustratedStory",
+      "segment": "s1",
+      "startFrame": 0,
+      "durationInFrames": 300,
+      "assetRefs": [
+        "character:maya",
+        "bg:desert-dusk"
+      ],
+      "text": [
+        {
+          "id": "t1",
+          "text": "Gurun menyimpan cerita",
+          "role": "title",
+          "atFrame": 0
+        },
+        {
+          "id": "t2",
+          "text": "Pasir bergerak pelan di bawah matahari.",
+          "role": "body",
+          "atFrame": 30
+        }
+      ],
+      "transition": {
+        "kind": "cut",
+        "frames": 0
+      },
+      "audio": null,
+      "data": {
+        "title": "Gurun menyimpan cerita",
+        "caption": "Pasir bergerak pelan di bawah matahari.",
+        "setting": "desert",
+        "timeOfDay": "dusk",
+        "actors": [
+          {
+            "character": "maya",
+            "pose": "stand",
+            "x": 0.5,
+            "ground": 0.72,
+            "scale": 1,
+            "facing": "right",
+            "tone": "primary",
+            "silhouette": false
+          }
+        ],
+        "props": [],
+        "fx": [],
+        "shots": [
+          {
+            "framing": "wide",
+            "camera": "pushIn",
+            "weight": 1
+          }
+        ]
+      },
+      "camera": {
+        "shot": "wide",
+        "move": "push",
+        "target": "t1",
+        "amplitude": 0.1,
+        "ease": "power2.out"
+      },
+      "motion": {
+        "energy": 0.55,
+        "continuity": "cut",
+        "beats": [
+          {
+            "atFrame": 0,
+            "kind": "enter",
+            "subject": "t1"
+          },
+          {
+            "atFrame": 66,
+            "kind": "action",
+            "subject": "t1"
+          }
+        ]
+      }
+    },
+    {
+      "sceneId": "sc2",
+      "template": "IllustratedStory",
+      "segment": "s2",
+      "startFrame": 300,
+      "durationInFrames": 300,
+      "assetRefs": [
+        "character:maya"
+      ],
+      "text": [
+        {
+          "id": "t3",
+          "text": "Ia melangkah ke cahaya",
+          "role": "caption",
+          "atFrame": 0
+        },
+        {
+          "id": "t4",
+          "text": "LANGKAH",
+          "role": "label",
+          "atFrame": 60
+        }
+      ],
+      "transition": {
+        "kind": "fade",
+        "frames": 15
+      },
+      "audio": null,
+      "data": {
+        "title": "Ia melangkah ke cahaya",
+        "setting": "desert",
+        "timeOfDay": "dusk",
+        "actors": [
+          {
+            "character": "maya",
+            "pose": "stand",
+            "x": 0.5,
+            "ground": 0.72,
+            "scale": 1,
+            "facing": "right",
+            "tone": "primary",
+            "silhouette": false
+          }
+        ],
+        "props": [],
+        "fx": [],
+        "shots": [
+          {
+            "framing": "medium",
+            "camera": "pushIn",
+            "weight": 1
+          }
+        ]
+      },
+      "camera": {
+        "shot": "medium",
+        "move": "pan",
+        "target": "t3",
+        "amplitude": 0.12,
+        "ease": "sine.inOut"
+      },
+      "motion": {
+        "energy": 0.55,
+        "continuity": "cut",
+        "beats": [
+          {
+            "atFrame": 0,
+            "kind": "enter",
+            "subject": "t3"
+          },
+          {
+            "atFrame": 72,
+            "kind": "reveal",
+            "subject": "t3"
+          }
+        ]
+      }
+    },
+    {
+      "sceneId": "sc3",
+      "template": "IllustratedStory",
+      "segment": "s3",
+      "startFrame": 600,
+      "durationInFrames": 300,
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t5",
+          "text": "Cerita berakhir di kaki bukit.",
+          "role": "body",
+          "atFrame": 0
+        }
+      ],
+      "transition": {
+        "kind": "wipe",
+        "frames": 20
+      },
+      "audio": null,
+      "data": {
+        "caption": "Cerita berakhir di kaki bukit.",
+        "setting": "desert",
+        "timeOfDay": "dusk",
+        "actors": [
+          {
+            "character": "maya",
+            "pose": "stand",
+            "x": 0.5,
+            "ground": 0.72,
+            "scale": 1,
+            "facing": "right",
+            "tone": "primary",
+            "silhouette": false
+          }
+        ],
+        "props": [],
+        "fx": [],
+        "shots": [
+          {
+            "framing": "close",
+            "camera": "pushIn",
+            "weight": 1
+          }
+        ]
+      },
+      "camera": {
+        "shot": "close",
+        "move": "static",
+        "amplitude": 0.08,
+        "ease": "power1.out"
+      },
+      "motion": {
+        "energy": 0.55,
+        "continuity": "cut",
+        "beats": [
+          {
+            "atFrame": 0,
+            "kind": "enter",
+            "subject": "t5"
+          },
+          {
+            "atFrame": 78,
+            "kind": "emphasis",
+            "subject": "t5"
+          }
+        ]
+      }
+    }
+  ],
+  "subtitles": [
+    {
+      "startMs": 0,
+      "endMs": 2000,
+      "text": "Gurun menyimpan cerita."
+    },
+    {
+      "startMs": 2000,
+      "endMs": 4500,
+      "text": "Pasir bergerak pelan."
+    }
+  ]
+}

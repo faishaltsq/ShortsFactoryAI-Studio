@@ -7,7 +7,7 @@ prompt forgot is a validation failure rather than a silent default.
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, cast
 
 from ..contracts import (
     MetadataArtifact,
@@ -78,7 +78,10 @@ class ResearchAgent(Agent):
         "if you have no source, set content_kind to 'fictional'."
     )
 
-    def build_user_prompt(self, *, topic: str, genre: str, avoid: list[str], **_: Any) -> str:
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        topic = str(kwargs.get("topic") or "")
+        genre = str(kwargs.get("genre") or "")
+        avoid = cast(list[str], kwargs.get("avoid") or [])
         return (
             f"Topic: {topic or '(discover one)'}\nGenre: {genre}\n"
             f"Recent titles to avoid repeating: {avoid or 'none'}\n"
@@ -96,7 +99,8 @@ class TopicSelectionAgent(Agent):
         "Return ONLY JSON: {schema_version, topic, content_kind, candidates, sources, claims}."
     )
 
-    def build_user_prompt(self, *, research: dict[str, Any], **_: Any) -> str:
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        research = cast(dict[str, Any], kwargs.get("research") or {})
         return (
             "Choose one candidate from this research and keep its sources:\n"
             + json.dumps(research, ensure_ascii=False)[:4000]
@@ -115,7 +119,10 @@ class ScriptAgent(Agent):
         "Each segment becomes one scene, so 3-6 segments. Total spoken length must fit 30-60 seconds."
     )
 
-    def build_user_prompt(self, *, topic: dict[str, Any], duration_s: int, language: str, **_: Any) -> str:
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        topic = cast(dict[str, Any], kwargs.get("topic") or {})
+        duration_s = cast(int, kwargs.get("duration_s") or 45)
+        language = str(kwargs.get("language") or "en")
         return (
             f"Topic and sources:\n{json.dumps(topic, ensure_ascii=False)[:3000]}\n"
             f"Target duration: {duration_s} seconds. Language: {language}."
@@ -135,7 +142,9 @@ class CreativeDirectorAgent(Agent):
         "Be strict about a weak hook and a missing payoff."
     )
 
-    def build_user_prompt(self, *, script: dict[str, Any], attempt: int, **_: Any) -> str:
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        script = cast(dict[str, Any], kwargs.get("script") or {})
+        attempt = int(kwargs.get("attempt") or 1)
         return (
             f"Attempt {attempt}. Review this script:\n"
             + json.dumps(script, ensure_ascii=False)[:4000]
@@ -158,7 +167,9 @@ class StoryboardAgent(Agent):
         + ". Use at most one push or pull in the whole video. Give every scene at least one beat."
     )
 
-    def build_user_prompt(self, *, script: dict[str, Any], fps: int, **_: Any) -> str:
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        script = cast(dict[str, Any], kwargs.get("script") or {})
+        fps = int(kwargs.get("fps") or 30)
         return (
             f"fps={fps}. Script:\n{json.dumps(script, ensure_ascii=False)[:5000]}\n"
             "One scene per segment, in order."
@@ -179,7 +190,9 @@ class AnimationAgent(Agent):
         "Avoid: static slideshow, generic fade transitions, one flat background for the whole video."
     )
 
-    def build_user_prompt(self, *, storyboard: dict[str, Any], previous_style: dict[str, Any] | None = None, **_: Any) -> str:
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        storyboard = cast(dict[str, Any], kwargs.get("storyboard") or {})
+        previous_style = cast(dict[str, Any] | None, kwargs.get("previous_style"))
         return (
             "Storyboard:\n"
             + json.dumps(storyboard, ensure_ascii=False)[:5000]
@@ -200,7 +213,10 @@ class MetadataAgent(Agent):
         "thumbnail. title max 100 characters. synthetic_media must be true for AI-generated video."
     )
 
-    def build_user_prompt(self, *, script: dict[str, Any], topic: str, language: str, **_: Any) -> str:
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        script = cast(dict[str, Any], kwargs.get("script") or {})
+        topic = str(kwargs.get("topic") or "")
+        language = str(kwargs.get("language") or "en")
         return (
             f"Language: {language}. Topic: {topic}\nScript:\n"
             + json.dumps(script, ensure_ascii=False)[:3000]
@@ -222,7 +238,8 @@ class QualityAgent(Agent):
         "identical framing."
     )
 
-    def build_user_prompt(self, *, storyboard: dict[str, Any], **_: Any) -> str:
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        storyboard = cast(dict[str, Any], kwargs.get("storyboard") or {})
         return "Storyboard:\n" + json.dumps(storyboard, ensure_ascii=False)[:6000]
 
     def contract(self) -> type[Artifact]:

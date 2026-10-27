@@ -58,6 +58,50 @@ class Lease:
     def expired(self) -> bool:
         return dt.datetime.fromisoformat(self.expires_at) <= _now()
 
+def _read_rows(db_path: Path, job_ids: list[str]) -> list[Lease]:
+    """One connection, one statement, for every requested job."""
+    if not job_ids:
+        return []
+    conn = sqlite3.connect(db_path, timeout=15, isolation_level=None)
+    conn.row_factory = sqlite3.Row
+    try:
+        conn.execute("PRAGMA busy_timeout=5000")
+        placeholders = ",".join("?" for _ in job_ids)
+        rows = conn.execute(
+            f"SELECT * FROM job_leases WHERE job_id IN ({placeholders})", job_ids
+        ).fetchall()
+    finally:
+        conn.close()
+    return [
+        Lease(
+            row["job_id"], row["token"], row["owner"],
+            row["acquired_at"], row["renewed_at"], row["expires_at"],
+        )
+        for row in rows
+    ]
+
+def read_lease(db_path: Path, job_id: str) -> Lease | None:
+    """The persisted lease row for one job, or ``None``. Reads; never acquires."""
+    rows = _read_rows(Path(db_path), [job_id])
+    return rows[0] if rows else None
+
+def read_leases(db_path: Path, job_ids: list[str]) -> dict[str, Lease]:
+    """Every persisted lease for the given jobs, keyed by job id.
+
+    The studio asks this to decide staleness: a worker that stopped heartbeating may still have a
+    live thread, but its lease has expired and that is the authority (ADR-008, FR-9.4).
+    """
+    return {lease.job_id: lease for lease in _read_rows(Path(db_path), list(job_ids))}
+
+def unexpired_jobs(db_path: Path, job_ids: list[str]) -> set[str]:
+    """The subset of ``job_ids`` whose lease row exists and has not expired."""
+    now = _now()
+    return {
+        job_id
+        for job_id, lease in read_leases(db_path, job_ids).items()
+        if dt.datetime.fromisoformat(lease.expires_at) > now
+    }
+
 
 class LeaseKeeper:
     """Acquire, renew, and release one job's lease, and answer "do I still own this?"."""
@@ -122,12 +166,20 @@ class LeaseKeeper:
         return Lease(job_id, self._token, self.owner, _iso(now), _iso(now), _iso(expires))
 
     def renew(self) -> bool:
-        """Extend the lease. Returns False when the token is no longer the owner."""
+        """Extend the lease and keep ownership alive. False when this token no longer owns it.
+
+        A worker that never renews has an expired row after ``ttl_s``. Staleness is derived from
+        that row, so an un-renewed lease makes a live worker read as dead — the 120 s TTL against a
+        900 s render. The runner heartbeats through this method, and it is the only thing that
+        extends expiry.
+        """
         if self._job_id is None:
             return False
         now = _now()
         expires = now + dt.timedelta(seconds=self.ttl_s)
         with self._lock, self._connect() as conn:
+            # Renewal extends the row this token owns. Proof of ownership is the token, not the
+            # expiry: this call is what repairs an expiry this same worker let lapse.
             cursor = conn.execute(
                 "UPDATE job_leases SET renewed_at = ?, expires_at = ?"
                 " WHERE job_id = ? AND token = ?",
@@ -136,13 +188,22 @@ class LeaseKeeper:
             return cursor.rowcount == 1
 
     def owns(self) -> bool:
+        """Do I still hold an unexpired lease? An expired row is not ownership, whatever the token.
+
+        Token equality alone was a second vote on the question the studio already answers from
+        ``expires_at``, and the two disagreed: after the TTL the projection read ``waiting`` while
+        ``owns()`` kept letting the worker write state. The lease is expired or it is not; there is
+        one answer.
+        """
         if self._job_id is None:
             return False
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT token FROM job_leases WHERE job_id = ?", (self._job_id,)
+                "SELECT token, expires_at FROM job_leases WHERE job_id = ?", (self._job_id,)
             ).fetchone()
-        return row is not None and row["token"] == self._token
+        if row is None or row["token"] != self._token:
+            return False
+        return dt.datetime.fromisoformat(row["expires_at"]) > _now()
 
     def assert_owned(self) -> None:
         if not self.owns():
@@ -162,16 +223,7 @@ class LeaseKeeper:
         self._job_id = None
 
     def current(self, job_id: str) -> Lease | None:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM job_leases WHERE job_id = ?", (job_id,)
-            ).fetchone()
-        if row is None:
-            return None
-        return Lease(
-            row["job_id"], row["token"], row["owner"],
-            row["acquired_at"], row["renewed_at"], row["expires_at"],
-        )
+        return read_lease(self.db_path, job_id)
 
     def __enter__(self) -> LeaseKeeper:
         return self

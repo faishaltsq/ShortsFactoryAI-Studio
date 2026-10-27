@@ -1,0 +1,323 @@
+{
+  "id": "all-templates-offline-demo",
+  "language": "id-ID",
+  "width": 1080,
+  "height": 1920,
+  "fps": 30,
+  "theme": {
+    "id": "midnight"
+  },
+  "scenes": [
+    {
+      "sceneId": "demo-1",
+      "template": "KineticTypography",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-0",
+          "text": "Cerita bergerak dari ide",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 0,
+      "durationInFrames": 150,
+      "data": {
+        "highlightIndex": 2
+      }
+    },
+    {
+      "sceneId": "demo-2",
+      "template": "EducationalExplainer",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-1",
+          "text": "Cerita bergerak dari ide",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 150,
+      "durationInFrames": 150,
+      "data": {
+        "bullets": [
+          "Data adegan tervalidasi",
+          "Visual dibuat proyek ini",
+          "Tidak memakai media berbayar"
+        ]
+      }
+    },
+    {
+      "sceneId": "demo-3",
+      "template": "MotionComic",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-2",
+          "text": "Cerita bergerak dari ide",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 300,
+      "durationInFrames": 150,
+      "data": {
+        "title": "Satu ide, tiga panel",
+        "panels": [
+          {
+            "speaker": "NARA",
+            "caption": "Semuanya berawal dari satu ide."
+          },
+          {
+            "speaker": "NARA",
+            "caption": "Lalu kita menyusun langkahnya."
+          },
+          {
+            "caption": "Kisah kecil pun bergerak."
+          }
+        ]
+      }
+    },
+    {
+      "sceneId": "demo-4",
+      "template": "HistoricalTimeline",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-3",
+          "text": "Cerita bergerak dari ide",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 450,
+      "durationInFrames": 150,
+      "data": {
+        "title": "Perjalanan sebuah ide",
+        "events": [
+          {
+            "date": "LANGKAH 01",
+            "label": "Temukan pertanyaan",
+            "detail": "Demo alur kerja, bukan fakta sejarah."
+          },
+          {
+            "date": "LANGKAH 02",
+            "label": "Periksa bukti"
+          },
+          {
+            "date": "LANGKAH 03",
+            "label": "Bagikan cerita"
+          }
+        ]
+      }
+    },
+    {
+      "sceneId": "demo-5",
+      "template": "ParallaxStory",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-4",
+          "text": "Cerita bergerak dari ide",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 600,
+      "durationInFrames": 150,
+      "data": {
+        "title": "Di balik setiap lapisan",
+        "caption": "Ilustrasi orisinal proyek · demo fiksi",
+        "layers": [
+          {
+            "shape": "circle",
+            "depth": 0.15
+          },
+          {
+            "shape": "ridge",
+            "depth": 0.45
+          },
+          {
+            "shape": "city",
+            "depth": 0.9
+          }
+        ]
+      }
+    },
+    {
+      "sceneId": "demo-6",
+      "template": "InfographicMotion",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-5",
+          "text": "Cerita bergerak dari ide",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 750,
+      "durationInFrames": 150,
+      "data": {
+        "title": "Tiga langkah, satu cerita",
+        "items": [
+          {
+            "label": "Ide uji",
+            "value": 3816,
+            "unit": "poin"
+          },
+          {
+            "label": "Visual uji",
+            "value": 2500,
+            "unit": "poin"
+          },
+          {
+            "label": "Cerita uji",
+            "value": 1800,
+            "unit": "poin"
+          }
+        ],
+        "maxValue": 4000,
+        "decimals": 0
+      }
+    },
+    {
+      "sceneId": "demo-7",
+      "template": "IllustratedStory",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-6",
+          "text": "Cahaya yang tertunda",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 900,
+      "durationInFrames": 150,
+      "data": {
+        "title": "Cahaya yang tertunda",
+        "caption": "8 menit 20 detik dari Matahari",
+        "setting": "space",
+        "timeOfDay": "night",
+        "actors": [
+          {
+            "pose": "point",
+            "x": 0.3,
+            "ground": 0.74,
+            "scale": 1,
+            "facing": "right",
+            "tone": "accent",
+            "silhouette": false
+          }
+        ],
+        "props": [
+          {
+            "kind": "sun",
+            "x": 0.74,
+            "y": 0.26,
+            "scale": 1.3
+          },
+          {
+            "kind": "planet",
+            "x": 0.18,
+            "y": 0.2,
+            "scale": 0.7
+          }
+        ],
+        "fx": [
+          "lightRays",
+          "dust",
+          "vignette"
+        ],
+        "shots": [
+          {
+            "framing": "wide",
+            "camera": "pushIn",
+            "weight": 1
+          },
+          {
+            "framing": "close",
+            "camera": "handheld",
+            "weight": 1.2
+          }
+        ]
+      }
+    }
+  ],
+  "subtitles": [],
+  "watermark": {
+    "text": "DEMO FIKSI · FIXTURE LOKAL"
+  }
+}

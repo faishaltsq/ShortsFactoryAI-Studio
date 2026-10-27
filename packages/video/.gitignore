@@ -1,0 +1,4 @@
+# Render output and local scratch — never committed.
+.render-out/
+out/
+*.png.tmp

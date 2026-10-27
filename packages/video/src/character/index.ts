@@ -1,0 +1,11 @@
+export * from './ids';
+export * from './types';
+export * from './math';
+export * from './rig';
+export {POSES as POSE_LIBRARY, resolvePose} from './poses';
+export {EXPRESSIONS as EXPRESSION_LIBRARY, blendExpression, resolveExpression} from './expressions';
+export {GESTURES as GESTURE_LIBRARY, gestureFrame, gestureEnvelope, gesturePeakFrame} from './gestures';
+export * from './motion';
+export * from './validate';
+export * from './registry';
+export {CharacterFigure} from './render/CharacterFigure';

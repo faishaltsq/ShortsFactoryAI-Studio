@@ -49,17 +49,26 @@ def extract_json(text: str) -> dict[str, Any]:
     Handles the three shapes models actually emit: bare JSON, a fenced block, and prose with a JSON
     object embedded. It does not attempt to repair malformed JSON — a repair guess is how a field
     silently becomes the wrong value.
+    # type-note: non-dict JSON (e.g. a bare list) in a fenced block now falls through to the
+    # brace scan / ModelOutputError instead of being returned; dict return type is now enforced.
     """
     candidate = text.strip()
     if candidate.startswith("{"):
+        parsed: dict[str, Any] | None = None
         try:
-            return json.loads(candidate)
+            candidate_json = json.loads(candidate)
+            if isinstance(candidate_json, dict):
+                parsed = candidate_json
         except json.JSONDecodeError:
             pass
+        if parsed is not None:
+            return parsed
     fenced = _JSON_BLOCK.search(text)
     if fenced:
         try:
-            return json.loads(fenced.group(1).strip())
+            fenced_json = json.loads(fenced.group(1).strip())
+            if isinstance(fenced_json, dict):
+                return fenced_json
         except json.JSONDecodeError:
             pass
     start = text.find("{")
@@ -86,7 +95,9 @@ def extract_json(text: str) -> dict[str, Any]:
                 depth -= 1
                 if depth == 0:
                     try:
-                        return json.loads(text[start : index + 1])
+                        inner_json = json.loads(text[start : index + 1])
+                        if isinstance(inner_json, dict):
+                            return inner_json
                     except json.JSONDecodeError:
                         break
     raise ModelOutputError(

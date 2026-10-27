@@ -12,6 +12,7 @@ end to end in mock mode with no credential.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from ..agents import CallContext, ModelOutputError
@@ -22,7 +23,7 @@ from ..providers.base import Capability, CapabilityMismatch, NoProviderAvailable
 from ..providers.resolve import Binding, resolve_call
 from ..providers.usage import RecordingProvider
 from ..security.redact import redact
-from .jobstore import JobStore
+from .jobstore import JobRecord, JobStore
 from .runner import Stage, StageError, StageOutcome
 
 #: How many times the creative director may send a script back. A revision loop with no ceiling is
@@ -34,7 +35,7 @@ def mock_pipeline_supported() -> bool:
     return True
 
 
-def _emit(state, job_id: str, stage: str, event_type: str, description: str,
+def _emit(state: Any, job_id: str, stage: str, event_type: str, description: str,
           *, agent: str | None = None, progress: float | None = None,
           model: str | None = None) -> None:
     """Emit an event attributed to the agent that is actually doing the work.
@@ -55,7 +56,7 @@ def _emit(state, job_id: str, stage: str, event_type: str, description: str,
     )
 
 
-def _context(state, job, agent_name: str) -> CallContext:
+def _context(state: Any, job: JobRecord, agent_name: str) -> CallContext:
     """Resolve the agent's provider, honouring its binding and the job's mode."""
     from ..providers.registry import ProviderRegistry  # noqa: F401 - typing clarity
 
@@ -88,21 +89,23 @@ def _context(state, job, agent_name: str) -> CallContext:
     return CallContext(call=call, provider=recorder, job_id=job.id)
 
 
-def _primary_for(state, agent: str) -> str | None:
+def _primary_for(state: Any, agent: str) -> str | None:
     override = getattr(state, "bindings", {}).get(agent) if hasattr(state, "bindings") else None
     if override:
-        return override.get("primary")
+        primary: object = override.get("primary")
+        return primary if isinstance(primary, str) else None
     for spec in state.registry.enabled():
         if spec.transport != "mock":
-            return spec.id
+            spec_id: object = spec.id
+            return spec_id if isinstance(spec_id, str) else None
     return "mock" if state.registry.specs.get("mock") else None
 
 
-def _fallback_for(state, agent: str) -> list[str]:
+def _fallback_for(state: Any, agent: str) -> list[str]:
     return []
 
 
-def _agent_stage(state, *, agent_name: str, stage_state: JobState, produces: str,
+def _agent_stage(state: Any, *, agent_name: str, stage_state: JobState, produces: str,
                  task: str, prompt_kwargs: dict[str, Any], contract: Any) -> Stage:
     """Build a stage that runs one agent and writes one validated artifact."""
 
@@ -140,8 +143,13 @@ def _agent_stage(state, *, agent_name: str, stage_state: JobState, produces: str
     return Stage(name=agent_name, state=stage_state, produces=(produces,), run=run)
 
 
-def build_stages(state, job_id: str) -> list[Stage]:
-    """The Phase 1 chain for one job. Prompts are assembled from the job payload and artifacts."""
+def build_stages(state: Any, job_id: str) -> list[Stage]:
+    """The chain for one job. Prompts are assembled from the job payload and artifacts.
+
+    Phase 1 ends at ``STORYBOARD_READY``. The render stages are appended only when the job
+    payload asks for a video (``render_video: True``), so the agent-only chain stays the default
+    and no test needs a Node toolchain.
+    """
     store = state.store
     job = store.get(job_id)
     payload = job.payload
@@ -169,7 +177,16 @@ def build_stages(state, job_id: str) -> list[Stage]:
     def storyboard_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
         return {"script": store.read_artifact(job_id, "script.json"), "fps": 30}
 
-    return [
+    def metadata_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
+        # MetadataAgent reads the script; the topic and language come from the job payload, so the
+        # title is written in the video's language rather than the operator's.
+        return {
+            "script": store.read_artifact(job_id, "script.json"),
+            "topic": topic,
+            "language": language,
+        }
+
+    stages = [
         _dynamic_stage(
             state,
             agent_name="ResearchAgent",
@@ -210,11 +227,70 @@ def build_stages(state, job_id: str) -> list[Stage]:
             task="storyboard",
             kwargs_fn=storyboard_prompt,
         ),
+        # Metadata is derived from the script, so it runs after the storyboard and before any
+        # render. It targets STORYBOARD_READY because no metadata-specific state exists in the
+        # allow-list; ``run_stages`` skips a transition whose target is the current state, so this
+        # is a no-op rather than an illegal edge.
+        _dynamic_stage(
+            state,
+            agent_name="MetadataAgent",
+            stage_state=JobState.STORYBOARD_READY,
+            produces="metadata.json",
+            task="metadata",
+            kwargs_fn=metadata_prompt,
+        ),
+    ]
+
+    if payload.get("render_video") is True:
+        stages.extend(_render_stages(state, renderer=payload.get("renderer", "remotion")))
+    return stages
+
+
+def _video_dir() -> Any:
+    """``packages/video`` at the repository root. No absolute path is hardcoded."""
+    from pathlib import Path
+
+    return Path(__file__).resolve().parents[3] / "packages" / "video"
+
+
+def _render_stages(state: Any, *, renderer: str = "remotion") -> list[Stage]:
+    """The local Phase 2 chain: assets, audio, render, technical QC, editorial QC, readiness.
+
+    Both QC gates are owned by ``QualityAgent`` because both answer questions about the same
+    file, but they are separate stages with separate artifacts: ``TECHNICAL_QC`` writes
+    ``technical-qc.json`` (every FR-7.1 measurement, including the detector runs) and
+    ``EDITORIAL_QC`` writes ``qc.json`` (FR-7.2 plus the visual pass) and
+    ``READY_FOR_APPROVAL`` writes ``readiness.json`` (the DirectorAgent gate, recomputed from the
+    files). Splitting the QA artifacts is what keeps ``qc.json`` from having to invent a visual
+    status before any vision provider has been consulted; splitting readiness from the editorial
+    verdict keeps the stage that scored the job from certifying its own score.
+
+    There is exactly one technical stage. The previous builder in ``media/render.py`` wrote
+    ``qc.json`` from an ffprobe-only check set before any detector ran; it is deleted.
+    """
+    from ..media.render import build_render_stage
+    from ..media.tts import build_asset_stage, build_audio_stage
+    from .editorial import (
+        build_editorial_qc_stage,
+        build_readiness_stage,
+        build_technical_qc_stage,
+    )
+
+    video_dir = _video_dir()
+    # The renderer is the job's choice and the stage refuses anything it does not know, so a typo
+    # in the payload cannot quietly render with the primary and record a different name.
+    return [
+        build_asset_stage(state, video_dir=video_dir),
+        build_audio_stage(state),
+        build_render_stage(state, video_dir=video_dir, renderer=renderer),
+        build_technical_qc_stage(state),
+        build_editorial_qc_stage(state),
+        build_readiness_stage(state),
     ]
 
 
-def _dynamic_stage(state, *, agent_name: str, stage_state: JobState, produces: str,
-                   task: str, kwargs_fn) -> Stage:
+def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produces: str,
+                   task: str, kwargs_fn: Callable[[JobStore, str], dict[str, Any]]) -> Stage:
     from ..agents.registry import AGENTS as _AGENTS
 
     contract = _AGENTS[agent_name](_null_context()).contract()
@@ -281,7 +357,7 @@ def _dynamic_stage(state, *, agent_name: str, stage_state: JobState, produces: s
     )
 
 
-def _review_type():
+def _review_type() -> type[Any]:
     from ..contracts import ReviewArtifact
 
     return ReviewArtifact

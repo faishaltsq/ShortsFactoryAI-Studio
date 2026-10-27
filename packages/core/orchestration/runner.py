@@ -7,8 +7,10 @@ naive loop does not:
    ``working`` phase at 100 %.
 2. **Writes the completion marker last**, so a crash between data and marker resumes rather than
    treating a partial stage as complete.
-3. **Checks lease ownership before and after every stage**, and never writes a state transition it
-   does not own.
+3. **Checks lease ownership before and after every stage**, renewing it first, and never writes a
+   state transition it does not own. Renewal is what keeps a legitimate long stage (a 70 s render
+   against a 120 s TTL, a 900 s render timeout) from aging its own lease out and being projected
+   as a dead worker.
 4. **Refuses to report success without a validated artifact.** The stage declares what it must
    produce; the runner verifies the file exists and parses before accepting ``ok``.
 """
@@ -80,6 +82,13 @@ class Stage:
     run: Callable[[JobStore, str], StageOutcome]
     contract: type[Artifact] | None = None
     contract_artifact: str = ""
+    #: Optional predicate ``(artifact, job_id) -> bool`` answering "does this artifact mean the
+    #: stage is done?". Defaults to ``None``, which keeps the original rule: a valid artifact is a
+    #: finished stage. It exists for stages whose artifact can record a *non-success* — a
+    #: publication that is ``uncertain`` validates, but reusing it would claim an upload that may
+    #: not have happened. The job id is passed because the predicate may need to recompute
+    #: something job-specific (an idempotency key) rather than read a flag.
+    done_when: Callable[[dict[str, Any], str], bool] | None = None
 
 
 def _now() -> str:
@@ -107,8 +116,21 @@ def run_stages(
     # A resume over a finished job must be a no-op, not an illegal transition. Stages whose
     # artifacts already validate are dropped from chain validation (they will report ``reused``),
     # and only the remaining work has to be reachable from the current state.
+    #
+    # The starting point is the last reused stage's state, not the stored state: reuse now
+    # advances the state, so a crash between "artifact written" and "transition" leaves the job
+    # behind its own artifacts. Validating from the stored state would refuse a chain that the
+    # loop is about to make legal.
+    stored = store.get(job_id).state
+    done = [stage for stage in stages if _is_done(store, job_id, stage)]
     pending = [stage for stage in stages if not _is_done(store, job_id, stage)]
-    _validate_chain(store.get(job_id).state, pending)
+    # Only move the starting point forward. A finished job re-run from the top has every stage
+    # done and must stay where it is; a crashed job whose last artifact outran its transition
+    # must be validated from that artifact's stage.
+    start = stored
+    if done and is_transition_allowed(stored, done[-1].state):
+        start = done[-1].state
+    _validate_chain(start, pending)
 
     for stage in stages:
         if cancel.is_cancelled():
@@ -117,15 +139,29 @@ def run_stages(
             store.transition(job_id, JobState.CANCELLED, detail="cancelled before " + stage.name)
             return report
 
-        if keeper is not None and not keeper.owns():
-            report["ok"] = False
-            report["stopped"] = "lease_lost"
-            report["detail"] = f"lease lost before {stage.name}"
-            return report
+        if keeper is not None:
+            if not keeper.renew():
+                report["ok"] = False
+                report["stopped"] = "lease_lost"
+                report["detail"] = f"lease lost before {stage.name}"
+                return report
 
-        # Reuse: every declared artifact exists and the contract validates.
+        # Reuse: every declared artifact exists, the contract validates, and the artifact says the
+        # stage actually succeeded (``done_when``).
         if stage.produces and all(store.has_artifact(job_id, name) for name in stage.produces):
-            if _validate_produced(store, job_id, stage) is None:
+            if _validate_produced(store, job_id, stage) is None and _artifact_says_done(
+                store, job_id, stage
+            ):
+                # The artifact was verified, so the stage really is done — the state must say so.
+                # Skipping the transition here left a crash between "artifact written" and
+                # "state advanced" unresumable: the next stage was no longer reachable.
+                #
+                # Only ever forward. A finished job re-run from the top has every stage done and
+                # already sits past all of them; transitioning to an earlier stage would be a
+                # rewind, and the allow-list refuses it — so it must not be attempted.
+                current = store.get(job_id).state
+                if current != stage.state and is_transition_allowed(current, stage.state):
+                    store.transition(job_id, stage.state, detail=f"{stage.name} reused")
                 report["stages"].append(
                     {"name": stage.name, "ok": True, "reused": True, "detail": "artifacts present"}
                 )
@@ -164,7 +200,7 @@ def run_stages(
                     retryable=False,
                 )
 
-            if keeper is not None and not keeper.owns():
+            if keeper is not None and not keeper.renew():
                 report["ok"] = False
                 report["stopped"] = "lease_lost"
                 return report
@@ -183,9 +219,18 @@ def run_stages(
                 )
             else:
                 store.set_error(job_id, f"{stage.name}: {outcome.detail}")
+                # ``capability`` and ``qa_blocked`` both need an operator decision, not a louder
+                # error: a configuration fix and a failed technical gate are not crashes.
+                # ``publication_uncertain`` and ``publication_key_mismatch`` are the same kind of
+                # thing: an upload whose outcome is unknown, or a record for different bytes,
+                # needs a human to reconcile it. ``FAILED`` would invite a retry, and a retry is
+                # the duplicate upload.
                 store.transition(
                     job_id,
-                    JobState.BLOCKED if outcome.error_code == "capability" else JobState.FAILED,
+                    JobState.BLOCKED
+                    if outcome.error_code
+                    in {"capability", "qa_blocked", "publication_uncertain", "publication_key_mismatch"}
+                    else JobState.FAILED,
                     detail=f"{stage.name} failed: {outcome.error_code} {outcome.detail}".strip(),
                 )
             report["ok"] = False
@@ -197,7 +242,7 @@ def run_stages(
         report["stages"].append(
             {"name": stage.name, "ok": True, "attempts": attempts, "detail": outcome.detail}
         )
-        if keeper is not None and not keeper.owns():
+        if keeper is not None and not keeper.renew():
             report["ok"] = False
             report["stopped"] = "lease_lost"
             return report
@@ -210,12 +255,36 @@ def run_stages(
 
 
 def _is_done(store: JobStore, job_id: str, stage: Stage) -> bool:
-    """A stage is done when every declared artifact exists and its contract validates."""
+    """A stage is done when every declared artifact exists and its contract validates.
+
+    ``stage.done_when`` narrows that: an artifact can validate and still not mean the stage
+    succeeded (a publication in ``uncertain`` phase is a valid artifact describing an unknown
+    outcome). Without the predicate such a stage would be reported ``reused``/``ok`` on the next
+    run, claiming work that may not have happened.
+    """
     if not stage.produces:
         return False
     if not all(store.has_artifact(job_id, name) for name in stage.produces):
         return False
-    return _validate_produced(store, job_id, stage) is None
+    if _validate_produced(store, job_id, stage) is not None:
+        return False
+    return _artifact_says_done(store, job_id, stage)
+
+
+def _artifact_says_done(store: JobStore, job_id: str, stage: Stage) -> bool:
+    """Apply ``done_when`` to the validated primary artifact. Default: any valid artifact is done."""
+    if stage.done_when is None:
+        return True
+    if not stage.contract_artifact:
+        return True
+    try:
+        payload = store.read_artifact(job_id, stage.contract_artifact)
+    except Exception:  # noqa: BLE001 - unreadable is not done
+        return False
+    try:
+        return bool(stage.done_when(payload, job_id))
+    except Exception:  # noqa: BLE001 - a predicate that cannot decide is not a completion
+        return False
 
 
 def _validate_chain(start: JobState, stages: list[Stage]) -> None:
