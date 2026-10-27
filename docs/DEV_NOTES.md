@@ -19,6 +19,11 @@ like a code bug.
   `window.getStaticCompositions is undefined`. A port that accepts a TCP connect is **not** free —
   probe with connect + `SO_EXCLUSIVEADDRUSE` bind.
 - `--props` must be an **absolute** path. A relative path fails silently as an empty render.
+- `remotion still`/`render` reuse a webpack cache under
+  `packages/video/node_modules/.cache/webpack`. A `src/**` edit normally invalidates it, but when a
+  run looks like it is ruling out everything else, clear it (`rm -rf
+  packages/video/node_modules/.cache/webpack`) before believing stale-bundle theories:
+  diagnosing it costs more than the rebundle it saves.
 - After `npm run build`, an already-running `next start` keeps serving the previous build's CSS
   chunks. Verify a CSS change by fetching the page, resolving the `_next/static/chunks/*.css` href
   and grepping it for the new rule; kill and restart the server if it is absent.

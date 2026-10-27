@@ -121,15 +121,21 @@ exits non-zero on any violation and removes its temporary data directory unless 
 - [x] Consume `camera` in every template. `Short.tsx` wraps every template in
       `DeclaredCameraScope`, which applies `declaredCameraAt` — the same transform
       `IllustratedStory` applies inline — so a declared push/pan/tilt/pull/orbit moves the frame in
-      all seven. Verified by `still-smoke` 7/7 at 1080×1920 after the wiring.
+      all seven. Standalone per-template compositions in `Root.tsx` get the same wrapper and re-base
+      the scene to `startFrame: 0`, mirroring what a cut does inside a `Sequence`.
+- [x] **Reach proven per template, not assumed:** `still-templates`
+      (`scripts/verify-template-stills.mjs`, wired into `check.ps1`/`check.sh` and skipped with
+      `-Quick`) renders each template twice through real Remotion — a `static` baseline and a
+      `push` at frame 30 — and asserts baseline 1080×1920 non-blank plus PSNR < 20 dB baseline vs
+      push. First run exposed the silent gap: five templates rendered push and baseline
+      byte-identical because the props scene kept its global `startFrame`, so the standalone scope
+      clamped the camera to identity. The re-base in `Root.tsx`/the script fixed it; measured reach
+      is 14.5–19.3 dB across all seven.
+      Verified by `still-smoke` 7/7 at 1080×1920 after the wiring.
       `motion` (beats) remains `IllustratedStory`-only: beats drive the character rig, and only
       that template has a rig. Text/prop templates have no subject for a beat to act on, and
       inventing one would be decoration, not direction.
       `CharacterReel` reads a `camera` field of its own, not the product one.
-      forwards `scene.camera` and the composition honours it (`camera.shot` sets base framing,
-      `camera.move` owns the transform); the other six templates still drive framing from the legacy
-      `data.shots[]` path and ignore `scene.camera` entirely. `CharacterReel` reads a `camera` field
-      of its own, not the product one.
 - [ ] Art kit (`Stage`, `Figure`, `Prop`, `Camera`, `Effects`, `palette`, `rng`) with `fit="box"` in
       panels (frame coordinates in a small container delete the element silently).
 - [ ] Character engine: rig, poses, expressions, motion presets, mouth sync.
@@ -215,8 +221,9 @@ each is deterministic within itself (60/60 identical framemd5 twice).
   gates and passes strict over `packages/core` (see the gate table). Any new module must keep it
   green — that is part of "done" from here on.
 - Per-scene cache is unimplemented; every render is a full re-render.
-- Only `IllustratedStory` consumes the declared camera/motion fields. The other six templates render
-  their content but ignore the authored camera and motion plan.
+- Only `IllustratedStory` consumes the declared motion fields. The other six templates honour the
+  authored `camera` (declared push/pan/tilt/pull reach the frame, proven per template by
+  `still-templates` at 14.5–19.3 dB) but have no character rig to perform beats on.
 
 Bang Motion **does** now burn subtitles (`_caption_markup` emits one `data-cue-start`/`data-cue-end`
 element per cue, shown for the half-open window `[startMs, endMs)`), and it **does** animate the

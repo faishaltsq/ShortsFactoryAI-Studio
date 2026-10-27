@@ -98,6 +98,11 @@ Invoke-Gate -Name 'still-smoke' -Command 'npm --prefix packages/video run still-
     New-Item -ItemType Directory -Path $out -Force | Out-Null
     npm --prefix packages/video run still-smoke -- $out
 }
+Invoke-Gate -Name 'template-stills' -Command 'npm --prefix packages/video run still-templates' -Skip $browserSkip -Action {
+    $out = Join-Path ([System.IO.Path]::GetTempPath()) ("shorts-template-stills-" + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $out -Force | Out-Null
+    npm --prefix packages/video run still-templates -- $out
+}
 Invoke-Gate -Name 'e2e' -Command 'npm --prefix apps/dashboard run test:e2e' -Skip $browserSkip -Action {
     npm --prefix apps/dashboard run test:e2e
 }

@@ -192,6 +192,7 @@ npm --prefix apps/dashboard run test:e2e
 npm --prefix packages/video run test:adapter        # product storyboard -> donor contract
 npm --prefix packages/video run test:render-props   # props resolution in calculateMetadata
 npm --prefix packages/video run still-smoke -- <abs-output-dir>   # 7 stills, needs a browser
+npm --prefix packages/video run still-templates -- <abs-output-dir>  # camera-reach stills x2 per template, needs a browser
 uv run python scripts/verify_video.py <job_id>       # media gate; --json for a machine gate
 uv run python scripts/scan_secrets.py                # secrets gate; 0 findings required
 uv run python scripts/export_schemas.py --check      # schema gate; no diff required

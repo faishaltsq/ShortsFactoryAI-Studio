@@ -58,6 +58,7 @@ browser_skip=""
 [ "$quick" -eq 1 ] && browser_skip="skipped by --quick: needs a browser"
 
 gate still-smoke 'npm --prefix packages/video run still-smoke -- "$(mktemp -d)"' "$browser_skip"
+gate template-stills 'npm --prefix packages/video run still-templates -- "$(mktemp -d)"' "$browser_skip"
 gate e2e         "npm --prefix apps/dashboard run test:e2e" "$browser_skip"
 
 gate mypy        "uv run mypy packages/core --strict"

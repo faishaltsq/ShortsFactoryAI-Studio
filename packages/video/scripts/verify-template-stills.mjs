@@ -1,0 +1,147 @@
+/**
+ * Per-template renderer still proof (G10).
+ *
+ * Usage: node scripts/verify-template-stills.mjs <absolute-output-dir>
+ *
+ * Renders one still per template composition through the real Remotion CLI and proves, per
+ * template:
+ *
+ * 1. The still is a real 1080x1920 PNG (composition mounts and draws at all).
+ * 2. The narrative safe area is not blank — each template paints its own content, so a template
+ *    that stopped rendering (a broken import, a throw in `validateSceneData`) fails here instead
+ *    of shipping an empty segment.
+ * 3. A declared `push` camera changes the frame: the declared camera must reach every template
+ *    through `DeclaredCameraScope` (short of `IllustratedStory`, which owns its legacy path and
+ *    is already covered by `verify-camera-beats.mjs`).
+ *
+ * Scenes come from `fixtures/all-templates.json`, the same fixture `Root.tsx` falls back to, so
+ * each template renders with data that validates under its own branch of `validateSceneData`.
+ *
+ * Exits non-zero on the first template that fails any measurement.
+ */
+
+import {register} from 'node:module';
+import {spawnSync} from 'node:child_process';
+import {mkdirSync, readFileSync, writeFileSync} from 'node:fs';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
+import {freeRemotionPort} from './free-port.mjs';
+
+register('./ts-resolve-hook.mjs', import.meta.url);
+
+const videoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const outDir = process.argv[2];
+if (!outDir || !path.isAbsolute(outDir)) throw new Error('Pass an absolute output directory');
+mkdirSync(outDir, {recursive: true});
+
+const cli = path.join(videoDir, 'node_modules/@remotion/cli/remotion-cli.js');
+const port = await freeRemotionPort();
+
+const fixture = JSON.parse(readFileSync(path.join(videoDir, 'fixtures/all-templates.json'), 'utf8'));
+
+const TEMPLATE_IDS = [
+  'KineticTypography',
+  'MotionComic',
+  'EducationalExplainer',
+  'HistoricalTimeline',
+  'ParallaxStory',
+  'InfographicMotion',
+  'IllustratedStory',
+];
+
+/** Template-specific declared cameras. `static` renders untouched; `push` must move pixels. */
+const CAMERA = {
+  static: {shot: 'wide', move: 'static', amplitude: 0.1, ease: 'power2.out'},
+  push: {shot: 'wide', move: 'push', amplitude: 0.4, ease: 'power2.out', target: 'title'},
+};
+
+const templateScene = (template) => {
+  const scene = structuredClone(fixture.scenes.find((s) => s.template === template));
+  if (!scene) throw new Error(`fixture has no scene for ${template}`);
+  // Standalone compositions run a scene-local timeline: `Root.tsx` re-bases the scene to frame 0
+  // the same way a cut re-bases it inside a `Sequence`. The props file must carry the re-based
+  // scene, or `DeclaredCameraScope` computes `sceneFrame = 30 - startFrame < 0` and clamps the
+  // camera to identity — a still that silently proves nothing.
+  scene.startFrame = 0;
+  // The push aims at the scene's first text element, so the anchor resolution inside
+  // `declaredCameraAt` exercises the real target path instead of the centered default.
+  scene.camera = {...CAMERA.push, target: scene.text?.[0]?.id};
+  return scene;
+};
+
+const still = (name, compositionId, scene) => {
+  const props = path.join(outDir, `${name}-props.json`);
+  const png = path.join(outDir, `${name}.png`);
+  writeFileSync(
+    props,
+    JSON.stringify({scene, theme: fixture.theme, watermark: fixture.watermark?.text}),
+  );
+  // Standalone template compositions run a scene-local timeline (`Root.tsx` re-bases the scene to
+  // frame 0), so frame 30 sits inside every 150-frame scene.
+  const frame = 30;
+  const result = spawnSync(
+    process.execPath,
+    [cli, 'still', 'src/index.ts', compositionId, png, `--props=${props}`, `--frame=${frame}`,
+      '--overwrite', '--log=error', `--port=${port}`],
+    {cwd: videoDir, encoding: 'utf8', timeout: 240000},
+  );
+  if (result.status !== 0) throw new Error(`${name}: ${result.stderr || result.stdout}`);
+  const bytes = readFileSync(png);
+  if (bytes.toString('hex', 0, 8) !== '89504e470d0a1a0a') throw new Error(`${name}: not a PNG`);
+  if (bytes.readUInt32BE(16) !== 1080 || bytes.readUInt32BE(20) !== 1920) throw new Error(`${name}: not 1080x1920`);
+  return png;
+};
+
+/** Mean luma of the central band via ffmpeg signalstats — a near-black band means "did not draw". */
+const meanLuma = (png) => {
+  const result = spawnSync(
+    'ffmpeg',
+    ['-hide_banner', '-nostats', '-i', png, '-vf', 'crop=880:900:100:510,signalstats,metadata=print:key=lavfi.signalstats.YAVG',
+      '-f', 'null', '-'],
+    {encoding: 'utf8', timeout: 60000},
+  );
+  if (result.status !== 0) throw new Error(`ffmpeg failed: ${result.stderr.slice(-600)}`);
+  const match = /YAVG=([\d.]+)/.exec(result.stderr);
+  if (!match) throw new Error('signalstats produced no YAVG');
+  return Number(match[1]);
+};
+
+/** Byte-difference ratio between two PNGs of the same frame count, downscaled to blur codec noise. */
+const frameDifference = (pngA, pngB) => {
+  const result = spawnSync(
+    'ffmpeg',
+    ['-hide_banner', '-nostats', '-i', pngA, '-i', pngB,
+      '-filter_complex', '[0:v]scale=96:170[a];[1:v]scale=96:170[b];[a][b]psnr', '-f', 'null', '-'],
+    {encoding: 'utf8', timeout: 60000},
+  );
+  const match = /average:([\d.]+|inf)/.exec(result.stderr);
+  if (!match) throw new Error(`psnr produced no average: ${result.stderr.slice(-400)}`);
+  return match[1] === 'inf' ? Number.POSITIVE_INFINITY : Number(match[1]);
+};
+
+const failures = [];
+for (const template of TEMPLATE_IDS) {
+  try {
+    const scene = templateScene(template);
+    scene.camera = CAMERA.static;
+    const baseline = still(`${template}-base`, template, scene);
+    const luma = meanLuma(baseline);
+    if (luma < 4) throw new Error(`safe area is blank (mean luma ${luma.toFixed(2)})`);
+
+    // Camera reach: a push against the same scene must move the picture. The comparison stays
+    // inside one template, so template-specific styling cannot confound it.
+    const pushed = still(`${template}-push`, template, templateScene(template));
+    const psnr = frameDifference(baseline, pushed);
+    if (psnr < 6) throw new Error(`declared camera did not reach this template (PSNR ${psnr.toFixed(1)} dB)`);
+
+    console.log(`${template}: luma=${luma.toFixed(1)} push-PSNR=${psnr === Number.POSITIVE_INFINITY ? 'inf' : psnr.toFixed(1)}dB`);
+  } catch (error) {
+    failures.push(`${template}: ${error.message}`);
+  }
+}
+
+if (failures.length > 0) {
+  console.error(`FAILURES:\n${failures.join('\n')}`);
+  process.exit(1);
+}
+console.log('all templates render and answer the declared camera');

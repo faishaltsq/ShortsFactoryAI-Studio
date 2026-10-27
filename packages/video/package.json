@@ -11,6 +11,7 @@
     "test:adapter": "node scripts/test-adapter.mjs",
     "test:render-props": "node scripts/test-render-props.mjs",
     "still-smoke": "node scripts/still-smoke.mjs",
+    "still-templates": "node scripts/verify-template-stills.mjs",
     "build": "remotion bundle src/index.ts",
     "test:camera-beats": "node scripts/verify-camera-beats.mjs",
     "test:render-beats": "node scripts/verify-render-beats.mjs",
