@@ -8,16 +8,47 @@ safe later, so the design does not have to change when the worker becomes its ow
 from __future__ import annotations
 
 import threading
+from pathlib import Path
 from typing import Any
 
+from packages.core.contracts.artifacts import (
+    AudioArtifact,
+    QaArtifact,
+    ReadinessArtifact,
+    RenderArtifact,
+    StoryboardArtifact,
+    TechnicalQaArtifact,
+)
+from packages.core.contracts.base import ArtifactValidationError, validate_artifact
 from packages.core.contracts.state import JobState
+from packages.core.media.qc import sha256_file
 from packages.core.observability.events import STAGE_AGENTS
+from packages.core.orchestration.editorial import compute_inputs_hash
 from packages.core.orchestration.jobstore import JobRecord
-from packages.core.orchestration.leases import LeaseKeeper, LeaseLost
-from packages.core.orchestration.pipeline import build_stages, mock_pipeline_supported
+from packages.core.orchestration.leases import LeaseKeeper, LeaseLost, unexpired_jobs
+from packages.core.orchestration.pipeline import _video_dir, build_stages, mock_pipeline_supported
 from packages.core.orchestration.runner import run_stages
+from packages.core.publish.stage import build_publish_stage
+from packages.core.publish.thumbnail import build_thumbnail_stage
+from packages.core.publish.transport import PublicationTransport
 
 from .state import AppState
+
+
+def _validated(store: Any, job_id: str, name: str, model: Any) -> Any:
+    """Read and validate one artifact, or ``None``.
+
+    ``None`` means "missing or invalid", and both are blockers. A hand-edited artifact that no
+    longer satisfies its contract must produce a refusal, not a 500 and not a pass.
+    """
+    try:
+        payload = store.read_artifact(job_id, name)
+    except Exception:  # noqa: BLE001 - a missing artifact is a blocked gate
+        return None
+    try:
+        return validate_artifact(model, payload)
+    except ArtifactValidationError:
+        return None
 
 
 class ApprovalRefused(RuntimeError):
@@ -65,20 +96,22 @@ class JobService:
         return payload
 
     def live_agents(self) -> set[str]:
-        """Agents with a job currently running in this process.
+        """Agents that hold a live lease, derived from the persisted lease rows.
 
-        Staleness is decided here, not in the browser: a character whose worker is gone reads as
-        waiting even if its last event said working.
+        A thread object in ``running`` only says a thread exists; it does not say the thread is
+        alive, and a wedged worker would otherwise read ``working`` until the age fallback fired.
+        The lease row is the authority (ADR-008, FR-9.4): the worker renews it, so the absence of
+        a renewed lease means the worker stopped. Staleness is decided here, not in the browser.
         """
-        live: set[str] = set()
         with self.state.lock:
             running = list(self.state.running)
-        for job_id in running:
-            try:
-                job = self.state.store.get(job_id)
-            except KeyError:
-                continue
-            agent = STAGE_AGENTS.get(job.state.value)
+        if not running:
+            return set()
+        jobs = {job_id: self.state.store.get(job_id) for job_id in running}
+        unexpired = unexpired_jobs(self.state.store.db_path, list(jobs))
+        live: set[str] = set()
+        for job_id in unexpired:
+            agent = STAGE_AGENTS.get(jobs[job_id].state.value)
             if agent:
                 live.add(agent)
         return live
@@ -161,6 +194,65 @@ class JobService:
                 self.state.running.pop(job_id, None)
                 self.state.cancel_flags.pop(job_id, None)
 
+    # -- publication -----------------------------------------------------------------------
+    def publish(self, job_id: str, transport: PublicationTransport) -> dict[str, Any]:
+        """Run the ``PRIVATE_UPLOAD`` stage for one approved job.
+
+        Deliberately a service method and not a route: the route belongs with the rest of the
+        publishing surface (connect / upload / schedule / reconcile), which is a separate slice.
+        Everything the route would do is here, so the route is a thin wrapper when it lands:
+        ``POST /api/jobs/{job_id}/publish`` with the transport resolved from operator config.
+
+        Three refusals, in order, before any transport call:
+
+        1. the job must be ``APPROVED`` — a blocked job has to go back through the gate, because
+           the store refuses ``BLOCKED -> APPROVED`` and this method refuses anything not approved;
+        2. the job must be ``provider_mode == "live"`` — a mock job's video is fabricated, and
+           ``publishable`` is false for it at the approval gate for exactly that reason. The same
+           check is reused here rather than restated, so the two cannot drift;
+        3. the approval must still be ``publishable`` (recomputed, not read from a flag).
+        """
+        job = self.state.store.get(job_id)
+        if job.state is not JobState.APPROVED:
+            raise self.ApprovalRefused(
+                "publishing is only possible at APPROVED, "
+                f"job is {job.state.value}"
+            )
+        if job.is_mock:
+            raise self.ApprovalRefused(
+                "a mock job can never be published: provider_mode is 'mock', so "
+                "publishable is false. Create the job with provider_mode 'live'."
+            )
+        checks = self._approval_checks(job)
+        if not checks["publishable"]:
+            failed = sorted(name for name, ok in checks.items() if not ok)
+            raise self.ApprovalRefused(
+                "publishing refused: the approval is no longer publishable ("
+                + ", ".join(failed)
+                + "). Re-approve the job after fixing the failing evidence."
+            )
+        keeper = LeaseKeeper(self.state.store.db_path, owner=f"api-publish-{id(self)}")
+        try:
+            keeper.acquire(job_id)
+        except LeaseLost as exc:
+            return {"job_id": job_id, "started": False, "detail": f"lease unavailable: {exc.reason}"}
+        try:
+            # The thumbnail belongs to this flow, not the pipeline chain: it is uploaded with the
+            # video and must exist and validate before the insert. Same lease, same run, so a
+            # crash between the two stages resumes both under the runner's reuse rules.
+            thumbnail = build_thumbnail_stage(self.state, video_dir=_video_dir())
+            stage = build_publish_stage(self.state, transport)
+            report = run_stages(
+                store=self.state.store,
+                job_id=job_id,
+                stages=[thumbnail, stage],
+                keeper=keeper,
+                cancel=None,
+            )
+        finally:
+            keeper.release()
+        return {"job_id": job_id, **report}
+
     # -- approval --------------------------------------------------------------------------
     def approve(self, job_id: str, operator: str) -> dict[str, Any]:
         job = self.state.store.get(job_id)
@@ -172,6 +264,10 @@ class JobService:
         failed = [name for name, ok in checks.items() if not ok]
         if failed:
             raise self.ApprovalRefused("gate checks failed: " + ", ".join(failed))
+        # The render this decision is about. ``_approval_checks`` already recomputed the file's
+        # digest and refused a mismatch, so this is the same value it validated — and recording it
+        # is what lets ``JobStore.transition`` refuse a stale approval later.
+        render = _validated(self.state.store, job_id, "render.json", RenderArtifact)
         artifact = {
             "schema_version": 1,
             "decision": "approved",
@@ -179,6 +275,7 @@ class JobService:
             "reason": None,
             "checks": checks,
             "decided_at": job.updated_at,
+            "render_sha256": render.sha256 if render is not None else None,
         }
         self.state.store.write_artifact(job_id, "approval.json", artifact)
         self.state.store.transition(job_id, JobState.APPROVED, detail=f"approved by {operator}")
@@ -203,28 +300,77 @@ class JobService:
         return {"job_id": job_id, "decision": "rejected", "reason": reason}
 
     def _approval_checks(self, job: JobRecord) -> dict[str, bool]:
-        """Server-side gate. The browser cannot assert any of this."""
-        has_video = self.state.store.has_artifact(job.id, "output.mp4")
-        render_ok = False
-        if self.state.store.has_artifact(job.id, "render.json"):
-            try:
-                render = self.state.store.read_artifact(job.id, "render.json")
-                render_ok = bool(render.get("sha256")) and bool(render.get("frames"))
-            except Exception:  # noqa: BLE001
-                render_ok = False
-        qc_ok = False
-        if self.state.store.has_artifact(job.id, "qc.json"):
-            try:
-                qc = self.state.store.read_artifact(job.id, "qc.json")
-                qc_ok = bool(qc.get("technical", {}).get("passed"))
-            except Exception:  # noqa: BLE001
-                qc_ok = False
+        """Server-side gate. The browser cannot assert any of this.
+
+        Every check either recomputes a fact or validates an artifact. Reading a ``passed`` flag
+        out of a file and trusting it is what let the previous gate approve a job whose editorial
+        and visual QC had never run: ``qc.json`` claimed ``technical.passed: true`` while carrying
+        no detector result, and nothing looked at the bytes the hash described.
+        """
+        store = self.state.store
+        job_dir = Path(store.job_dir(job.id))
+        video_path = job_dir / "output.mp4"
+        has_video = video_path.is_file()
+
+        render = _validated(store, job.id, "render.json", RenderArtifact)
+        technical = _validated(store, job.id, "technical-qc.json", TechnicalQaArtifact)
+        qa = _validated(store, job.id, "qc.json", QaArtifact)
+        readiness = _validated(store, job.id, "readiness.json", ReadinessArtifact)
+
+        render_ok = render is not None
+        # The hash is recomputed from the file on disk. A render.json that names a digest the
+        # bytes no longer have describes a different video.
+        checksum_ok = bool(
+            has_video
+            and render is not None
+            and render.sha256 == sha256_file(video_path)
+        )
+        technical_ok = technical is not None and technical.passed
+        editorial_ok = qa is not None
+        creative_ok = qa is not None and bool(qa.creative.get("passed"))
+        visual_status = str(qa.visual.get("status")) if qa is not None else "missing"
+        visual_ok = visual_status != "failed"
+
+        # Readiness must be ready *and* bound to the same inputs this gate just measured. A
+        # verdict computed against other bytes is not a verdict about these bytes.
+        readiness_ok = False
+        if readiness is not None and readiness.ready and render is not None:
+            narration_ms = 0.0
+            audio = _validated(store, job.id, "audio.json", AudioArtifact)
+            if audio is not None:
+                narration_ms = float(audio.narration.get("durationMs") or 0)
+            storyboard = _validated(store, job.id, "storyboard.json", StoryboardArtifact)
+            if storyboard is not None:
+                expected = compute_inputs_hash(
+                    render_sha256=render.sha256,
+                    narration_ms=narration_ms,
+                    storyboard=storyboard.model_dump(mode="json"),
+                )
+                readiness_ok = readiness.inputs_sha256 == expected
+                if technical is not None:
+                    readiness_ok = readiness_ok and technical.inputs_sha256 == expected
+
         # A mock job can never be publishable, however clean its artifacts look.
-        publishable = (not job.is_mock) and has_video and render_ok and qc_ok
+        publishable = bool(
+            (not job.is_mock)
+            and has_video
+            and render_ok
+            and checksum_ok
+            and technical_ok
+            and editorial_ok
+            and creative_ok
+            and visual_ok
+            and readiness_ok
+        )
         return {
             "video_present": has_video,
             "render_valid": render_ok,
-            "qc_passed": qc_ok,
+            "checksum_valid": checksum_ok,
+            "technical_passed": technical_ok,
+            "editorial_present": editorial_ok,
+            "creative_passed": creative_ok,
+            "visual_not_failed": visual_ok,
+            "readiness_bound": readiness_ok,
             "publishable": publishable,
         }
 
