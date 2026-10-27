@@ -260,5 +260,33 @@ check(afterExit.opacity === 0, `the exit beat fades to nothing (${afterExit.opac
 check(planBeats(scene(undefined), actors).cues.length === 0, 'a scene with no motion plans nothing');
 check(planBeats(acted, []).cues.length === 0, 'a scene with no actors plans nothing');
 
+// --- MotionComic: panels address as synthetic actors ----------------------------------------
+// MotionComic has no `data.actors`; its figures are one per panel. The composition synthesizes
+// panel actors in panel order (`PANEL_POSES[i]`), so a beat addressed to `actor:<panel>` must
+// land on that panel's figure with the composition's own opening pose as the travel origin.
+const panelActors = [
+  {pose: 'point', x: 0.5, ground: 0.96, scale: 0.55, facing: 'right', tone: 'accent', silhouette: false},
+  {pose: 'shrug', x: 0.5, ground: 0.96, scale: 0.55, facing: 'right', tone: 'accent', silhouette: false},
+  {pose: 'stand', x: 0.5, ground: 0.96, scale: 0.55, facing: 'right', tone: 'accent', silhouette: false},
+];
+const comic = scene(
+  {energy: 0.7, continuity: 'cut', beats: [{atFrame: 40, kind: 'action', subject: 'actor:1'}]},
+  {template: 'MotionComic'},
+);
+const comicPlan = planBeats(comic, panelActors);
+check(comicPlan.cues.length === 1, `the panel beat plans one cue (${comicPlan.cues.length})`);
+check(comicPlan.cues[0].actorIndex === 1, `actor:1 is panel 2's figure (${comicPlan.cues[0].actorIndex})`);
+const shrugBefore = performanceAt(comicPlan, 1, 39, panelActors[1], comic.motion.energy);
+const pointAfter = performanceAt(comicPlan, 1, 40 + POSE_BLEND_FRAMES, panelActors[1], comic.motion.energy);
+check(shrugBefore.actor.pose === 'shrug', `before the beat panel 2 keeps its base pose (${shrugBefore.actor.pose})`);
+check(
+  pointAfter.actor.pose === 'point' && pointAfter.actor.gesture === 'pointForward',
+  `the action beat moves the panel figure (${pointAfter.actor.pose}/${pointAfter.actor.gesture})`,
+);
+check(
+  planBeats(comic, []).cues.length === 0,
+  'a MotionComic scene with zero panels still plans nothing',
+);
+
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} motion beats: ${failures} failure(s)`);
 process.exit(failures === 0 ? 0 : 1);
