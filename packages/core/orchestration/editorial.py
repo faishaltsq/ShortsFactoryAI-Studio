@@ -47,7 +47,7 @@ from ..media.qc import (
 )
 from ..providers.base import Capability, CapabilityMismatch, Provider, ResolvedCall
 from ..security.redact import redact
-from .runner import Stage, StageError, StageOutcome
+from .runner import Stage, StageContext, StageError, StageOutcome
 
 QA_NAME = "qc.json"
 TECHNICAL_NAME = "technical-qc.json"
@@ -252,9 +252,9 @@ def build_editorial_qc_stage(state: Any) -> Stage:
     Not wired into ``pipeline._render_stages`` yet — that file is owned by the audio work. The
     builder is complete so the wiring is a one-line append when the file is free.
     """
-    store = state.store
 
-    def run(_store: Any, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, job_id = ctx.store, ctx.job_id
         from .pipeline import _emit  # local import: pipeline imports runner
 
         _emit(state, job_id, JobState.EDITORIAL_QC.value, "stage_started", "QualityAgent mulai",
@@ -287,7 +287,7 @@ def build_editorial_qc_stage(state: Any) -> Stage:
                 history=_history(store, job_id),
             ).as_creative()
 
-            sheet_path = job_dir / SHEET_NAME
+            sheet_path = ctx.alloc(SHEET_NAME)
             try:
                 _, frames_extracted = extract_contact_sheet(video, {"storyboard": props}, sheet_path)
             except RuntimeError as exc:
@@ -341,7 +341,7 @@ def build_editorial_qc_stage(state: Any) -> Stage:
             qa = build_qa_artifact(
                 technical=technical, creative=creative, visual=visual, repairs=repairs
             )
-            store.write_artifact(job_id, QA_NAME, qa)
+            ctx.write_artifact(QA_NAME, qa)
         except StageError:
             raise
         except Exception as exc:  # noqa: BLE001 - any failure here is a QC failure, not a crash
@@ -363,6 +363,8 @@ def build_editorial_qc_stage(state: Any) -> Stage:
             agent=QC_AGENT,
             progress=1.0,
         )
+        if sheet_path.is_file():
+            ctx.stage_file(SHEET_NAME, sheet_path)
         return StageOutcome(ok=True, artifacts=[QA_NAME, SHEET_NAME])
 
     return Stage(
@@ -384,9 +386,9 @@ def build_technical_qc_stage(state: Any) -> Stage:
     Not wired into ``pipeline._render_stages`` yet — that file is owned by the in-flight audio
     work. The builder is complete and tested, so wiring is a one-line append.
     """
-    store = state.store
 
-    def run(_store: Any, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, job_id = ctx.store, ctx.job_id
         from .pipeline import _emit  # local import: pipeline imports runner
 
         _emit(state, job_id, JobState.TECHNICAL_QC.value, "stage_started", "QualityAgent mulai",
@@ -433,7 +435,7 @@ def build_technical_qc_stage(state: Any) -> Stage:
             storyboard=store.read_artifact(job_id, "storyboard.json"),
         )
         validate_artifact(TechnicalQaArtifact, payload)
-        store.write_artifact(job_id, TECHNICAL_NAME, payload)
+        ctx.write_artifact(TECHNICAL_NAME, payload)
 
         if not verdict.passed:
             reason = "technical QC failed: " + ", ".join(verdict.failed)
@@ -479,9 +481,9 @@ def build_readiness_stage(state: Any) -> Stage:
       safe to approve. Recomputing from the files is the cheapest second opinion available, and
       the approval gate then recomputes a third time.
     """
-    store = state.store
 
-    def run(_store: Any, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, job_id = ctx.store, ctx.job_id
         from .pipeline import _emit  # local import: pipeline imports runner
 
         _emit(state, job_id, JobState.READY_FOR_APPROVAL.value, "stage_started",
@@ -531,7 +533,7 @@ def build_readiness_stage(state: Any) -> Stage:
             readiness["blockers"] = sorted(set(readiness["blockers"]) | {"inputs_drifted"})
             readiness["ready"] = False
             readiness["reason"] = "blocked: " + ", ".join(readiness["blockers"])
-        store.write_artifact(job_id, READINESS_NAME, readiness)
+        ctx.write_artifact(READINESS_NAME, readiness)
 
         if not readiness["ready"]:
             reason = "not ready for approval: " + ", ".join(readiness["blockers"])

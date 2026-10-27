@@ -247,7 +247,7 @@ class JobService:
             # The thumbnail belongs to this flow, not the pipeline chain: it is uploaded with the
             # video and must exist and validate before the insert. Same lease, same run, so a
             # crash between the two stages resumes both under the runner's reuse rules.
-            thumbnail = build_thumbnail_stage(self.state, video_dir=_video_dir(), token=keeper.token)
+            thumbnail = build_thumbnail_stage(self.state, video_dir=_video_dir())
             stage = build_publish_stage(self.state, transport)
             report = run_stages(
                 store=self.state.store,

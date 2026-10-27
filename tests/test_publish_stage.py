@@ -7,7 +7,9 @@ first result cannot see it.
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -292,7 +294,7 @@ def test_a_pre_flight_refusal_is_marked_retryable(store):
     stage = build_publish_stage(state, transport)
 
     with pytest.raises(StageError) as exc:
-        stage.run(store, job_id)
+        stage.run(stage_ctx(store, job_id))
     assert exc.value.retryable is True, "a refusal before send is safe to retry"
     assert not store.has_artifact(job_id, PUBLICATION_NAME)
 
@@ -807,13 +809,27 @@ def test_the_thumbnail_stage_records_a_sha256_in_metadata(tmp_path, monkeypatch)
 
     monkeypatch.setattr(thumb_mod, "render_storyboard", fake_render)
     stage = thumb_mod.build_thumbnail_stage(state, video_dir=tmp_path)
-    outcome = stage.run(state.store, job.id)
+    ctx = stage_ctx(state.store, job.id, tmp_path)
+    outcome = stage.run(ctx)
 
     assert outcome.ok is True, outcome.detail
     assert calls and calls[0]["composition"] == "Thumbnail"
-    assert (state.store.job_dir(job.id) / "thumb.png").is_file()
-
-    metadata = state.store.read_artifact(job.id, "metadata.json")
+    # A direct stage.run stops at staging; promotion is the runner's fenced step. The pairing is
+    # what matters here: the staged png exists and the staged metadata names it with a digest.
+    assert (ctx.staging / "thumb.png").is_file()
+    metadata = dict(ctx.json_pending)["metadata.json"]
     thumb = metadata["thumbnail"]
     assert thumb["path"] == "thumb.png"
     assert len(thumb["sha256"]) == 64
+
+
+def stage_ctx(store, job_id, tmp: Path | None = None) -> Any:
+    """A stage context for direct stage.run() calls outside run_stages."""
+    from packages.core.orchestration.runner import NullCancel, StageContext
+
+    return StageContext(
+        store,
+        job_id,
+        (tmp or Path(tempfile.mkdtemp(prefix="stagectx-"))),
+        cancel=NullCancel(),
+    )

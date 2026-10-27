@@ -8,7 +8,9 @@ correct before any real transport exists.
 from __future__ import annotations
 
 import hashlib
+import tempfile
 from pathlib import Path
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -192,8 +194,15 @@ def test_reconciling_an_uncertain_record_clears_without_inserting(client, app):
     transport = StubTransport()
     transport.be_uncertain_next()
     stage = build_publish_stage(app.state.studio, transport)
+    ctx = stage_ctx(store, job_id)
     with pytest.raises(StageError) as exc:
-        stage.run(store, job_id)
+        stage.run(ctx)
+    # publication_uncertain is terminal negative evidence: the runner commits the staged record
+    # (validate=False) instead of discarding it. Reproduce that here so reconcile sees the
+    # canonical artifact a real run would have left.
+    from packages.core.orchestration.runner import _promote_staged
+
+    _promote_staged(store, job_id, ctx, stage, validate=False)
     assert exc.value.code == "publication_uncertain"
     assert store.read_artifact(job_id, PUBLICATION_NAME)["phase"] == "uncertain"
 
@@ -308,3 +317,15 @@ def test_usage_summary_groups_by_day_agent_and_model(client, app):
     assert ("2026-01-01", "QualityAgent") in agents
     models = {(row["day"], row["model"]) for row in body["by_model"]}
     assert ("2026-01-01", "model-b") in models
+
+
+def stage_ctx(store, job_id, tmp: Path | None = None) -> Any:
+    """A stage context for direct stage.run() calls outside run_stages."""
+    from packages.core.orchestration.runner import NullCancel, StageContext
+
+    return StageContext(
+        store,
+        job_id,
+        (tmp or Path(tempfile.mkdtemp(prefix="stagectx-"))),
+        cancel=NullCancel(),
+    )

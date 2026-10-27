@@ -18,7 +18,6 @@ the only legal forward edge from ``APPROVED``.
 
 from __future__ import annotations
 
-import os
 from pathlib import Path
 from typing import Any
 
@@ -28,7 +27,7 @@ from ..contracts.state import JobState
 from ..media.qc import sha256_file
 from ..media.render import render_storyboard
 from ..orchestration.jobstore import JobStore
-from ..orchestration.runner import Stage, StageError, StageOutcome
+from ..orchestration.runner import Stage, StageContext, StageError, StageOutcome
 
 THUMB_NAME = "thumb.png"
 METADATA_NAME = "metadata.json"
@@ -37,10 +36,11 @@ PROPS_NAME = "render-props.json"
 THUMBNAIL_COMPOSITION = "Thumbnail"
 
 
-def build_thumbnail_stage(state: Any, *, video_dir: Path, token: str | None = None) -> Stage:
+def build_thumbnail_stage(state: Any, *, video_dir: Path) -> Stage:
     store = state.store
 
-    def run(_store: JobStore, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, job_id = ctx.store, ctx.job_id
         from ..orchestration.pipeline import _emit
 
         _emit(state, job_id, "STORYBOARD_READY", "stage_started", "thumbnail mulai",
@@ -57,8 +57,7 @@ def build_thumbnail_stage(state: Any, *, video_dir: Path, token: str | None = No
         metadata_payload = store.read_artifact(job_id, METADATA_NAME)
         metadata = validate_artifact(MetadataArtifact, metadata_payload)
 
-        out = Path(store.job_dir(job_id)) / THUMB_NAME
-        tmp = out.with_name(f".{THUMB_NAME}.tmp.png")
+        tmp = ctx.alloc(THUMB_NAME)
         try:
             render_storyboard(
                 video_dir=Path(video_dir),
@@ -81,22 +80,11 @@ def build_thumbnail_stage(state: Any, *, video_dir: Path, token: str | None = No
         updated = metadata.model_copy(
             update={"thumbnail": {"path": THUMB_NAME, "sha256": digest, "bytes": tmp.stat().st_size}}
         )
-        if token is None:
-            # No lease token in play (unit-level use): promote directly, as before.
-            os.replace(tmp, out)
-            store.write_artifact(job_id, METADATA_NAME, updated.to_json())
-        else:
-            # The png and the metadata naming it must land together or not at all, and only
-            # while this worker still owns the job: commit_stage checks the lease, promotes
-            # both files, and advances APPROVED -> PRIVATE_UPLOAD in one guarded step.
-            store.commit_stage(
-                job_id,
-                token=token,
-                json_artifacts=[(METADATA_NAME, updated.to_json())],
-                files=[(THUMB_NAME, tmp)],
-                target=JobState.PRIVATE_UPLOAD,
-                detail="ThumbnailAgent completed",
-            )
+        # The png and the metadata naming it must land together or not at all: both are staged
+        # and the runner promotes them (checking the lease, advancing APPROVED -> PRIVATE_UPLOAD)
+        # in one guarded commit after validating the stage's outputs.
+        ctx.write_artifact(METADATA_NAME, updated.to_json())
+        ctx.stage_file(THUMB_NAME, tmp)
 
         _emit(
             state, job_id, "STORYBOARD_READY", "stage_completed",

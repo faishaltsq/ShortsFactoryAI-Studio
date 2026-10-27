@@ -24,7 +24,7 @@ from ..providers.resolve import Binding, resolve_call
 from ..providers.usage import RecordingProvider
 from ..security.redact import redact
 from .jobstore import JobRecord, JobStore
-from .runner import Stage, StageError, StageOutcome
+from .runner import Stage, StageContext, StageError, StageOutcome
 
 #: How many times the creative director may send a script back. A revision loop with no ceiling is
 #: how a job spends an afternoon and a budget without producing anything.
@@ -114,11 +114,12 @@ def _agent_stage(state: Any, *, agent_name: str, stage_state: JobState, produces
                  task: str, prompt_kwargs: dict[str, Any], contract: Any) -> Stage:
     """Build a stage that runs one agent and writes one validated artifact."""
 
-    def run(store: JobStore, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, job_id = ctx.store, ctx.job_id
         job = store.get(job_id)
         _emit(state, job_id, stage_state.value, "stage_started", f"{agent_name} mulai")
         try:
-            ctx = _context(state, job, agent_name)
+            ctxp = _context(state, job, agent_name)
         except CapabilityMismatch as exc:
             _emit(state, job_id, stage_state.value, "blocked", str(exc))
             raise StageError("capability", str(exc), retryable=False) from exc
@@ -126,14 +127,15 @@ def _agent_stage(state: Any, *, agent_name: str, stage_state: JobState, produces
             _emit(state, job_id, stage_state.value, "failed", str(exc))
             raise StageError("no_provider", str(exc), retryable=False) from exc
 
-        agent = AGENTS[agent_name](ctx)
+        agent = AGENTS[agent_name](ctxp)
+        ctx.call = ctxp.call
         try:
             artifact = agent.produce(task=task, **prompt_kwargs)
         except ModelOutputError as exc:
             _emit(state, job_id, stage_state.value, "failed", redact(exc.detail))
             raise StageError(exc.code, exc.detail, retryable=exc.retryable) from exc
 
-        store.write_artifact(job_id, produces, artifact.to_json())
+        ctx.write_artifact(produces, artifact.to_json())
         _emit(
             state,
             job_id,
@@ -300,11 +302,12 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
 
     contract = _AGENTS[agent_name](_null_context()).contract()
 
-    def run(store: JobStore, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, job_id = ctx.store, ctx.job_id
         job = store.get(job_id)
         _emit(state, job_id, stage_state.value, "stage_started", f"{agent_name} mulai", agent=agent_name)
         try:
-            ctx = _context(state, job, agent_name)
+            ctxp = _context(state, job, agent_name)
         except CapabilityMismatch as exc:
             _emit(state, job_id, stage_state.value, "blocked", str(exc), agent=agent_name)
             raise StageError("capability", str(exc), retryable=False) from exc
@@ -312,7 +315,8 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
             _emit(state, job_id, stage_state.value, "failed", str(exc), agent=agent_name)
             raise StageError("no_provider", str(exc), retryable=False) from exc
 
-        agent = _AGENTS[agent_name](ctx)
+        agent = _AGENTS[agent_name](ctxp)
+        ctx.call = ctxp.call
         kwargs = kwargs_fn(store, job_id)
         try:
             artifact = agent.produce(task=task, **kwargs)
@@ -321,7 +325,7 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
             raise StageError(exc.code, exc.detail, retryable=exc.retryable) from exc
 
         if isinstance(artifact, _review_type()) and artifact.verdict == "revise":
-            store.write_artifact(job_id, produces, artifact.to_json())
+            ctx.write_artifact(produces, artifact.to_json())
             _emit(
                 state,
                 job_id,
@@ -339,7 +343,7 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
                 retryable=False,
             )
 
-        store.write_artifact(job_id, produces, artifact.to_json())
+        ctx.write_artifact(produces, artifact.to_json())
         _emit(
             state,
             job_id,

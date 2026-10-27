@@ -8,8 +8,10 @@ someone opens the port beyond loopback the difference matters.
 from __future__ import annotations
 
 import json
+import tempfile
 import uuid
 from datetime import UTC
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
@@ -591,7 +593,17 @@ def create_app(state: AppState | None = None) -> FastAPI:
         discovery_id = f"disc-{uuid.uuid4().hex[:12]}"
         stage = build_discovery_stage(app_state, limit=body.limit)
         try:
-            outcome = stage.run(app_state.store, discovery_id)
+            # A discovery is outside any job: no lease, no cancellation, no artifacts to stage.
+            # The context exists so the stage body speaks the same protocol as every other stage.
+            from packages.core.orchestration.runner import NullCancel, StageContext
+
+            ctx = StageContext(
+                app_state.store,
+                discovery_id,
+                Path(tempfile.gettempdir()) / f"disc-{discovery_id}",
+                cancel=NullCancel(),
+            )
+            outcome = stage.run(ctx)
         except StageError as exc:
             payload = {
                 "discovery_id": discovery_id,

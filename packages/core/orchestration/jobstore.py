@@ -262,7 +262,7 @@ class JobStore:
         self,
         job_id: str,
         *,
-        token: str,
+        token: str | None = None,
         json_artifacts: builtins.list[tuple[str, dict[str, Any]]] | None = None,
         files: builtins.list[tuple[str, Path]] | None = None,
         target: JobState | None = None,
@@ -299,13 +299,16 @@ class JobStore:
             with self._lock, self._connect() as conn:
                 conn.execute("BEGIN IMMEDIATE")
                 try:
-                    row = conn.execute(
-                        "SELECT token, expires_at FROM job_leases WHERE job_id = ?", (job_id,)
-                    ).fetchone()
-                    if row is None or row["token"] != token:
-                        raise LeaseLost(job_id, "not owned by this worker", token=token)
-                    if dt.datetime.fromisoformat(row["expires_at"]) <= _now_dt():
-                        raise LeaseLost(job_id, "lease expired", token=token)
+                    if token is not None:
+                        # Lease-less callers (tests, discovery) commit unfenced; workers always
+                        # pass the token and get the ownership check.
+                        row = conn.execute(
+                            "SELECT token, expires_at FROM job_leases WHERE job_id = ?", (job_id,)
+                        ).fetchone()
+                        if row is None or row["token"] != token:
+                            raise LeaseLost(job_id, "not owned by this worker", token=token)
+                        if dt.datetime.fromisoformat(row["expires_at"]) <= _now_dt():
+                            raise LeaseLost(job_id, "lease expired", token=token)
                     for tmp, final in staged:
                         os.replace(tmp, final)
                     for final_name, tmp in files:

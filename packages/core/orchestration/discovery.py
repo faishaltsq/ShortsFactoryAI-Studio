@@ -19,7 +19,7 @@ from typing import Any
 from ..contracts.state import JobState
 from ..providers.base import Capability
 from ..providers.resolve import Binding, resolve_call
-from .runner import Stage, StageError, StageOutcome
+from .runner import Stage, StageContext, StageError, StageOutcome
 
 DISCOVERY_AGENT = "DirectorAgent"
 DISCOVERY_STAGE = "IDEA_DISCOVERY"
@@ -150,7 +150,8 @@ def build_discovery_stage(state: Any, *, limit: int = 5) -> Stage:
     ``topic_discoveries`` ones. ``limit`` caps candidate count regardless of provider path.
     """
 
-    def run(store: Any, discovery_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, discovery_id = ctx.store, ctx.job_id
         titles = recent_titles(store)
         avoid = store.topic_avoid_list(limit=AVOID_SEED)
         events = getattr(state, "events", None)

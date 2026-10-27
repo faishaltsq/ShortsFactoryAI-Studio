@@ -30,7 +30,7 @@ from ..contracts.artifacts import PublicationArtifact, RenderArtifact
 from ..contracts.base import validate_artifact
 from ..contracts.state import JobState
 from ..orchestration.jobstore import ArtifactNotFound, JobStore
-from ..orchestration.runner import Stage, StageError, StageOutcome
+from ..orchestration.runner import Stage, StageContext, StageError, StageOutcome
 from .transport import (
     InsertRequest,
     PublicationTransport,
@@ -122,7 +122,8 @@ def build_publish_stage(state: Any, transport: PublicationTransport) -> Stage:
     """
     store = state.store
 
-    def run(_store: JobStore, job_id: str) -> StageOutcome:
+    def run(ctx: StageContext) -> StageOutcome:
+        store, job_id = ctx.store, ctx.job_id
         from ..orchestration.pipeline import _emit  # local import: pipeline imports runner
 
         _emit(state, job_id, "PRIVATE_UPLOAD", "stage_started", "PublisherAgent mulai",
@@ -207,7 +208,7 @@ def build_publish_stage(state: Any, transport: PublicationTransport) -> Stage:
                 attempt=attempt,
                 receipts=[receipt],
             ).to_json()
-            store.write_artifact(job_id, PUBLICATION_NAME, payload)
+            ctx.write_artifact(PUBLICATION_NAME, payload)
             message = (
                 f"insert may have succeeded but the outcome is unknown ({exc.detail}). "
                 "Recorded as uncertain; retrying would risk a duplicate upload. Reconcile by "
@@ -232,7 +233,7 @@ def build_publish_stage(state: Any, transport: PublicationTransport) -> Stage:
                 }
             ],
         ).to_json()
-        store.write_artifact(job_id, PUBLICATION_NAME, payload)
+        ctx.write_artifact(PUBLICATION_NAME, payload)
         _emit(
             state,
             job_id,
