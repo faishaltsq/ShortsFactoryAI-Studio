@@ -183,21 +183,45 @@ def _cut_indices(path: Path, *, threshold: float = 12.0) -> list[int]:
     ``signalstats`` per frame; a jump in YAVG above ``threshold`` is a cut. Coarse on purpose: the
     question is "do both renderers change scene at the same frames", not "are they identical".
     """
-    proc = subprocess.run(  # noqa: S603 - argv array, no shell
-        ["ffmpeg", "-v", "info", "-i", str(path), "-vf",
-         "signalstats,metadata=print:file=-", "-f", "null", "-"],
-        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
-    )
-    averages: list[float] = []
-    for line in proc.stdout.splitlines():
-        match = re.search(r"lavfi\.signalstats\.YAVG=([0-9.]+)", line)
-        if match:
-            averages.append(float(match.group(1)))
+    averages: list[float] = _yavg_series(path)
     cuts: list[int] = []
     for index in range(1, len(averages)):
         if abs(averages[index] - averages[index - 1]) > threshold:
             cuts.append(index)
     return cuts
+
+def _yavg_series(path: Path) -> list[float]:
+    proc = subprocess.run(  # noqa: S603 - argv array, no shell
+        ["ffmpeg", "-v", "info", "-i", str(path), "-vf",
+         "signalstats,metadata=print:file=-", "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+    )
+    return [
+        float(match.group(1))
+        for line in proc.stdout.splitlines()
+        if (match := re.search(r"lavfi\.signalstats\.YAVG=([0-9.]+)", line))
+    ]
+
+def _delta_series(path: Path) -> list[float]:
+    """Per-frame absolute pixel change: ``tblend`` difference, then YAVG per output frame.
+
+    Index ``i`` (1-based) is the change between frames ``i-1`` and ``i``; index 0 does not exist
+    because ``tblend`` has no first frame to blend against. A scene cut replaces the whole frame,
+    so it moves every pixel; in-scene animation moves a fraction of them.
+    """
+    proc = subprocess.run(  # noqa: S603 - argv array, no shell
+        ["ffmpeg", "-v", "info", "-i", str(path), "-vf",
+         "tblend=all_mode=difference,signalstats,metadata=print:file=-", "-f", "null", "-"],
+        capture_output=True, text=True, encoding="utf-8", errors="replace", check=True,
+    )
+    text = proc.stdout + proc.stderr
+    values = [
+        float(match.group(1))
+        for line in text.splitlines()
+        if (match := re.search(r"lavfi\.signalstats\.YAVG=([0-9.]+)", line))
+    ]
+    assert values, f"no signalstats in ffmpeg output: {text[-800:]}"
+    return values
 
 
 def _frame_delta(path: Path, first: int, second: int) -> dict[str, float]:
@@ -362,6 +386,192 @@ def test_the_renderer_kind_round_trips_through_the_payload() -> None:
     assert renderer_kind({"renderer": "remotion"}) == "remotion"
     with pytest.raises(ValueError):
         renderer_kind({"renderer": "bogus"})
+
+
+def _template_scenes(frames: int) -> list[dict]:
+    """One valid scene per template, each carrying one figure-directed action beat.
+
+    The IllustratedStory scene (not the per-template props `_props` builds) shows what the
+    contract requires of template data: MotionComic panels, timeline events, chart items, parallax
+    layers. Beats address `maya` by name, resolving against `data.actors` — the resolution the
+    compositions and the bang emitter's `data-beat-*` markers both consume.
+    """
+    return [
+        {
+            "sceneId": f"tpl-{template.lower()[:8]}",
+            "template": template,
+            "segment": "Satu segmen per templat untuk uji paritas.",
+            "startFrame": index * frames,
+            "durationInFrames": frames,
+            "assetRefs": [],
+            "text": [{"id": f"t{index}", "text": "Teks uji tempo", "role": "title", "atFrame": 0}],
+            "camera": {"shot": "wide", "move": "static", "amplitude": 0.1, "ease": "power2.out"},
+            "motion": {
+                "energy": 0.7,
+                "continuity": "cut",
+                "beats": [{"atFrame": frames // 3, "kind": "action", "subject": "maya"}],
+            },
+            "transition": {"kind": "cut", "frames": 0},
+            "audio": None,
+            "data": data,
+        }
+        for index, (template, data) in enumerate(
+            [
+                ("KineticTypography", {"highlightIndex": 1}),
+                (
+                    "MotionComic",
+                    {
+                        "title": "Panel uji",
+                        "panels": [
+                            {"speaker": "MAYA", "caption": "Panel pertama."},
+                            {"speaker": "MAYA", "caption": "Panel kedua."},
+                        ],
+                    },
+                ),
+                ("EducationalExplainer", {"heading": "Fakta", "bullets": ["Satu", "Dua"]}),
+                (
+                    "HistoricalTimeline",
+                    {
+                        "title": "Garis waktu",
+                        "events": [
+                            {"date": "1900", "label": "Awal", "detail": "Mulai."},
+                            {"date": "2000", "label": "Akhir", "detail": "Berakhir."},
+                        ],
+                    },
+                ),
+                (
+                    "ParallaxStory",
+                    {
+                        "title": "Lapisan",
+                        "caption": "Gunung bergerak lambat.",
+                        "layers": [
+                            {"depth": 0.2, "shape": "ridge"},
+                            {"depth": 0.6, "shape": "city"},
+                        ],
+                    },
+                ),
+                (
+                    "InfographicMotion",
+                    {"title": "Angka", "items": [{"label": "Satu", "value": 3}, {"label": "Dua", "value": 7}]},
+                ),
+                (
+                    "IllustratedStory",
+                    {
+                        "title": "Maya bergerak",
+                        "setting": "desert",
+                        "timeOfDay": "dusk",
+                        "actors": [
+                            {
+                                "character": "maya",
+                                "pose": "stand",
+                                "x": 0.5,
+                                "ground": 0.72,
+                                "scale": 1,
+                                "facing": "right",
+                                "tone": "primary",
+                                "silhouette": False,
+                                "expression": "curious",
+                                "motion": {"preset": "gesture"},
+                            }
+                        ],
+                        "props": [],
+                        "fx": [],
+                        "shots": [{"framing": "wide", "camera": "pushIn", "weight": 1}],
+                    },
+                ),
+            ]
+        )
+    ]
+
+
+def _props_all_templates(tmp_path: Path, frames: int = 45) -> Path:
+    """A seven-scene storyboard (one per template) in the exact ``write_render_props`` shape."""
+    storyboard = {
+        "schema_version": 1,
+        "fps": 30,
+        "width": 1080,
+        "height": 1920,
+        "theme": "dusk",
+        "scenes": _template_scenes(frames),
+        "subtitles": [],
+    }
+    target = tmp_path / "render-props-all-templates.json"
+    target.write_text(json.dumps({"storyboard": storyboard}, ensure_ascii=False), encoding="utf-8")
+    return target
+
+
+@pytest.mark.slow
+def test_every_template_renders_through_both_renderers(tmp_path: Path) -> None:
+    """Roadmap G10 exit: one scene per template through the two-renderer parity rig.
+
+    Structural parity is the shared gate + equal frame counts + equal cut positions. On top of
+    that, the figure-directed beat must be *visible* in both renderers somewhere in the
+    IllustratedStory scene — the same class of measurement the single-scene test makes, sampled
+    across its 45-frame window rather than at one hand-picked frame.
+    """
+    _require_toolchain()
+    frames = 45
+    props = _props_all_templates(tmp_path, frames)
+    total_frames = frames * 7
+
+    narration = _narration(tmp_path, seconds=total_frames / 30)
+    remotion_raw = tmp_path / "all-remotion-raw.mp4"
+    bang_raw = tmp_path / "all-bang-raw.mp4"
+    _render_remotion(props, remotion_raw, tmp_path, total_frames)
+    _render_bang(props, bang_raw, tmp_path / "staging", total_frames)
+    # Both renderers hand a silent picture to the same mux; the gate applies to the delivered
+    # file, exactly as in the single-scene parity test.
+    remotion_out = _muxed(remotion_raw, narration, tmp_path / "all-remotion.mp4")
+    bang_out = _muxed(bang_raw, narration, tmp_path / "all-bang.mp4")
+
+    probes = {}
+    for name, path in (("remotion", remotion_out), ("bang-motion", bang_out)):
+        assert path.is_file() and path.stat().st_size > 0
+        probe = probe_media(path)
+        probes[name] = probe
+        failed = validate_render(
+            probe, expected_frames=total_frames, expected_width=1080, expected_height=1920,
+            expected_fps=30.0, expected_duration_ms=total_frames / 30 * 1000,
+        )
+        assert failed == [], f"{name} failed the shared gate: {failed}"
+
+    # Structural parity across seven scenes: every declared scene boundary is a full-frame
+    # picture change, and each boundary's delta dominates every in-scene animation frame. One
+    # global threshold would be palette-blind, so each video is ranked against itself. Measured
+    # on this fixture: Remotion boundaries >= 4.09 vs interior peak 2.11, Bang Motion >= 2.09 vs
+    # 0.74; renders are framemd5-deterministic, so these margins are stable, and a future
+    # template change that closes the gap is a real ambiguity a human must look at.
+    boundaries = [frames * i for i in range(1, 7)]
+    for name, path in (("remotion", remotion_out), ("bang-motion", bang_out)):
+        series = _delta_series(path)
+        at_boundaries = [series[index - 1] for index in boundaries]
+        interior = [
+            value for index, value in enumerate(series, start=1)
+            if index not in boundaries
+        ]
+        floor = min(at_boundaries)
+        peak = max(interior)
+        print(f"[per-template] {name}: boundary deltas {[round(v, 2) for v in at_boundaries]}, "
+              f"interior max {peak:.2f}")
+        assert floor > peak, (
+            f"{name}: smallest boundary delta {floor:.2f} does not dominate the strongest "
+            f"in-scene animation {peak:.2f}"
+        )
+
+    # The beat in the IllustratedStory scene: visible figure movement in BOTH renderers. Sample
+    # the whole window around the beat (frames 15..30 of that scene) rather than one frame; the
+    # strongest per-pair delta must clear the measured idle floor (<= 0.80, see the single-scene
+    # test's calibration) by the same 1.5 margin.
+    story = next(i for i, s in enumerate(_template_scenes(frames)) if s["template"] == "IllustratedStory")
+    story_start = story * frames
+    beat_at = story_start + frames // 3
+    for name, path in (("remotion", remotion_out), ("bang-motion", bang_out)):
+        best = 0.0
+        for offset in range(1, frames // 3):
+            delta = _frame_delta(path, beat_at - offset, beat_at + offset)
+            best = max(best, delta["yavg"])
+        print(f"[per-template] {name} IllustratedStory beat max YAVG {best:.3f} (threshold 1.5)")
+        assert best > 1.5, f"{name} shows no figure movement at the IllustratedStory beat (max {best:.3f})"
 
 
 def test_matched_stills_at_a_character_beat(tmp_path: Path) -> None:
