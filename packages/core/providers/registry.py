@@ -60,6 +60,21 @@ class ProviderSpec(BaseModel):
         return list(dict.fromkeys(value))
 
     @model_validator(mode="after")
+    def _no_vision_without_an_image_channel(self) -> ProviderSpec:
+        """``cli`` and ``mock`` have no way to send an image, so they cannot claim to see.
+
+        The capability is declared by the operator. Letting it be declared where it cannot be
+        honoured is how a text-only model ends up "inspecting" frames: the binding resolves, the
+        call succeeds, and the answer is fabricated.
+        """
+        if self.transport in {"cli", "mock"} and Capability.VISION in self.capabilities:
+            raise ValueError(
+                f"transport {self.transport!r} cannot declare the vision capability: "
+                "it has no image channel"
+            )
+        return self
+
+    @model_validator(mode="after")
     def _transport_requirements(self) -> ProviderSpec:
         if self.transport in {"openai_compat", "anthropic", "ollama"} and not self.base_url:
             raise ValueError(f"transport {self.transport!r} requires base_url")

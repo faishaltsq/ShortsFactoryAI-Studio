@@ -20,6 +20,20 @@ TemplateId = Literal[
     "IllustratedStory",
 ]
 
+#: Templates whose renderer reads ``scene.data``. The ported ``validateSceneData`` throws when
+#: ``data`` is missing for these five and returns immediately for the two text templates, so
+#: presence is checked here — at the contract boundary — and the *contents* stay the renderer's
+#: job. Duplicating the shape rules in Python would drift from the TypeScript validator.
+DATA_DRIVEN_TEMPLATES = frozenset(
+    {
+        "MotionComic",
+        "HistoricalTimeline",
+        "ParallaxStory",
+        "InfographicMotion",
+        "IllustratedStory",
+    }
+)
+
 ShotSize = Literal["wide", "medium", "close"]
 CameraMove = Literal["static", "push", "pull", "pan", "tilt", "orbit"]
 Easing = Literal[
@@ -133,6 +147,20 @@ class SceneSpec(BaseModel):
     transition: TransitionSpec = Field(default_factory=TransitionSpec)
     audio: dict[str, Any] | None = None
     data: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _data_required_for_data_driven_templates(self) -> SceneSpec:
+        """A data-driven template with no ``data`` cannot render, so it must not validate.
+
+        Presence only: ``{}`` is rejected as firmly as ``None``, because an empty payload fails
+        the renderer's own per-template checks one layer later, after a job has been paid for.
+        """
+        if self.template in DATA_DRIVEN_TEMPLATES and not self.data:
+            raise ValueError(
+                f"scene {self.sceneId!r} uses template {self.template!r}, "
+                "which requires scene.data"
+            )
+        return self
 
     @model_validator(mode="after")
     def _camera_target_exists(self) -> SceneSpec:

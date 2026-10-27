@@ -67,7 +67,7 @@ EventType = Literal[
     "waiting",
 ]
 
-Status = Literal["working", "waiting", "reviewing", "blocked", "failed", "completed"]
+Status = Literal["working", "waiting", "blocked", "failed", "completed"]
 
 #: Which agent produces each state. The studio reads this, so a stage can never be attributed to an
 #: agent that did not do the work. ``IDEA_DISCOVERY`` is the entry state, so the agent working while
@@ -261,6 +261,28 @@ class StudioEventStore:
             rows = conn.execute(query, params).fetchall()
         return {row["agent_id"]: _event(row) for row in rows}
 
+    def recent_per_job(self, *, limit: int = 5) -> dict[str, list[StudioEvent]]:
+        """The last ``limit`` events of every job, in one statement.
+
+        ``history()`` per agent opened one SQLite connection per agent, so projecting a snapshot of
+        fourteen agents cost fourteen connections for data that one query returns. Newest first, as
+        ``history`` is.
+        """
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT e.* FROM studio_events e JOIN ("
+                " SELECT job_id, event_id FROM ("
+                "  SELECT job_id, event_id, ROW_NUMBER() OVER ("
+                "   PARTITION BY job_id ORDER BY event_id DESC) AS rank"
+                "  FROM studio_events) WHERE rank <= ?"
+                ") r ON e.event_id = r.event_id ORDER BY e.event_id DESC",
+                (limit,),
+            ).fetchall()
+        grouped: dict[str, list[StudioEvent]] = {}
+        for row in rows:
+            grouped.setdefault(row["job_id"], []).append(_event(row))
+        return grouped
+
     def history(self, job_id: str, *, limit: int = 100) -> list[StudioEvent]:
         with self._connect() as conn:
             rows = conn.execute(
@@ -327,6 +349,7 @@ def project_agents(
     case.
     """
     latest = store.latest_per_agent(job_id)
+    recent = store.recent_per_job(limit=5)
     now = dt.datetime.now(dt.UTC)
     views: list[AgentView] = []
     for agent_id in AGENT_IDS:
@@ -354,10 +377,20 @@ def project_agents(
                 stage=event.stage,
                 job_id=event.job_id,
                 updated_at=event.created_at,
-                recent=[item.to_json() for item in store.history(event.job_id, limit=5)],
+                recent=[item.to_json() for item in recent.get(event.job_id, [])],
             )
         )
     return views
+
+
+#: One entry, keyed on everything a snapshot's content depends on: which store it came from, the
+#: cursor, the job filter and the live-agent set. The store identity is not optional — two event
+#: logs can share a cursor number while holding completely different rows, and a key without it
+#: would serve one database's agents to a caller asking about another (which is exactly what a test
+#: suite with two `tmp_path` stores does). A single slot, because the studio polls one view.
+_SNAPSHOT_MEMO: dict[
+    tuple[str, int, str | None, frozenset[str] | None], dict[str, Any]
+] = {}
 
 
 def snapshot(
@@ -367,12 +400,30 @@ def snapshot(
     live_agents: set[str] | None = None,
 ) -> dict[str, Any]:
     """A consistent snapshot: the cursor is read before the projection, so a client that resumes
-    from it cannot miss an event that arrived during the projection."""
+    from it cannot miss an event that arrived during the projection.
+
+    Memoised on ``(cursor, job_id, live_agents)`` only. Those three are the whole input, so a
+    repeat poll between two events is a dict lookup instead of three queries. ``generated_at`` is
+    deliberately part of the memoised value: two identical requests must not differ, or a client
+    diffing snapshots would see a change the event log never made.
+    """
     cursor = store.latest_event_id()
+    key = (
+        str(store.db_path),
+        cursor,
+        job_id,
+        None if live_agents is None else frozenset(live_agents),
+    )
+    cached = _SNAPSHOT_MEMO.get(key)
+    if cached is not None:
+        return cached
     agents = project_agents(store, job_id=job_id, live_agents=live_agents)
-    return {
+    fresh = {
         "cursor": cursor,
         "job_id": job_id,
         "agents": [view.to_json() for view in agents],
         "generated_at": _utc_now(),
     }
+    _SNAPSHOT_MEMO.clear()
+    _SNAPSHOT_MEMO[key] = fresh
+    return fresh

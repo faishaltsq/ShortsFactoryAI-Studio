@@ -11,8 +11,9 @@ import sqlite3
 import threading
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
-from .base import Health, Provider, ProviderResult, ResolvedCall, Usage
+from .base import Health, Provider, ProviderResult, ResolvedCall, Usage, VisionImage
 
 
 def _utc_day() -> str:
@@ -116,7 +117,7 @@ class UsageTracker:
             ).fetchone()
         return {"tokens": float(row["tokens"]), "cost_usd": float(row["cost"]), "calls": float(row["calls"])}
 
-    def for_job(self, job_id: str) -> list[dict]:
+    def for_job(self, job_id: str) -> list[dict[str, Any]]:
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT agent, provider, model, prompt_tokens, completion_tokens, est_cost_usd,"
@@ -124,6 +125,55 @@ class UsageTracker:
                 (job_id,),
             ).fetchall()
         return [dict(row) for row in rows]
+
+    def summary(self) -> dict[str, Any]:
+        """Per-day, per-agent and per-model totals over the whole log.
+
+        ``cost_usd`` is only meaningful when the operator configured prices. ``estimate_cost``
+        returns 0.0 when both prices are ``None`` (usage.py:146-157), so a log filled by
+        unpriced providers reports 0.0 for every call. The ``price_configured`` flag says which
+        case this is, so a dashboard cannot present an unpriced zero as "free".
+        """
+        with self._connect() as conn:
+            days = conn.execute(
+                "SELECT day,"
+                " SUM(prompt_tokens + completion_tokens) AS tokens,"
+                " COUNT(*) AS calls,"
+                " SUM(est_cost_usd) AS cost"
+                " FROM usage_log GROUP BY day ORDER BY day"
+            ).fetchall()
+            by_agent = conn.execute(
+                "SELECT day, agent,"
+                " SUM(prompt_tokens + completion_tokens) AS tokens,"
+                " COUNT(*) AS calls,"
+                " SUM(est_cost_usd) AS cost"
+                " FROM usage_log GROUP BY day, agent ORDER BY day, agent"
+            ).fetchall()
+            by_model = conn.execute(
+                "SELECT day, provider, model,"
+                " SUM(prompt_tokens + completion_tokens) AS tokens,"
+                " COUNT(*) AS calls,"
+                " SUM(est_cost_usd) AS cost"
+                " FROM usage_log GROUP BY day, provider, model ORDER BY day, provider, model"
+            ).fetchall()
+            priced = conn.execute(
+                "SELECT COUNT(*) AS n FROM usage_log WHERE est_cost_usd > 0"
+            ).fetchone()
+
+        def row(item: sqlite3.Row) -> dict[str, Any]:
+            return {
+                **{key: item[key] for key in item.keys()},
+                "tokens": int(item["tokens"] or 0),
+                "calls": int(item["calls"] or 0),
+                "cost_usd": float(item["cost"] or 0.0),
+            }
+
+        return {
+            "days": [row(item) for item in days],
+            "by_agent": [row(item) for item in by_agent],
+            "by_model": [row(item) for item in by_model],
+            "price_configured": bool(priced["n"]) if priced else False,
+        }
 
     def assert_can_spend(self, *, worst_case_tokens: int, worst_case_cost_usd: float) -> None:
         if not self.budget.enforced:
@@ -190,6 +240,51 @@ class RecordingProvider:
 
     def list_models(self, call: ResolvedCall) -> list[str] | None:
         return self.inner.list_models(call)
+
+    def complete_vision(
+        self,
+        call: ResolvedCall,
+        *,
+        system: str,
+        user: str,
+        task: str,
+        images: list[VisionImage],
+    ) -> ProviderResult:
+        """Recorded exactly like a text call, with the image payload counted as prompt tokens.
+
+        A vision call is the one place a per-call cost can jump by an order of magnitude, so it
+        must not be the one call that escapes the usage log.
+        """
+        worst_cost = estimate_cost(
+            Usage(
+                prompt_tokens=(len(user) + sum(image.byte_size for image in images)) // 3,
+                completion_tokens=self.worst_case_tokens,
+            ),
+            price_in=self.price_in,
+            price_out=self.price_out,
+        )
+        self.tracker.assert_can_spend(
+            worst_case_tokens=len(user) // 3 + self.worst_case_tokens,
+            worst_case_cost_usd=worst_cost,
+        )
+        result = self.inner.complete_vision(
+            call, system=system, user=user, task=task, images=images
+        )
+        # ``record`` takes a computed cost, not the price table: the estimate has to be made here,
+        # exactly as ``complete`` does. Passing the prices through was a real defect — every vision
+        # call raised TypeError *after* a successful round-trip, so the tokens were spent and
+        # unrecorded.
+        cost = estimate_cost(result.usage, price_in=self.price_in, price_out=self.price_out)
+        self.tracker.record(
+            job_id=self.job_id,
+            agent=self.agent,
+            provider=result.provider,
+            model=result.model,
+            usage=result.usage,
+            est_cost_usd=cost,
+            elapsed_ms=result.elapsed_ms,
+        )
+        return result
 
     def complete(
         self, call: ResolvedCall, *, system: str, user: str, task: str

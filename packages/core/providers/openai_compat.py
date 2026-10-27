@@ -11,9 +11,31 @@ from __future__ import annotations
 import json
 from typing import Any
 
+import httpx
+
 from ..security.redact import redact
-from .base import Capability, Health, ProviderError, ProviderResult, ResolvedCall, Usage, now_ms
-from .http_base import PinnedHTTP, health_from_response
+from .base import (
+    Capability,
+    Health,
+    ProviderError,
+    ProviderResult,
+    ResolvedCall,
+    Usage,
+    VisionImage,
+    VisionUnsupported,
+    now_ms,
+)
+from .http_base import PinnedHTTP, ResumeInfo, health_from_response
+
+
+def _as_response(response: httpx.Response | ResumeInfo) -> httpx.Response:
+    """Narrow the transport union; no call here enables ``allow_resume_308``."""
+    if isinstance(response, httpx.Response):
+        return response
+    raise ProviderError(
+        "provider_bad_response",
+        f"unexpected 308 resume response for a non-upload request (status {response.status_code})",
+    )
 
 
 class OpenAICompatProvider:
@@ -51,7 +73,7 @@ class OpenAICompatProvider:
             )
         except ProviderError as exc:
             return Health.down(redact(exc.detail, secrets=(call.credential,)))
-        return health_from_response(response, started)
+        return health_from_response(_as_response(response), started)
 
     def list_models(self, call: ResolvedCall) -> list[str] | None:
         try:
@@ -66,13 +88,99 @@ class OpenAICompatProvider:
         except ProviderError:
             return None
         try:
-            payload = response.json()
+            payload = _as_response(response).json()
         except (json.JSONDecodeError, ValueError):
             return None
         data = payload.get("data") if isinstance(payload, dict) else None
         if not isinstance(data, list):
             return None
         return [str(item.get("id")) for item in data if isinstance(item, dict) and item.get("id")]
+
+    def complete_vision(
+        self,
+        call: ResolvedCall,
+        *,
+        system: str,
+        user: str,
+        task: str,
+        images: list[VisionImage],
+    ) -> ProviderResult:
+        """One chat completion carrying image parts.
+
+        The OpenAI-compatible shape is ``content: [{"type": "text"}, {"type": "image_url"}]`` with
+        a data URI. ``detail: "high"`` is set because a contact sheet is 6 tiles: at ``auto`` a
+        provider may downscale it until the tiles are unreadable, and then a confident verdict
+        describes nothing.
+        """
+        if Capability.VISION not in call.capabilities:
+            raise VisionUnsupported(f"{call.provider or 'provider'} (vision not declared)")
+        if not images:
+            raise ValueError("complete_vision requires at least one image")
+
+        parts: list[dict[str, Any]] = [{"type": "text", "text": user}]
+        for image in images:
+            parts.append(
+                {
+                    "type": "image_url",
+                    "image_url": {"url": image.data_uri(), "detail": "high"},
+                }
+            )
+        body: dict[str, Any] = {
+            "model": call.model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": parts},
+            ],
+        }
+        if call.temperature is not None:
+            body["temperature"] = call.temperature
+        if call.max_tokens is not None:
+            body["max_tokens"] = call.max_tokens
+
+        started = now_ms()
+        response = self._client(call).request(
+            "POST",
+            f"{call.base_url}/chat/completions",
+            headers=self._headers(call),
+            json=body,
+            allow_private_hosts=call.allow_private_hosts,
+            secrets=(call.credential,),
+            provider=call.provider,
+        )
+        try:
+            payload = _as_response(response).json()
+        except (json.JSONDecodeError, ValueError) as exc:
+            raise ProviderError(
+                "provider_bad_response",
+                f"response was not JSON: {redact(_as_response(response).text[:200], secrets=(call.credential,))}",
+                provider=call.provider,
+            ) from exc
+
+        choices = payload.get("choices") or []
+        if not choices:
+            raise ProviderError(
+                "provider_bad_response", "response contained no choices", provider=call.provider
+            )
+        message = choices[0].get("message") or {}
+        content = message.get("content")
+        if not isinstance(content, str) or not content.strip():
+            raise ProviderError(
+                "provider_empty_completion",
+                f"model {payload.get('model', call.model)!r} returned empty content",
+                provider=call.provider,
+            )
+        raw_usage = payload.get("usage") or {}
+        return ProviderResult(
+            content=content,
+            provider=call.provider,
+            model=str(payload.get("model") or call.model),
+            usage=Usage(
+                prompt_tokens=int(raw_usage.get("prompt_tokens") or 0),
+                completion_tokens=int(raw_usage.get("completion_tokens") or 0),
+            ),
+            elapsed_ms=max(0, now_ms() - started),
+            raw={"finish_reason": choices[0].get("finish_reason"), "images": len(images)},
+        )
 
     def complete(
         self, call: ResolvedCall, *, system: str, user: str, task: str
@@ -107,11 +215,11 @@ class OpenAICompatProvider:
             provider=call.provider,
         )
         try:
-            payload = response.json()
+            payload = _as_response(response).json()
         except (json.JSONDecodeError, ValueError) as exc:
             raise ProviderError(
                 "provider_bad_response",
-                f"response was not JSON: {redact(response.text[:200], secrets=(call.credential,))}",
+                f"response was not JSON: {redact(_as_response(response).text[:200], secrets=(call.credential,))}",
                 provider=call.provider,
             ) from exc
 

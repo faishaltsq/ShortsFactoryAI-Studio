@@ -163,7 +163,12 @@ def _resolve(host: str, port: int) -> tuple[str, ...]:
         infos = socket.getaddrinfo(host, port, proto=socket.IPPROTO_TCP)
     except socket.gaierror as exc:
         raise BlockedTarget(host, f"cannot resolve: {exc}") from exc
-    addresses = tuple(dict.fromkeys(info[4][0] for info in infos))
+    addresses = tuple(
+        str(address)
+        for address in dict.fromkeys(
+            info[4][0] for info in infos if isinstance(info[4][0], (str, bytes))
+        )
+    )
     if not addresses:
         raise BlockedTarget(host, "resolved to no addresses")
     return addresses

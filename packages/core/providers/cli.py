@@ -16,7 +16,17 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .base import Capability, Health, ProviderError, ProviderResult, ResolvedCall, Usage, now_ms
+from .base import (
+    Capability,
+    Health,
+    ProviderError,
+    ProviderResult,
+    ResolvedCall,
+    Usage,
+    VisionImage,
+    VisionUnsupported,
+    now_ms,
+)
 
 #: A CLI cannot be trusted with a JSON schema, tools, or images. Say so rather than hoping.
 CLI_CAPABILITIES = frozenset({Capability.CHAT})
@@ -55,6 +65,18 @@ class CLIProvider:
         if proc.returncode != 0:
             return Health.down(f"{Path(binary).name} --version exited {proc.returncode}")
         return Health.up(detail=f"{Path(binary).name} runs (login not verified)")
+
+    def complete_vision(
+        self,
+        call: ResolvedCall,  # noqa: ARG002 - protocol shape
+        *,
+        system: str,  # noqa: ARG002
+        user: str,  # noqa: ARG002
+        task: str,  # noqa: ARG002
+        images: list[VisionImage],  # noqa: ARG002
+    ) -> ProviderResult:
+        """A CLI transport has no image channel. It refuses rather than describing a file path."""
+        raise VisionUnsupported("cli")
 
     def list_models(self, call: ResolvedCall) -> list[str] | None:
         return None

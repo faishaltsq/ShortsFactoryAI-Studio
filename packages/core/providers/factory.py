@@ -1,9 +1,12 @@
 """Assembling the transport set and the default registry.
 
 Kept out of ``__init__`` so tests can import a transport without building a registry.
+``SHORTS_MOCK_DELAY_MS`` (default ``"0"``) slows the mock provider so a test can observe work.
 """
 
 from __future__ import annotations
+
+import os
 
 from .anthropic import AnthropicProvider
 from .base import Capability, Provider
@@ -13,15 +16,34 @@ from .ollama import OllamaProvider
 from .openai_compat import OpenAICompatProvider
 from .registry import ProviderRegistry, ProviderSpec
 
+MOCK_DELAY_ENV = "SHORTS_MOCK_DELAY_MS"
+
+
+def mock_delay_ms() -> int:
+    """Read ``SHORTS_MOCK_DELAY_MS``. Invalid input is a configuration error, never a coercion.
+
+    Digits only: ``int()`` alone would silently accept ``" 5"``, ``"+5"`` and ``"1_000"``.
+    """
+    raw = os.environ.get(MOCK_DELAY_ENV, "0")
+    if not raw.isascii() or not raw.isdigit():
+        raise ValueError(
+            f"{MOCK_DELAY_ENV} must be a non-negative integer number of milliseconds, got {raw!r}"
+        )
+    return int(raw, 10)
+
 
 def build_transports() -> dict[str, Provider]:
-    """One instance per transport. They hold no per-call state, so sharing is safe."""
+    """One instance per transport. They hold no per-call state, so sharing is safe.
+
+    The delay only affects the mock transport's own latency; it does not change resolution, and
+    a live job still cannot reach mock.
+    """
     transports: list[Provider] = [
         OpenAICompatProvider(),
         AnthropicProvider(),
         OllamaProvider(),
         CLIProvider(),
-        MockProvider(),
+        MockProvider(delay_ms=mock_delay_ms()),
     ]
     return {transport.transport: transport for transport in transports}
 

@@ -37,11 +37,14 @@ class JobState(str, Enum):
 
 
 class StudioStatus(str, Enum):
-    """What a character in the studio may display. Derived from events, never asserted."""
+    """What a character in the studio may display. Derived from events, never asserted.
+
+    Every member has a producer in ``observability.events.derive_status``; a member nothing can
+    emit would be a state machine claim no code keeps.
+    """
 
     WORKING = "working"
     WAITING = "waiting"
-    REVIEWING = "reviewing"
     BLOCKED = "blocked"
     FAILED = "failed"
     COMPLETED = "completed"
@@ -56,16 +59,20 @@ TERMINAL_STATES = frozenset({JobState.PUBLISHED, JobState.REJECTED, JobState.CAN
 # The forward path, plus the legal side exits. Every entry is deliberate.
 _ALLOWED: dict[JobState, frozenset[JobState]] = {
     JobState.IDEA_DISCOVERY: frozenset(
-        {JobState.TOPIC_SELECTED, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}
+        {JobState.TOPIC_SELECTED, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
+         JobState.PAUSED}
     ),
     JobState.TOPIC_SELECTED: frozenset(
-        {JobState.RESEARCH_COMPLETE, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}
+        {JobState.RESEARCH_COMPLETE, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
+         JobState.PAUSED}
     ),
     JobState.RESEARCH_COMPLETE: frozenset(
-        {JobState.SCRIPT_GENERATED, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}
+        {JobState.SCRIPT_GENERATED, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
+         JobState.PAUSED}
     ),
     JobState.SCRIPT_GENERATED: frozenset(
-        {JobState.CREATIVE_REVIEW, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}
+        {JobState.CREATIVE_REVIEW, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
+         JobState.PAUSED}
     ),
     # A revise verdict returns to SCRIPT_GENERATED; that loop is bounded by MAX_REPAIRS upstream.
     JobState.CREATIVE_REVIEW: frozenset(
@@ -78,16 +85,25 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
         }
     ),
     JobState.STORYBOARD_READY: frozenset(
-        {JobState.ASSETS_READY, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}
+        {
+            JobState.ASSETS_READY,
+            JobState.BLOCKED,
+            JobState.FAILED,
+            JobState.CANCELLED,
+            JobState.PAUSED,
+        }
     ),
     JobState.ASSETS_READY: frozenset(
-        {JobState.AUDIO_READY, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}
+        {JobState.AUDIO_READY, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
+         JobState.PAUSED}
     ),
     JobState.AUDIO_READY: frozenset(
-        {JobState.RENDERING, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}
+        {JobState.RENDERING, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
+         JobState.PAUSED}
     ),
     JobState.RENDERING: frozenset(
-        {JobState.TECHNICAL_QC, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}
+        {JobState.TECHNICAL_QC, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
+         JobState.PAUSED}
     ),
     # A failed technical gate may re-render; that is the bounded repair path.
     JobState.TECHNICAL_QC: frozenset(
@@ -97,6 +113,7 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
             JobState.BLOCKED,
             JobState.FAILED,
             JobState.CANCELLED,
+            JobState.PAUSED,
         }
     ),
     JobState.EDITORIAL_QC: frozenset(
@@ -106,6 +123,7 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
             JobState.BLOCKED,
             JobState.FAILED,
             JobState.CANCELLED,
+            JobState.PAUSED,
         }
     ),
     JobState.READY_FOR_APPROVAL: frozenset(
@@ -125,6 +143,12 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
     JobState.REJECTED: frozenset(),
     JobState.CANCELLED: frozenset(),
     # A blocked job can be resumed by an operator decision into the stage that blocked it.
+    #
+    # ``APPROVED`` is deliberately absent. ``JobStore.transition`` consults this table and nothing
+    # else — it cannot see ``_approval_checks`` — so any edge into ``APPROVED`` that is not
+    # ``READY_FOR_APPROVAL`` is an approval-gate bypass, and ``APPROVED -> PRIVATE_UPLOAD`` would
+    # open behind it (FR-8.4, "a scheduled task may never bypass approval"). A job blocked after
+    # approval must re-enter through ``READY_FOR_APPROVAL``, where the gate runs again.
     JobState.BLOCKED: frozenset(
         {
             JobState.IDEA_DISCOVERY,
@@ -139,7 +163,6 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
             JobState.TECHNICAL_QC,
             JobState.EDITORIAL_QC,
             JobState.READY_FOR_APPROVAL,
-            JobState.APPROVED,
             JobState.CANCELLED,
         }
     ),
@@ -160,14 +183,22 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
             JobState.CANCELLED,
         }
     ),
+    # A paused job resumes into the stage it left. Deliberately NOT schedulable
+    # (``orchestration/scheduler.py``): a paused job is paused on purpose, and auto-resuming it
+    # would make the pause meaningless.
     JobState.PAUSED: frozenset(
         {
             JobState.IDEA_DISCOVERY,
+            JobState.TOPIC_SELECTED,
             JobState.RESEARCH_COMPLETE,
             JobState.SCRIPT_GENERATED,
+            JobState.CREATIVE_REVIEW,
             JobState.STORYBOARD_READY,
+            JobState.ASSETS_READY,
             JobState.AUDIO_READY,
             JobState.RENDERING,
+            JobState.TECHNICAL_QC,
+            JobState.EDITORIAL_QC,
             JobState.CANCELLED,
         }
     ),

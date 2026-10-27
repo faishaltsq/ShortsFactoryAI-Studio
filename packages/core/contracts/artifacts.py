@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, model_validator
+from pydantic import Field, field_validator, model_validator
 
 from .base import Artifact
 from .scene import SceneSpec, SubtitleCue
@@ -139,6 +139,32 @@ class AudioArtifact(Artifact):
     subtitles: list[SubtitleCue] = Field(default_factory=list)
     mix: dict[str, Any] = Field(default_factory=dict)
 
+    @model_validator(mode="after")
+    def _timings_inside_narration(self) -> AudioArtifact:
+        duration = self.narration.get("durationMs")
+        if not isinstance(duration, int) or duration <= 0:
+            raise ValueError("narration.durationMs must be a positive integer")
+        if not isinstance(self.narration.get("src"), str) or not self.narration.get("src"):
+            raise ValueError("narration.src is required")
+        if not isinstance(self.narration.get("voice"), str) or not self.narration.get("voice"):
+            raise ValueError("narration.voice is required")
+        if not self.scenes:
+            raise ValueError("scene timings must cover the narration")
+        last_end = 0
+        for scene in self.scenes:
+            start, end = scene.get("startMs"), scene.get("endMs")
+            if not isinstance(start, int) or not isinstance(end, int) or start != last_end or end <= start or end > duration:
+                raise ValueError("scene timings must be contiguous inside narration duration")
+            last_end = end
+        if last_end != duration:
+            raise ValueError("scene timings must cover the whole narration duration")
+        cue_end = 0
+        for cue in self.subtitles:
+            if cue.startMs < cue_end or cue.endMs > duration:
+                raise ValueError("subtitle cues must be ordered and inside narration duration")
+            cue_end = cue.endMs
+        return self
+
 
 class RenderArtifact(Artifact):
     kind = "render"
@@ -152,11 +178,110 @@ class RenderArtifact(Artifact):
     frames: int = Field(gt=0)
     duration_ms: int = Field(gt=0)
     video_codec: str = "h264"
-    audio_codec: str = "aac"
+    #: None for a silent render. A file with no audio stream has no audio codec, and claiming
+    #: "aac" would describe an intent rather than the bytes on disk.
+    audio_codec: str | None = None
     pix_fmt: str = "yuv420p"
     renderer: RendererId = "remotion"
     renderer_version: str = ""
     scene_hashes: dict[str, str] = Field(default_factory=dict)
+
+
+VisualStatus = Literal["passed", "failed", "skipped_no_vision_provider"]
+
+#: A repair is a recorded decision, never a hidden retry. ``blocked`` is the only automatic
+#: outcome this build can produce: re-running a deterministic black or frozen render cannot
+#: converge, so an automatic repair loop would spend time to reach the same failure.
+REPAIR_ACTIONS = frozenset({"blocked", "rerendered", "re-authored"})
+
+
+class TechnicalQaArtifact(Artifact):
+    """FR-7.1, measured. One boolean per check, plus the value it was judged against.
+
+    ``passed`` is not free-standing: the validator recomputes it from ``checks`` and ``failed``.
+    That is the whole point — the artifact in ``data/jobs/4145e5b9e03c87d7/qc.json`` claimed
+    ``technical.passed: true`` while carrying no detector results at all, and nothing in the
+    contract could object.
+    """
+
+    kind = "technical-qc"
+
+    passed: bool = False
+    checks: dict[str, bool] = Field(default_factory=dict)
+    observed: dict[str, Any] = Field(default_factory=dict)
+    thresholds: dict[str, str] = Field(default_factory=dict)
+    failed: list[str] = Field(default_factory=list)
+    detectors: dict[str, dict[str, Any]] = Field(default_factory=dict)
+    inputs_sha256: str = Field(default="", min_length=64, max_length=64)
+    reason: str = ""
+
+    @field_validator("checks", mode="before")
+    @classmethod
+    def _checks_are_booleans(cls, value: Any) -> Any:
+        """Lax bool coercion turns ``"yes"`` into ``True``. A check is a measurement, not a vibe."""
+        if isinstance(value, dict):
+            bad = sorted(name for name, item in value.items() if not isinstance(item, bool))
+            if bad:
+                raise ValueError(f"technical checks must be booleans, got non-boolean for {bad}")
+        return value
+
+    @model_validator(mode="after")
+    def _thresholds_are_recorded(self) -> TechnicalQaArtifact:
+        if not self.thresholds:
+            raise ValueError("technical QC must record the thresholds it was judged against")
+        return self
+
+    @model_validator(mode="after")
+    def _passed_matches_the_checks(self) -> TechnicalQaArtifact:
+        if not self.passed:
+            return self
+        if self.failed:
+            raise ValueError(
+                f"technical QC cannot claim passed=true while naming failures: {self.failed}"
+            )
+        untrue = sorted(name for name, ok in self.checks.items() if not ok)
+        if untrue:
+            raise ValueError(
+                f"technical QC cannot claim passed=true with failing checks: {untrue}"
+            )
+        return self
+
+
+class ReadinessArtifact(Artifact):
+    """The gate verdict, recomputed from the artifacts rather than copied from them.
+
+    ``READY_FOR_APPROVAL`` is entered only when this artifact says ``ready``. It carries the input
+    hashes so a re-render invalidates a stale verdict instead of leaving a pass attached to bytes
+    that no longer exist.
+    """
+
+    kind = "readiness"
+
+    ready: bool = False
+    checks: dict[str, bool] = Field(default_factory=dict)
+    blockers: list[str] = Field(default_factory=list)
+    technical_passed: bool = False
+    creative_passed: bool = False
+    visual_status: VisualStatus = "skipped_no_vision_provider"
+    inputs_sha256: str = Field(default="", min_length=64, max_length=64)
+    reason: str = ""
+
+    @model_validator(mode="after")
+    def _ready_matches_its_evidence(self) -> ReadinessArtifact:
+        if not self.ready:
+            return self
+        if self.blockers:
+            raise ValueError(f"readiness cannot be true while blockers remain: {self.blockers}")
+        untrue = sorted(name for name, ok in self.checks.items() if not ok)
+        if untrue:
+            raise ValueError(f"readiness cannot be true with failing checks: {untrue}")
+        if not self.technical_passed:
+            raise ValueError("readiness cannot be true when technical QC did not pass")
+        if not self.creative_passed:
+            raise ValueError("readiness cannot be true when creative QC did not pass")
+        if self.visual_status == "failed":
+            raise ValueError("readiness cannot be true when visual QC failed")
+        return self
 
 
 class QaArtifact(Artifact):
@@ -178,6 +303,70 @@ class QaArtifact(Artifact):
             )
         return self
 
+    @model_validator(mode="after")
+    def _technical_pass_is_explicit(self) -> QaArtifact:
+        if not isinstance(self.technical.get("passed"), bool):
+            raise ValueError(
+                "technical.passed must be an explicit boolean; a missing pass is not a pass"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _creative_pass_is_explicit_and_measured(self) -> QaArtifact:
+        if not isinstance(self.creative.get("passed"), bool):
+            raise ValueError(
+                "creative.passed must be an explicit boolean; a missing pass is not a pass"
+            )
+        metrics = self.creative.get("metrics")
+        if not isinstance(metrics, dict) or not metrics:
+            raise ValueError(
+                "creative.metrics must carry the measured values a verdict was based on"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _visual_counts_are_consistent(self) -> QaArtifact:
+        status = self.visual.get("status")
+        inspected = self.visual.get("frames_inspected")
+        if not isinstance(inspected, int) or inspected < 0:
+            raise ValueError("visual.frames_inspected must be a non-negative integer")
+        if status == "passed" and inspected < 1:
+            raise ValueError(
+                "visual.status=passed requires frames_inspected >= 1; a provider that saw "
+                "nothing cannot pass"
+            )
+        if status == "skipped_no_vision_provider":
+            if inspected != 0:
+                raise ValueError(
+                    "visual.status=skipped_no_vision_provider requires frames_inspected == 0"
+                )
+            if self.visual.get("provider") is not None:
+                raise ValueError(
+                    "visual.status=skipped_no_vision_provider cannot name a provider"
+                )
+        return self
+
+    @model_validator(mode="after")
+    def _repairs_are_well_formed(self) -> QaArtifact:
+        for index, record in enumerate(self.repairs):
+            if not isinstance(record, dict):
+                raise ValueError(f"repairs[{index}] must be an object")
+            missing = [
+                key
+                for key in ("attempt", "target", "reason", "artifacts_invalidated", "action")
+                if key not in record
+            ]
+            if missing:
+                raise ValueError(f"repairs[{index}] is missing {missing}")
+            if record["action"] not in REPAIR_ACTIONS:
+                raise ValueError(
+                    f"repairs[{index}].action must be one of {sorted(REPAIR_ACTIONS)}; "
+                    f"got {record['action']!r}"
+                )
+            if not isinstance(record["artifacts_invalidated"], list):
+                raise ValueError(f"repairs[{index}].artifacts_invalidated must be a list")
+        return self
+
 
 class ApprovalArtifact(Artifact):
     kind = "approval"
@@ -187,6 +376,11 @@ class ApprovalArtifact(Artifact):
     reason: str | None = None
     checks: dict[str, bool] = Field(default_factory=dict)
     decided_at: str = ""
+    #: The render this decision was made about. Recorded so a stale approval cannot authorise a
+    #: different file: ``JobStore.transition`` refuses ``APPROVED`` when this does not match
+    #: ``render.json.sha256`` at transition time. Optional because an artifact written before this
+    #: field existed must still parse — and it is then refused at the transition, not here.
+    render_sha256: str | None = None
 
     @model_validator(mode="after")
     def _rejection_has_reason(self) -> ApprovalArtifact:
@@ -219,6 +413,11 @@ class PublicationArtifact(Artifact):
     privacy: Literal["private", "unlisted", "public"] = "private"
     publish_at: str | None = None
     receipts: list[dict[str, Any]] = Field(default_factory=list)
+    #: Derived from ``render.json.sha256`` plus the job id, so a re-run cannot mint a new one.
+    #: This is what makes an upload idempotent: the same key means the same bytes.
+    idempotency_key: str = Field(min_length=16)
+    #: How many insert attempts have been made. Incremented only when a request may have left.
+    attempt: int = Field(default=0, ge=0)
 
     @model_validator(mode="after")
     def _public_needs_confirmation_receipt(self) -> PublicationArtifact:
@@ -226,4 +425,37 @@ class PublicationArtifact(Artifact):
             confirmed = any(r.get("step") == "public_confirm" and r.get("ok") for r in self.receipts)
             if not confirmed:
                 raise ValueError("a public publication needs a public_confirm receipt")
+        return self
+
+    @model_validator(mode="after")
+    def _uncertain_must_say_what_it_sent(self) -> PublicationArtifact:
+        """``uncertain`` means "a request may have left and we do not know the outcome".
+
+        That claim is only actionable if it carries the evidence: an ``insert_sent`` receipt with
+        a timestamp and the payload that was sent. Without it an operator cannot reconcile, and a
+        retry would be a blind duplicate — exactly what FR-8.3 forbids.
+        """
+        if self.phase != "uncertain":
+            return self
+        sent = [r for r in self.receipts if r.get("step") == "insert_sent"]
+        if not sent:
+            raise ValueError(
+                "an uncertain publication needs an insert_sent receipt recording that the "
+                "request may have left; without it the record is not actionable"
+            )
+        receipt = sent[-1]
+        if not str(receipt.get("at") or "").strip():
+            raise ValueError("an insert_sent receipt must record 'at' (when the request left)")
+        if not isinstance(receipt.get("sent"), dict) or not receipt["sent"]:
+            raise ValueError(
+                "an insert_sent receipt must record 'sent' (what was sent), so a reconciliation "
+                "can match it against the remote channel"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _confirmed_needs_a_video_id(self) -> PublicationArtifact:
+        """``confirmed`` asserts a video exists; without an id that assertion is unverifiable."""
+        if self.phase == "confirmed" and not str(self.video_id or "").strip():
+            raise ValueError("a confirmed publication must carry video_id")
         return self
