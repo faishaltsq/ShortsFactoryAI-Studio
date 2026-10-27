@@ -13,6 +13,9 @@
  * 3. A declared `push` camera changes the frame: the declared camera must reach every template
  *    through `DeclaredCameraScope` (short of `IllustratedStory`, which owns its legacy path and
  *    is already covered by `verify-camera-beats.mjs`).
+ * 4. A declared action beat either moves the template's figure (MotionComic panel figures,
+ *    IllustratedStory rig) or, on text-only templates, changes nothing at all — beats on a
+ *    template without a rig are director's notes, and invented motion would be a contract lie.
  *
  * Scenes come from `fixtures/all-templates.json`, the same fixture `Root.tsx` falls back to, so
  * each template renders with data that validates under its own branch of `validateSceneData`.
@@ -55,6 +58,9 @@ const CAMERA = {
   push: {shot: 'wide', move: 'push', amplitude: 0.4, ease: 'power2.out', target: 'title'},
 };
 
+/** Templates whose renderer consumes motion beats. All others must leave beats pixels untouched. */
+const FIGURED_TEMPLATES = new Set(['MotionComic', 'IllustratedStory']);
+
 const templateScene = (template) => {
   const scene = structuredClone(fixture.scenes.find((s) => s.template === template));
   if (!scene) throw new Error(`fixture has no scene for ${template}`);
@@ -69,7 +75,7 @@ const templateScene = (template) => {
   return scene;
 };
 
-const still = (name, compositionId, scene) => {
+const still = (name, compositionId, scene, frame = 30) => {
   const props = path.join(outDir, `${name}-props.json`);
   const png = path.join(outDir, `${name}.png`);
   writeFileSync(
@@ -77,8 +83,7 @@ const still = (name, compositionId, scene) => {
     JSON.stringify({scene, theme: fixture.theme, watermark: fixture.watermark?.text}),
   );
   // Standalone template compositions run a scene-local timeline (`Root.tsx` re-bases the scene to
-  // frame 0), so frame 30 sits inside every 150-frame scene.
-  const frame = 30;
+  // frame 0), so the default frame 30 sits inside every 150-frame scene.
   const result = spawnSync(
     process.execPath,
     [cli, 'still', 'src/index.ts', compositionId, png, `--props=${props}`, `--frame=${frame}`,
@@ -134,7 +139,33 @@ for (const template of TEMPLATE_IDS) {
     const psnr = frameDifference(baseline, pushed);
     if (psnr < 6) throw new Error(`declared camera did not reach this template (PSNR ${psnr.toFixed(1)} dB)`);
 
-    console.log(`${template}: luma=${luma.toFixed(1)} push-PSNR=${psnr === Number.POSITIVE_INFINITY ? 'inf' : psnr.toFixed(1)}dB`);
+    // Declared beats: a figure-carrying template must act the beat on its figure; a text-only
+    // template has no rig, so its declared beats are director's notes the renderer must leave
+    // untouched — byte-identical pixels prove no invented motion. The beat fires at frame 40 on
+    // the first figure (panel 0 / data actor 0); the comparison frame 60 is past the
+    // POSE_BLEND_FRAMES peak. Baseline for this comparison is the same scene at the SAME frame
+    // without motion: the compositions' own entrances are still settling at frame 30, so a
+    // cross-frame diff would read as invented motion.
+    const target = templateScene(template);
+    delete target.camera;
+    target.motion = {energy: 0.7, continuity: 'cut', beats: [{atFrame: 40, kind: 'action', subject: 'actor:0'}]};
+    const calm = still(`${template}-calm`, template, {...target, motion: undefined}, 60);
+    const acted = still(`${template}-beat`, template, target, 60);
+    const beatPsnr = frameDifference(calm, acted);
+    if (FIGURED_TEMPLATES.has(template)) {
+      // Measured full-frame floors with the beat acting: MotionComic 32.8 dB (a small panel
+      // figure moves inside a 1080x1920 frame), IllustratedStory 22.4 dB (body-scale rig). A
+      // figure that stood still scores inf here, exactly like the text-only templates above, so
+      // 35 dB only has to separate "small figure moved" from "nothing moved".
+      if (beatPsnr > 35) throw new Error(`beat did not move the figure (PSNR ${beatPsnr.toFixed(1)} dB)`);
+    } else if (beatPsnr !== Number.POSITIVE_INFINITY) {
+      throw new Error(`text-only template invented motion from beats (PSNR ${beatPsnr.toFixed(1)} dB)`);
+    }
+
+    console.log(
+      `${template}: luma=${luma.toFixed(1)} push-PSNR=${psnr === Number.POSITIVE_INFINITY ? 'inf' : psnr.toFixed(1)}dB` +
+        ` beat-PSNR=${beatPsnr === Number.POSITIVE_INFINITY ? 'inf' : beatPsnr.toFixed(1)}dB`,
+    );
   } catch (error) {
     failures.push(`${template}: ${error.message}`);
   }
