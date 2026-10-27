@@ -4,7 +4,13 @@ import {Figure} from '../art/Figure';
 import {paletteFor} from '../art/palette';
 import {NarrativeFrame, SceneProps} from '../components/NarrativeFrame';
 import {ComicData, localImage, validateSceneData} from '../scene-data';
+import {performanceAt, planBeats} from '../motion-beats';
 import {resolveTheme, SPACE, TYPE} from '../themes/brand';
+
+// The standing pose per panel, unchanged from before beats existed: it is also the base a
+// pose-change beat travels from and falls back to.
+const PANEL_POSES = ['point', 'shrug', 'stand'] as const;
+const PANEL_FACING = 'right' as const;
 
 export const MotionComicScene: React.FC<SceneProps> = (props) => {
   const {scene} = props;
@@ -12,6 +18,23 @@ export const MotionComicScene: React.FC<SceneProps> = (props) => {
   const frame = useCurrentFrame();
   validateSceneData(scene);
   const data = scene.data as unknown as ComicData;
+  // Panels are figures, so declared beats drive them: one actor per panel, same indices beats
+  // address with `actor:<n>`. `planBeats` is the single beats authority — no per-template semantics.
+  const actors = React.useMemo(
+    () =>
+      data.panels.map((_, i) => ({
+        pose: PANEL_POSES[i] ?? 'stand',
+        x: 0.5,
+        ground: 0.96,
+        scale: 0.55,
+        facing: PANEL_FACING,
+        tone: 'accent' as const,
+        silhouette: false,
+      })),
+    [data.panels],
+  );
+  const beats = React.useMemo(() => planBeats(scene, actors), [scene, actors]);
+  const performances = data.panels.map((_, i) => performanceAt(beats, i, frame, actors[i], scene.motion?.energy ?? 0));
   return <NarrativeFrame {...props} title={data.title}>
     <div style={{display: 'flex', flexDirection: 'column', flex: 1, gap: SPACE.card, minHeight: 0}}>
       {data.panels.map((panel, i) => {
@@ -22,11 +45,12 @@ export const MotionComicScene: React.FC<SceneProps> = (props) => {
           ) : (
             <div style={{width: '34%', height: '100%', position: 'relative', flexShrink: 0}}>
               <Figure
-                actor={{pose: i === 0 ? 'point' : i === 1 ? 'shrug' : 'stand', x: 0.5, ground: 0.96, scale: 0.55, facing: 'right', tone: 'accent', silhouette: false}}
+                actor={performances[i].actor}
                 palette={paletteFor(theme, 'night')}
                 frame={frame}
                 index={i}
                 fit="box"
+                opacity={performances[i].opacity}
               />
             </div>
           )}
