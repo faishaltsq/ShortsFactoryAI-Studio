@@ -19,11 +19,12 @@ def _stage(name, state, *, produces=("out.json",), behaviour=None, contract=None
            contract_artifact=""):
     calls = {"n": 0}
 
-    def run(store_, job_id):
+    def run(ctx):
+        job_id = ctx.job_id
         calls["n"] += 1
         if behaviour is not None:
-            return behaviour(store_, job_id, calls["n"])
-        store_.write_artifact(job_id, "out.json", {"ok": True, "n": calls["n"]})
+            return behaviour(ctx, job_id, calls["n"])
+        ctx.write_artifact("out.json", {"ok": True, "n": calls["n"]})
         return StageOutcome(ok=True, artifacts=["out.json"])
 
     stage = Stage(
@@ -58,7 +59,7 @@ def test_a_completed_stage_is_reused_not_rerun(store):
 def test_a_stage_claiming_success_without_its_artifact_fails(store):
     job = store.create(title="x")
 
-    def lies(store_, job_id, _n):
+    def lies(ctx, job_id, _n):
         return StageOutcome(ok=True, detail="trust me")
 
     stage, _ = _stage("liar", JobState.TOPIC_SELECTED, behaviour=lies)
@@ -75,8 +76,8 @@ def test_an_invalid_contract_fails_even_when_the_file_exists(store):
     for state in (JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE):
         store.transition(job.id, state)
 
-    def bad(store_, job_id, _n):
-        store_.write_artifact(job_id, "script.json", {"hook": "", "segments": []})
+    def bad(ctx, job_id, _n):
+        ctx.write_artifact( "script.json", {"hook": "", "segments": []})
         return StageOutcome(ok=True)
 
     stage = Stage(
@@ -96,7 +97,7 @@ def test_retryable_failures_are_retried_then_blocked(store):
     job = store.create(title="x")
     store.transition(job.id, JobState.TOPIC_SELECTED)
 
-    def always_fails(store_, job_id, _n):
+    def always_fails(ctx, job_id, _n):
         raise StageError("provider_timeout", "upstream timed out", retryable=True)
 
     stage, calls = _stage("flaky", JobState.RESEARCH_COMPLETE, behaviour=always_fails)
@@ -110,10 +111,10 @@ def test_a_retryable_failure_that_then_succeeds(store):
     job = store.create(title="x")
     store.transition(job.id, JobState.TOPIC_SELECTED)
 
-    def fails_once(store_, job_id, n):
+    def fails_once(ctx, job_id, n):
         if n == 1:
             raise StageError("provider_rate_limit", "429", retryable=True)
-        store_.write_artifact(job_id, "out.json", {"ok": True})
+        ctx.write_artifact( "out.json", {"ok": True})
         return StageOutcome(ok=True)
 
     stage, calls = _stage("flaky", JobState.RESEARCH_COMPLETE, behaviour=fails_once)
@@ -126,7 +127,7 @@ def test_a_non_retryable_failure_fails_immediately(store):
     job = store.create(title="x")
     store.transition(job.id, JobState.TOPIC_SELECTED)
 
-    def boom(store_, job_id, _n):
+    def boom(ctx, job_id, _n):
         raise StageError("provider_auth", "401", retryable=False)
 
     stage, calls = _stage("auth", JobState.RESEARCH_COMPLETE, behaviour=boom)
@@ -140,7 +141,7 @@ def test_an_unexpected_exception_never_looks_like_success(store):
     job = store.create(title="x")
     store.transition(job.id, JobState.TOPIC_SELECTED)
 
-    def crash(store_, job_id, _n):
+    def crash(ctx, job_id, _n):
         raise RuntimeError("index out of range")
 
     stage, _ = _stage("crash", JobState.RESEARCH_COMPLETE, behaviour=crash)
@@ -184,10 +185,10 @@ def test_a_stage_that_loses_the_lease_mid_run_is_not_recorded(store):
     keeper = LeaseKeeper(store.db_path, owner="mine")
     keeper.acquire(job.id)
 
-    def steals_then_writes(store_, job_id, _n):
+    def steals_then_writes(ctx, job_id, _n):
         with keeper._connect() as conn:
             conn.execute("UPDATE job_leases SET token = 'rival' WHERE job_id = ?", (job_id,))
-        store_.write_artifact(job_id, "out.json", {"ok": True})
+        ctx.write_artifact( "out.json", {"ok": True})
         return StageOutcome(ok=True)
 
     stage, _ = _stage("thief", JobState.TOPIC_SELECTED, behaviour=steals_then_writes)
@@ -203,9 +204,9 @@ def test_resume_after_a_crash_does_not_repeat_paid_work(store):
     store.transition(job.id, JobState.RESEARCH_COMPLETE)
     paid_calls = {"n": 0}
 
-    def paid(store_, job_id, n):
+    def paid(ctx, job_id, n):
         paid_calls["n"] += 1
-        store_.write_artifact(job_id, "out.json", {"script": "once"})
+        ctx.write_artifact( "out.json", {"script": "once"})
         return StageOutcome(ok=True)
 
     stage, _ = _stage("paid", JobState.SCRIPT_GENERATED, behaviour=paid)
@@ -220,10 +221,10 @@ def test_a_failed_stage_is_retried_on_resume(store):
     store.transition(job.id, JobState.RESEARCH_COMPLETE)
     state = {"fail": True}
 
-    def maybe(store_, job_id, _n):
+    def maybe(ctx, job_id, _n):
         if state["fail"]:
             raise StageError("provider_timeout", "down", retryable=True)
-        store_.write_artifact(job_id, "out.json", {"ok": True})
+        ctx.write_artifact( "out.json", {"ok": True})
         return StageOutcome(ok=True)
 
     stage, _ = _stage("maybe", JobState.SCRIPT_GENERATED, behaviour=maybe)

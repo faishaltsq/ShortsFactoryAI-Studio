@@ -15,7 +15,7 @@ import pytest
 
 from packages.core.contracts.state import JobState
 from packages.core.orchestration.jobstore import JobStore
-from packages.core.orchestration.runner import Stage, StageChainError, StageOutcome, run_stages
+from packages.core.orchestration.runner import Stage, StageChainError, StageContext, StageOutcome, run_stages
 
 
 @pytest.fixture
@@ -24,8 +24,8 @@ def store(tmp_path) -> JobStore:
 
 
 def _stage(state: JobState, name: str, artifact: str) -> Stage:
-    def run(store: JobStore, job_id: str) -> StageOutcome:
-        store.write_artifact(job_id, artifact, {"schema_version": 1})
+    def run(ctx: StageContext) -> StageOutcome:
+        ctx.write_artifact(artifact, {"schema_version": 1})
         return StageOutcome(ok=True, artifacts=[artifact])
 
     return Stage(name=name, state=state, produces=(artifact,), run=run)

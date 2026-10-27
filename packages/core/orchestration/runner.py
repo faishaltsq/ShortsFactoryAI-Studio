@@ -18,6 +18,10 @@ naive loop does not:
 from __future__ import annotations
 
 import datetime as dt
+import json
+import os
+import shutil
+import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -25,7 +29,7 @@ from typing import Any, Protocol
 
 from ..contracts.base import Artifact, ArtifactValidationError, validate_artifact
 from ..contracts.state import JobState, is_transition_allowed
-from .jobstore import JobStore
+from .jobstore import JobStore, safe_artifact_name
 from .leases import LeaseKeeper, LeaseLost
 
 
@@ -66,6 +70,71 @@ class StageError(RuntimeError):
         super().__init__(f"{code}: {detail}")
 
 
+#: Stage failures that have already staged evidence the operator must see. The runner commits
+#: staged artifacts for these codes even though the stage failed — a QA verdict that says
+#: ``blocked`` is not a crash to discard, it is the finding itself.
+EVIDENCE_CODES = frozenset(
+    {"qa_blocked", "publication_uncertain", "publication_key_mismatch", "revision_required"}
+)
+
+
+class StageContext:
+    """What a stage body receives instead of ``(store, job_id)``.
+
+    Artifacts and files written through this context land in a run-owned staging directory and
+    become canonical only when the runner validates and promotes them after the stage returns.
+    A worker that loses its lease mid-stage can therefore no longer decorate a job whose lease
+    another worker took over: promotion is fenced by the lease check in ``commit_stage``.
+    """
+
+    def __init__(
+        self,
+        store: JobStore,
+        job_id: str,
+        staging: Path,
+        *,
+        keeper: LeaseKeeper | None = None,
+        cancel: CancelToken | None = None,
+    ) -> None:
+        self.store = store
+        self.job_id = job_id
+        self.staging = staging
+        self.keeper = keeper
+        self.cancel = cancel
+        self.call: Any = None
+        self.json_pending: list[tuple[str, dict[str, Any]]] = []
+        self.files_pending: list[tuple[str, Path]] = []
+
+    def write_artifact(self, name: str, payload: dict[str, Any]) -> None:
+        safe = safe_artifact_name(name)
+        tmp = self.staging / safe
+        with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+            handle.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+            handle.flush()
+            os.fsync(handle.fileno())
+        self.json_pending.append((name, payload))
+
+    def alloc(self, name: str) -> Path:
+        """A staging path the stage writes itself (big binaries: video, wav, png)."""
+        return self.staging / safe_artifact_name(name)
+
+    def stage_file(self, name: str, path: Path) -> None:
+        """Move an already-written file into staging so promotion covers it too."""
+        safe = safe_artifact_name(name)
+        target = self.staging / safe
+        os.replace(path, target)
+        self.files_pending.append((name, target))
+
+    def assert_active(self) -> None:
+        """Raise when this run should stop: cancelled, or the lease is gone."""
+        if self.cancel is not None and self.cancel.is_cancelled():
+            raise StageError("cancelled", "cancellation observed inside the stage", retryable=False)
+        if self.keeper is not None and not self.keeper.renew():
+            # The token in the keeper is stale once renew fails; LeaseLost's default records
+            # "no live token" instead of a misleading one.
+            raise LeaseLost(self.job_id, "lease lost during stage")
+
+
 @dataclass(frozen=True)
 class Stage:
     """One unit of pipeline work.
@@ -79,7 +148,7 @@ class Stage:
     name: str
     state: JobState
     produces: tuple[str, ...]
-    run: Callable[[JobStore, str], StageOutcome]
+    run: Callable[[StageContext], StageOutcome]
     contract: type[Artifact] | None = None
     contract_artifact: str = ""
     #: Optional predicate ``(artifact, job_id) -> bool`` answering "does this artifact mean the
@@ -173,13 +242,27 @@ def run_stages(
         # stage's own LeaseLost, the post-failure renew, or the post-success renew below.
         if keeper is not None:
             keeper.start_heartbeat()
+        outcome: StageOutcome
         while True:
             attempts += 1
+            # Run-owned staging, fresh per attempt: everything the stage writes lands here and
+            # becomes canonical only through the runner's fenced commit below.
+            staging = Path(store.job_dir(job_id)) / f".stage-run-{uuid.uuid4().hex}"
+            staging.mkdir(parents=True, exist_ok=True)
+            ctx = StageContext(
+                store,
+                job_id,
+                staging,
+                keeper=keeper,
+                cancel=cancel,
+            )
+            committed = False
             try:
-                outcome = stage.run(store, job_id)
+                outcome = stage.run(ctx)
             except LeaseLost:
                 if keeper is not None:
                     keeper.stop_heartbeat()
+                _discard_staging(staging)
                 report["ok"] = False
                 report["stopped"] = "lease_lost"
                 report["detail"] = f"lease lost during {stage.name}"
@@ -197,7 +280,20 @@ def run_stages(
                 )
 
             if outcome.ok:
-                problem = _validate_produced(store, job_id, stage)
+                problem = _validate_staged(ctx, stage)
+                if problem is None:
+                    try:
+                        promoted = _promote_staged(store, job_id, ctx, stage)
+                    except LeaseLost:
+                        # The lease died between the stage's own checks and the fenced commit:
+                        # nothing canonical changed, so stop without recording anything.
+                        report["ok"] = False
+                        report["stopped"] = "lease_lost"
+                        report["detail"] = f"lease lost at promotion of {stage.name}"
+                        _discard_staging(staging)
+                        return report
+                    committed = promoted is None
+                    problem = promoted
                 if problem is None:
                     break
                 outcome = StageOutcome(
@@ -210,9 +306,18 @@ def run_stages(
             if keeper is not None and not keeper.renew():
                 report["ok"] = False
                 report["stopped"] = "lease_lost"
+                _discard_staging(staging)
                 return report
 
-            if outcome.retryable and attempts < max_attempts:
+            retrying = outcome.retryable and attempts < max_attempts
+            if not retrying and not committed and ctx.json_pending and outcome.error_code in EVIDENCE_CODES:
+                # Terminal failure with staged outputs: negative evidence — a QA verdict, an
+                # uncertain publication record — is committed, not discarded. A crashed stage's
+                # partial staging is dropped instead, leaving canonical clean.
+                _promote_staged(store, job_id, ctx, stage, validate=False)
+
+            if retrying:
+                _discard_staging(staging)
                 continue
 
             # Terminal for this run.
@@ -244,10 +349,12 @@ def run_stages(
             report["stopped"] = outcome.error_code or "failed"
             report["detail"] = outcome.detail
             report["stages"].append({"name": stage.name, "ok": False, "detail": outcome.detail})
+            _discard_staging(staging)
             if keeper is not None:
                 keeper.stop_heartbeat()
             return report
 
+        _discard_staging(staging)
         report["stages"].append(
             {"name": stage.name, "ok": True, "attempts": attempts, "detail": outcome.detail}
         )
@@ -263,6 +370,62 @@ def run_stages(
 
     report["finished_at"] = _now()
     return report
+
+
+def _promote_staged(
+    store: JobStore,
+    job_id: str,
+    ctx: StageContext,
+    stage: Stage,
+    *,
+    validate: bool = True,
+) -> str | None:
+    """Move staged outputs into the canonical job dir; return the first problem or ``None``.
+
+    With ``validate`` the stage's contract is checked against the *staged* payload before any
+    canonical byte changes; promotion itself is a single fenced ``commit_stage`` whose lease
+    check runs inside the same transaction that flips the state.
+    """
+    problem = _validate_staged(ctx, stage) if validate else None
+    if problem is not None:
+        return problem
+    current = store.get(job_id).state
+    target = (
+        stage.state
+        if current != stage.state and is_transition_allowed(current, stage.state)
+        else None
+    )
+    store.commit_stage(
+        job_id,
+        token=ctx.keeper.token if ctx.keeper is not None else None,
+        json_artifacts=ctx.json_pending,
+        files=ctx.files_pending,
+        target=target,
+        detail=f"{stage.name} completed",
+    )
+    return None
+
+
+def _discard_staging(staging: Path) -> None:
+    shutil.rmtree(staging, ignore_errors=True)
+
+
+def _validate_staged(ctx: StageContext, stage: Stage) -> str | None:
+    """Validate the stage's declared outputs where they sit, before any promotion."""
+    staged_names = {name for name, _ in ctx.json_pending} | {name for name, _ in ctx.files_pending}
+    for name in stage.produces:
+        if name not in staged_names:
+            return f"{stage.name} reported success but {name} is missing"
+    if stage.contract is not None and stage.contract_artifact:
+        payloads = dict(ctx.json_pending)
+        payload = payloads.get(stage.contract_artifact)
+        if payload is None:
+            return f"{stage.name}: {stage.contract_artifact} was not written through the stage context"
+        try:
+            validate_artifact(stage.contract, payload)
+        except ArtifactValidationError as exc:
+            return f"{stage.name}: {exc}"
+    return None
 
 
 def _is_done(store: JobStore, job_id: str, stage: Stage) -> bool:
