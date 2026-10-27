@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useState } from "react";
 import { Empty, ErrorState, Loading } from "@/components/states";
 import { VideoSurface } from "@/components/VideoSurface";
 import { api, type JobDetail, type JobView } from "@/lib/api";
+import { ProductionCalendar } from "@/app/jobs/production-calendar";
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -166,6 +167,8 @@ export default function JobsPage() {
         onTopicChange={setCreateTopic}
         onSubmit={createMockJob}
       />
+
+      <ProductionCalendar />
 
       {listError ? (
         <div className="mb-4">

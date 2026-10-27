@@ -18,6 +18,8 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from packages.core.contracts.state import JobState
 from packages.core.observability.events import AGENT_IDS, snapshot
 from packages.core.orchestration.jobstore import ArtifactNotFound
+from packages.core.orchestration.scheduler import SCHEDULABLE_STATES
+from packages.core.orchestration.scheduler import _utc_now as _scheduler_now
 from packages.core.providers.base import (
     Capability,
 )
@@ -165,6 +167,30 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.get("/api/jobs")
     def list_jobs(limit: int = Query(default=100, ge=1, le=500)) -> dict[str, Any]:
         return {"jobs": [service.view(job) for job in app_state.store.list(limit=limit)]}
+
+    @app.get("/api/jobs/upcoming")
+    def upcoming_jobs() -> dict[str, Any]:
+        """Calendar view: scheduled jobs ordered by start time, then priority.
+
+        Read-only projection — the schedule decides when *production* may start, never the
+        approval gate or anything after it.
+        """
+        now = _scheduler_now()
+        rows = [
+            job
+            for job in app_state.store.list(limit=500)
+            if job.scheduled_for is not None and job.state in SCHEDULABLE_STATES
+        ]
+        rows.sort(key=lambda job: (job.scheduled_for or "", job.priority, job.created_at))
+        return {
+            "now": now,
+            "upcoming": [service.view(job) for job in rows],
+            "awaiting_schedule": [
+                service.view(job)
+                for job in app_state.store.list(states=list(SCHEDULABLE_STATES), limit=500)
+                if job.scheduled_for is None
+            ],
+        }
 
     @app.post("/api/jobs", status_code=201)
     def create_job(body: CreateJobBody, _: None = Depends(require_token)) -> dict[str, Any]:

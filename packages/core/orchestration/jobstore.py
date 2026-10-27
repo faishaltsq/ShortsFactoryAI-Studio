@@ -88,6 +88,11 @@ class JobRecord:
     created_at: str
     updated_at: str
     locked_at: str | None
+    #: Queue priority: lower runs first (1 = most urgent; 5 = operator default). Additive.
+    priority: int
+    #: Earliest production start (ISO-8601 UTC). ``None`` means "as soon as schedulable".
+    #: Schedules *production* only — never approval, never publication (STATE_MACHINE FR-8.4).
+    scheduled_for: str | None
 
     @property
     def provider_mode(self) -> str:
@@ -151,15 +156,21 @@ class JobStore:
         payload: dict[str, Any] | None = None,
         state: JobState = JobState.IDEA_DISCOVERY,
         job_id: str | None = None,
+        priority: int = 5,
+        scheduled_for: str | None = None,
     ) -> JobRecord:
+        """Create a job. ``priority``: lower runs first. ``scheduled_for``: earliest
+        production start, UTC ISO-8601 — production scheduling only, never publish."""
+        if not 1 <= int(priority) <= 9:
+            raise ValueError(f"priority must be 1..9, got {priority}")
         now = _utc_now()
         identifier = job_id or os.urandom(8).hex()
         body = json.dumps(payload or {}, ensure_ascii=False, sort_keys=True)
         with self._lock, self._connect() as conn:
             conn.execute(
-                "INSERT INTO jobs(id, title, state, attempts, payload, created_at, updated_at)"
-                " VALUES (?,?,?,0,?,?,?)",
-                (identifier, title, state.value, body, now, now),
+                "INSERT INTO jobs(id, title, state, attempts, payload, created_at, updated_at,"
+                " priority, scheduled_for) VALUES (?,?,?,0,?,?,?,?,?)",
+                (identifier, title, state.value, body, now, now, int(priority), scheduled_for),
             )
             self._insert_event(
                 conn, identifier, None, state.value, "job created", now
@@ -181,7 +192,9 @@ class JobStore:
             placeholders = ",".join("?" for _ in states)
             query += f" WHERE state IN ({placeholders})"
             params.extend(state.value for state in states)
-        query += " ORDER BY created_at DESC LIMIT ?"
+        # ``rowid`` breaks created_at ties deterministically: two jobs created in the same
+        # second keep a stable insertion order everywhere this ordering is trusted.
+        query += " ORDER BY created_at DESC, rowid DESC LIMIT ?"
         params.append(limit)
         with self._connect() as conn:
             rows = conn.execute(query, params).fetchall()
@@ -424,6 +437,8 @@ def _record(row: sqlite3.Row) -> JobRecord:
         created_at=row["created_at"],
         updated_at=row["updated_at"],
         locked_at=row["locked_at"],
+        priority=int(row["priority"]),
+        scheduled_for=row["scheduled_for"],
     )
 
 
@@ -481,6 +496,15 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
             )
             """,
             "CREATE INDEX IF NOT EXISTS idx_discoveries_time ON topic_discoveries(created_at)",
+        ],
+    ),
+    (
+        3,
+        [
+            # Additive per DATA_CONTRACTS rule 0: new columns with defaults, no renames.
+            "ALTER TABLE jobs ADD COLUMN priority INTEGER NOT NULL DEFAULT 5",
+            "ALTER TABLE jobs ADD COLUMN scheduled_for TEXT",
+            "CREATE INDEX IF NOT EXISTS idx_jobs_sched ON jobs(scheduled_for)",
         ],
     ),
 ]

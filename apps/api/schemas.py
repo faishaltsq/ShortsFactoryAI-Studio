@@ -28,6 +28,11 @@ class CreateJobBody(BaseModel):
     #: ``strict`` because lax mode turns ``"yes"``/``"on"``/``1`` into True, and a string typo
     #: must not silently start a multi-minute render.
     render_video: bool = Field(default=False, strict=True)
+    #: Queue priority: lower runs first. Bounded 1..9 to keep the calendar readable.
+    priority: int = Field(default=5, ge=1, le=9)
+    #: Earliest production start (ISO-8601 UTC). Production scheduling only — never approval
+    #: or publication: the approval gate always waits for a human, scheduled or not.
+    scheduled_for: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
 
     @field_validator("characters")
     @classmethod

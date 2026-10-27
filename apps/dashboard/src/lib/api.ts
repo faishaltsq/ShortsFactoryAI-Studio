@@ -50,6 +50,8 @@ export type JobView = {
   created_at: string;
   updated_at: string;
   last_error: string | null;
+  priority: number;
+  scheduled_for: string | null;
   running: boolean;
 };
 
@@ -204,6 +206,11 @@ export const api = {
 
   usageToday: () => request<{ tokens: number; cost_usd: number; calls: number }>("/api/usage/today"),
   usageSummary: () => request<UsageSummary>("/api/usage/summary"),
+
+  upcoming: () =>
+    request<{ now: string; upcoming: JobView[]; awaiting_schedule: JobView[] }>(
+      "/api/jobs/upcoming",
+    ),
 };
 
 export function videoUrl(jobId: string): string {

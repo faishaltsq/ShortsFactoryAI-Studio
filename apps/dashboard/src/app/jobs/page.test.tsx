@@ -22,6 +22,8 @@ const job: JobDetail = {
   created_at: "2026-10-25T10:00:00+00:00",
   updated_at: "2026-10-25T10:01:00+00:00",
   last_error: null,
+  priority: 5,
+  scheduled_for: null,
   running: true,
   payload: {},
   artifacts: ["storyboard.json"],
@@ -40,6 +42,8 @@ const jobView = {
   created_at: job.created_at,
   updated_at: job.updated_at,
   last_error: job.last_error,
+  priority: job.priority,
+  scheduled_for: job.scheduled_for,
   running: job.running,
 };
 

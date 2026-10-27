@@ -366,3 +366,64 @@ def test_the_scheduler_hands_off_to_job_service_start(tmp_path):
     assert state.store.get(job.id).state is not JobState.IDEA_DISCOVERY, (
         "the scheduler's hand-off must actually run the job"
     )
+
+
+def test_priority_runs_before_age(store):
+    """A low priority number outranks a job that has been waiting longer."""
+    old = store.create(title="Tua", payload={"provider_mode": "mock"})
+    urgent = store.create(title="Cepat", payload={"provider_mode": "mock"}, priority=1)
+    claimed = claim_next(store)
+    assert claimed is not None and claimed.id == urgent.id
+    _ = old
+
+
+def test_same_priority_falls_back_to_oldest_first(store):
+    first = store.create(title="Pertama", payload={"provider_mode": "mock"}, priority=3)
+    second = store.create(title="Kedua", payload={"provider_mode": "mock"}, priority=3)
+    claimed = claim_next(store)
+    assert claimed is not None and claimed.id == first.id
+    _ = second
+
+
+def test_a_future_scheduled_job_is_never_claimed_early(store):
+    """A calendar entry waits: future scheduled_for excludes the job from claiming."""
+    now_job = store.create(title="Sekarang", payload={"provider_mode": "mock"})
+    future = store.create(
+        title="Nanti",
+        payload={"provider_mode": "mock"},
+        scheduled_for="2099-01-01T00:00:00+00:00",
+    )
+    claimed = claim_next(store)
+    assert claimed is not None and claimed.id == now_job.id
+    later = claim_next(store, exclude={now_job.id})
+    assert later is None, "future job must not be pulled early"
+    _ = future
+
+
+def test_a_past_scheduled_job_is_claimable(store):
+    past = store.create(
+        title="Telat",
+        payload={"provider_mode": "mock"},
+        scheduled_for="2000-01-01T00:00:00+00:00",
+    )
+    claimed = claim_next(store)
+    assert claimed is not None and claimed.id == past.id
+
+
+def test_priority_bounds_are_enforced_at_creation(store):
+    with pytest.raises(ValueError, match="priority"):
+        store.create(title="Salah", payload={"provider_mode": "mock"}, priority=10)
+    with pytest.raises(ValueError, match="priority"):
+        store.create(title="Salah", payload={"provider_mode": "mock"}, priority=0)
+
+
+def test_a_scheduled_job_past_the_approval_gate_is_never_claimed(store):
+    """Production scheduling must never launder a job past the human gate."""
+    gated = store.create(
+        title="Di gerbang",
+        payload={"provider_mode": "mock"},
+        state=JobState.READY_FOR_APPROVAL,
+        priority=1,
+    )
+    assert claim_next(store) is None
+    _ = gated

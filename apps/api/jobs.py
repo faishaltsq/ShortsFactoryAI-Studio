@@ -79,6 +79,8 @@ class JobService:
             "created_at": job.created_at,
             "updated_at": job.updated_at,
             "last_error": job.last_error,
+            "priority": job.priority,
+            "scheduled_for": job.scheduled_for,
             "running": job.id in self.state.running,
         }
 
@@ -122,7 +124,12 @@ class JobService:
             # The pipeline is implemented; this guard exists so the flag cannot silently mean
             # something different than it says.
             pass
-        job = self.state.store.create(title=payload["title"], payload=payload)
+        job = self.state.store.create(
+            title=payload["title"],
+            payload=payload,
+            priority=payload.get("priority", 5),
+            scheduled_for=payload.get("scheduled_for"),
+        )
         self.state.events.emit(
             job_id=job.id,
             agent_id="FactoryOrchestrator",

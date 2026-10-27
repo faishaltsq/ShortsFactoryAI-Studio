@@ -326,3 +326,33 @@ def test_render_video_rejects_a_non_boolean(client):
 def test_create_job_body_forbids_unknown_fields(client):
     response = client.post("/api/jobs", json={"title": "x", "render_videoo": True})
     assert response.status_code == 422, response.text
+
+
+def test_create_job_accepts_priority_and_schedule(client):
+    job = _create(client, priority=2, scheduled_for="2099-03-01T09:00:00+00:00")
+    assert job["priority"] == 2
+    assert job["scheduled_for"] == "2099-03-01T09:00:00+00:00"
+    default = _create(client)
+    assert default["priority"] == 5 and default["scheduled_for"] is None
+
+
+def test_create_job_rejects_out_of_range_priority(client):
+    response = client.post(
+        "/api/jobs",
+        json={"title": "Uji", "topic": "x", "provider_mode": "mock", "priority": 12},
+    )
+    assert response.status_code == 422
+    response = client.post(
+        "/api/jobs",
+        json={"title": "Uji", "topic": "x", "provider_mode": "mock", "scheduled_for": "not-a-date"},
+    )
+    assert response.status_code == 422
+
+
+def test_upcoming_lists_calendar_split(client):
+    _create(client, title="Nanti", priority=2, scheduled_for="2099-01-01T00:00:00+00:00")
+    _create(client, title="Bebas")
+    body = client.get("/api/jobs/upcoming").json()
+    assert [job["title"] for job in body["upcoming"]] == ["Nanti"]
+    assert any(job["title"] == "Bebas" for job in body["awaiting_schedule"])
+    assert "now" in body

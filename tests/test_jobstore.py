@@ -348,7 +348,7 @@ def test_migrations_are_idempotent(tmp_path):
     assert second.get(job.id).title == "x"
     with second._connect() as conn:
         versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations")]
-    assert versions == [1, 2], "reopening applies migration 2 exactly once, never re-running migration 1"
+    assert versions == [1, 2, 3], "each migration applies exactly once, never re-running an earlier one"
 
 
 def test_wal_is_enabled(store):

@@ -29,7 +29,7 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from ..contracts.state import JobState
-from .jobstore import JobRecord, JobStore
+from .jobstore import JobRecord, JobStore, _utc_now
 
 #: Off unless an operator turns it on. A scheduler that runs by default would start spending
 #: money on the first launch after a reboot.
@@ -118,20 +118,25 @@ class SchedulerConfig:
 
 
 def claim_next(store: JobStore, *, exclude: set[str] | None = None) -> JobRecord | None:
-    """The oldest job the scheduler may pick up, or ``None``.
+    """The job the scheduler may pick up next, or ``None``.
 
-    ``exclude`` lets a caller skip jobs it already holds, so two callers cannot be handed the same
-    row by this function alone. Real mutual exclusion is the lease (``leases.py``); this is only
-    the selection rule.
+    Selection rule: schedulable states, ``scheduled_for`` not in the future (a calendar entry
+    waits — production scheduling never pulls work early), then lowest ``priority`` number,
+    then oldest ``created_at``. ``exclude`` lets a caller skip jobs it already holds, so two
+    callers cannot be handed the same row by this function alone. Real mutual exclusion is the
+    lease (``leases.py``); this is only the selection rule.
     """
     excluded = exclude or set()
-    for job in reversed(store.list(states=list(SCHEDULABLE_STATES), limit=500)):
-        # ``store.list`` orders newest first; the scheduler takes the oldest, because a job that has
-        # been waiting longest is the one most likely to have been abandoned mid-run.
-        if job.id in excluded:
-            continue
-        return job
-    return None
+    now = _utc_now()
+    candidates = [
+        job
+        for job in store.list(states=list(SCHEDULABLE_STATES), limit=500)
+        if job.id not in excluded and (job.scheduled_for is None or job.scheduled_for <= now)
+    ]
+    # ``store.list`` is newest-first; invert, then sort by (priority, created_at) oldest-first.
+    candidates.reverse()
+    candidates.sort(key=lambda job: (job.priority, job.created_at))
+    return candidates[0] if candidates else None
 
 
 class SchedulerLoop:
@@ -142,7 +147,7 @@ class SchedulerLoop:
     spawning a worker.
 
     The loop is deliberately not clever: it claims at most one job per tick, sleeps, and repeats.
-    There is no cron, no queue priority, and no retry logic — retries belong to the runner, which
+    There is no cron and no retry logic — retries belong to the runner, which
     already has a bounded cap.
     """
 
