@@ -149,6 +149,12 @@ exits non-zero on any violation and removes its temporary data directory unless 
       (`c1aa65e`, MIT) as knowledge only — no upstream executable lines.
 - [x] Renderer parity: same storyboard, both renderers, both pass `validate_probe`
       (`tests/test_renderer_parity.py::test_both_renderers_pass_the_same_gate_from_the_same_props`).
+      **All seven templates** now walk the same rig in one multi-scene storyboard
+      (`::test_every_template_renders_through_both_renderers`): shared gate unmodified, muxed
+      narration, seven declared scene boundaries located from the picture itself (per-frame
+      `tblend` delta: boundaries dominate the strongest in-scene animation frame in each renderer —
+      Remotion >= 4.09 vs 2.11, Bang Motion >= 2.09 vs 0.74), plus the character beat measured
+      visible in both.
 - [ ] Per-scene rerender. `render.json.scene_hashes` is written and `TECHNICAL_QC` compares its
       keyset to the storyboard scene ids, but **nothing reuses a cached scene**: there is no consumer
       that skips rendering, and `_scene_hashes` says so in its own docstring ("there is no per-scene
@@ -207,7 +213,10 @@ producing a valid file from the same storyboard.
 SAPI speech and the whole file played in Chromium by the gated Playwright spec
 (`apps/dashboard/e2e/video-proof.spec.ts`, which asserts `readyState ≥ 1`, `videoWidth/Height`, and
 that `currentTime` advances). Both renderers pass the same `validate_probe` from the same props, and
-each is deterministic within itself (60/60 identical framemd5 twice).
+each is deterministic within itself (60/60 identical framemd5 twice). A seven-scene storyboard —
+one scene per template — renders through both renderers and passes the identical gate
+(`test_every_template_renders_through_both_renderers`), with every declared scene boundary proven
+to be a picture change in each from the frames themselves.
 
 **Not proven, and not claimed.**
 
