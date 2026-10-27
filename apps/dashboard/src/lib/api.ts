@@ -130,6 +130,25 @@ export type UsageSummary = {
   price_configured: boolean;
 };
 
+export type PublishReport = {
+  job_id: string;
+  ok: boolean;
+  /** Per-stage outcomes in run order; the publish chain is thumbnail then upload. */
+  stages: Array<{ name: string; ok: boolean; reused?: boolean; detail?: string }>;
+  stopped: string | null;
+  detail?: string;
+  transport: string;
+};
+
+export type ReconcileReport = {
+  job_id: string;
+  phase: string;
+  video_id: string | null;
+  idempotency_key: string;
+  attempt: number;
+  receipt_steps: string[];
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -206,11 +225,41 @@ export const api = {
 
   usageToday: () => request<{ tokens: number; cost_usd: number; calls: number }>("/api/usage/today"),
   usageSummary: () => request<UsageSummary>("/api/usage/summary"),
+  usageJob: (id: string) =>
+    request<JobDetail["usage"]>(`/api/usage/job/${id}`),
+
+  metadata: (id: string) => request<Record<string, unknown>>(`/api/jobs/${id}/metadata`),
+  artifact: (id: string, name: string) =>
+    request<Record<string, unknown>>(`/api/jobs/${id}/artifact/${encodeURIComponent(name)}`),
+  saveMetadata: (id: string, patch: { title?: string; description?: string; tags?: string[] }) =>
+    request<Record<string, unknown>>(`/api/jobs/${id}/metadata`, {
+      method: "POST",
+      body: JSON.stringify(patch),
+    }),
+  publish: (id: string, transport = "stub") =>
+    request<PublishReport>(`/api/jobs/${id}/publish`, {
+      method: "POST",
+      body: JSON.stringify({ transport }),
+    }),
+  reconcile: (id: string, transport = "stub") =>
+    request<ReconcileReport>(`/api/jobs/${id}/publish/reconcile`, {
+      method: "POST",
+      body: JSON.stringify({ transport }),
+    }),
 
   upcoming: () =>
     request<{ now: string; upcoming: JobView[]; awaiting_schedule: JobView[] }>(
       "/api/jobs/upcoming",
     ),
+
+  discoverTopics: (body: { avoid?: string[]; limit?: number }) =>
+    request<{
+      discovery_id: string;
+      status: string;
+      provider_mode: string | null;
+      candidates: Array<{ title: string; angle: string; why: string; score: number }>;
+      avoid: string[];
+    }>("/api/topics/discover", { method: "POST", body: JSON.stringify(body) }),
 };
 
 export function videoUrl(jobId: string): string {

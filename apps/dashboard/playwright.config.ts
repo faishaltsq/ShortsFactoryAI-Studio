@@ -15,7 +15,7 @@ export default defineConfig({
       // The wrapper (scripts/dashboard_e2e.py) is the safe path: it owns a TemporaryDirectory
       // and never deletes a fixed repository path. Ports match its API_URL/UI_URL, so servers
       // it started satisfy this probe and no second server spawns.
-      command: "uv run python ../../scripts/dashboard_e2e.py --hold",
+      command: "uv run python scripts/dashboard_e2e.py --hold",
       url: "http://127.0.0.1:8019/api/health",
       cwd: "../..",
       env: {

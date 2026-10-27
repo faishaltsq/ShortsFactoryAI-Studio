@@ -5,6 +5,7 @@ import { Empty, ErrorState, Loading } from "@/components/states";
 import { VideoSurface } from "@/components/VideoSurface";
 import { api, type JobDetail, type JobView } from "@/lib/api";
 import { ProductionCalendar } from "@/app/jobs/production-calendar";
+import { PublishPanel } from "@/app/jobs/publish-panel";
 
 function formatDate(value: string): string {
   const date = new Date(value);
@@ -391,6 +392,11 @@ function JobDetails({ job, onRefresh }: { job: JobDetail; onRefresh: () => Promi
           <div className="flex flex-wrap gap-2 text-xs">
             <span className="badge badge-waiting">{job.state}</span>
             <span className="badge badge-waiting">{job.provider_mode}</span>
+            <span className="badge badge-waiting">
+              {job.usage.some((row) => row.est_cost_usd > 0)
+                ? `Biaya: ${formatCost(job.usage.reduce((sum, row) => sum + row.est_cost_usd, 0))}`
+                : "Biaya: belum dikonfigurasi"}
+            </span>
           </div>
         </div>
         {job.last_error ? (
@@ -437,6 +443,8 @@ function JobDetails({ job, onRefresh }: { job: JobDetail; onRefresh: () => Promi
         onApprove={approve}
         onReject={reject}
       />
+
+      <PublishPanel job={job} onRefresh={onRefresh} />
 
       <section className="panel p-4 sm:p-5" aria-labelledby="artifacts-heading">
         <div className="flex items-baseline justify-between gap-3">
