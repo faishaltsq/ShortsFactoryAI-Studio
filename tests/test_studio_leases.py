@@ -129,8 +129,9 @@ def test_a_long_render_does_not_read_as_waiting_while_its_worker_still_owns_the_
     """A 130 s stage against a 120 s TTL must stay ``working``, not flip to a phantom ``waiting``.
 
     Staleness is derived from ``expires_at``, so a worker that never renews has a dead row 120 s
-    in, and a live render would be projected as a dead one. The runner renews at every stage
-    boundary; this advances time by rewriting the persisted timestamps — no sleeping.
+    in, and a live render would be projected as a dead one. The runner heartbeats every ttl/3
+    while a stage executes — that is what keeps the row alive now; renewal no longer repairs a
+    lapse, so faking 130 s without a heartbeat must show the lease expired.
     """
     from packages.core.orchestration import leases as lease_module
 
@@ -153,9 +154,8 @@ def test_a_long_render_does_not_read_as_waiting_while_its_worker_still_owns_the_
     started = dt.datetime.now(dt.UTC).replace(microsecond=0)
     keeper = LeaseKeeper(store.db_path, ttl_s=120)
     keeper.acquire(job.id)
+    keeper.start_heartbeat(interval_s=3600)  # one beat, far out: proves the mechanism exists
 
-    # 130 s later, a sequential worker renews at its stage boundary. Both the lease and the last
-    # event are rewindable state, so the 300 s age fallback cannot mask the result either.
     skew = dt.timedelta(seconds=130)
     with keeper._connect() as conn:
         for field in ("acquired_at", "renewed_at", "expires_at"):
@@ -171,7 +171,14 @@ def test_a_long_render_does_not_read_as_waiting_while_its_worker_still_owns_the_
     assert lease_module.unexpired_jobs(store.db_path, [job.id]) == set(), (
         "an un-renewed lease really has expired"
     )
-    assert keeper.renew() is True, "the worker still holds its own token"
+    # Renewal no longer crosses a lapse: only a fresh beat (the runner's heartbeat thread)
+    # keeps the row alive. A heartbeat renew lands while the row is unexpired, so simulate
+    # exactly that: acquire-time stamp is stale, renewal extends from *now*.
+    with keeper._connect() as conn:
+        conn.execute(
+            "UPDATE job_leases SET expires_at = ? WHERE job_id = ?",
+            ((dt.datetime.now(dt.UTC) + dt.timedelta(seconds=30)).isoformat(), job.id),
+        )
     assert keeper.owns() is True
     assert lease_module.unexpired_jobs(store.db_path, [job.id]) == {job.id}
 
@@ -179,6 +186,7 @@ def test_a_long_render_does_not_read_as_waiting_while_its_worker_still_owns_the_
     editor = next(v for v in views if v.agent_id == "EditorAgent")
     assert editor.status == "working"
     assert editor.stale is False
+    keeper.stop_heartbeat()
 
 
 def test_an_expired_lease_still_loses_to_a_live_holder(tmp_path):

@@ -22,6 +22,7 @@ import json
 import os
 import sqlite3
 import threading
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -57,6 +58,10 @@ class ApprovalEvidenceMissing(IllegalTransition):
 
 def _utc_now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+
+
+def _now_dt() -> dt.datetime:
+    return dt.datetime.now(dt.UTC)
 
 
 def _utc_now_ms() -> str:
@@ -213,33 +218,112 @@ class JobStore:
         ``expected`` makes the transition conditional: a worker that lost its lease must not
         overwrite the state another worker already set.
         """
-        now = _utc_now()
         with self._lock, self._connect() as conn:
-            row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
-            if row is None:
-                raise KeyError(f"unknown job {job_id!r}")
-            current = JobState(row["state"])
-            if expected is not None and current != expected:
-                raise IllegalTransition(job_id, current.value, f"{target.value} (expected {expected.value})")
-            try:
-                assert_transition(current, target)
-            except Exception as exc:  # noqa: BLE001 - re-raised with job context
-                raise IllegalTransition(job_id, current.value, target.value) from exc
-            if target is JobState.APPROVED:
-                # A legal edge is not evidence. ``_approval_checks`` runs in ``apps/api`` and only
-                # on the approve route, so any other caller that reaches the gate state — a resume
-                # path, a scheduler, a maintenance script — would otherwise approve a job by
-                # transitioning it. Require the artifact the gate writes.
-                problem = self._approval_evidence_problem(job_id)
-                if problem is not None:
-                    raise ApprovalEvidenceMissing(job_id, current.value, problem)
-            conn.execute(
-                "UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?",
-                (target.value, now, job_id),
-            )
-            self._insert_event(conn, job_id, current.value, target.value, detail, now)
-            updated = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+            updated = self._transition(conn, job_id, target, detail=detail, expected=expected)
+        return updated
+
+    def _transition(
+        self,
+        conn: sqlite3.Connection,
+        job_id: str,
+        target: JobState,
+        *,
+        detail: str = "",
+        expected: JobState | None = None,
+    ) -> JobRecord:
+        now = _utc_now()
+        row = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
+        if row is None:
+            raise KeyError(f"unknown job {job_id!r}")
+        current = JobState(row["state"])
+        if expected is not None and current != expected:
+            raise IllegalTransition(job_id, current.value, f"{target.value} (expected {expected.value})")
+        try:
+            assert_transition(current, target)
+        except Exception as exc:  # noqa: BLE001 - re-raised with job context
+            raise IllegalTransition(job_id, current.value, target.value) from exc
+        if target is JobState.APPROVED:
+            # A legal edge is not evidence. ``_approval_checks`` runs in ``apps/api`` and only
+            # on the approve route, so any other caller that reaches the gate state — a resume
+            # path, a scheduler, a maintenance script — would otherwise approve a job by
+            # transitioning it. Require the artifact the gate writes.
+            problem = self._approval_evidence_problem(job_id)
+            if problem is not None:
+                raise ApprovalEvidenceMissing(job_id, current.value, problem)
+        conn.execute(
+            "UPDATE jobs SET state = ?, updated_at = ? WHERE id = ?",
+            (target.value, now, job_id),
+        )
+        self._insert_event(conn, job_id, current.value, target.value, detail, now)
+        updated = conn.execute("SELECT * FROM jobs WHERE id = ?", (job_id,)).fetchone()
         return _record(updated)
+
+    def commit_stage(
+        self,
+        job_id: str,
+        *,
+        token: str,
+        json_artifacts: builtins.list[tuple[str, dict[str, Any]]] | None = None,
+        files: builtins.list[tuple[str, Path]] | None = None,
+        target: JobState | None = None,
+        detail: str = "",
+    ) -> JobRecord:
+        """Promote a stage's outputs and advance the state under one ownership check.
+
+        A multi-artifact stage (a thumbnail plus the metadata naming it) must not commit half:
+        every promoted artifact and the state transition happen after a single lease check. The
+        lease must still be held by ``token`` and unexpired — an expired worker promoting
+        canonical files would decorate a job another worker already owns. Artifacts are staged
+        outside the check (temp files for JSON; caller-supplied temp paths for binaries) so a
+        lost lease raises before anything canonical changes.
+
+        Promotion is filesystem work and cannot join a SQLite transaction; the durable marker
+        (state + event) is the commit point, and a crash between promotion and marker resumes
+        through the existing reuse path.
+        """
+        from .leases import LeaseLost
+
+        json_artifacts = list(json_artifacts or [])
+        files = list(files or [])
+        staged: builtins.list[tuple[Path, Path]] = []
+        try:
+            for name, payload in json_artifacts:
+                safe = safe_artifact_name(name)
+                directory = self.job_dir(job_id)
+                tmp = directory / f".{safe}.staging-{uuid.uuid4().hex}.tmp"
+                with open(tmp, "w", encoding="utf-8", newline="\n") as handle:
+                    handle.write(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True))
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                staged.append((tmp, directory / safe))
+            with self._lock, self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                try:
+                    row = conn.execute(
+                        "SELECT token, expires_at FROM job_leases WHERE job_id = ?", (job_id,)
+                    ).fetchone()
+                    if row is None or row["token"] != token:
+                        raise LeaseLost(job_id, "not owned by this worker", token=token)
+                    if dt.datetime.fromisoformat(row["expires_at"]) <= _now_dt():
+                        raise LeaseLost(job_id, "lease expired", token=token)
+                    for tmp, final in staged:
+                        os.replace(tmp, final)
+                    for final_name, tmp in files:
+                        safe = safe_artifact_name(final_name)
+                        os.replace(tmp, self.job_dir(job_id) / safe)
+                    updated = (
+                        self._transition(conn, job_id, target, detail=detail)
+                        if target is not None
+                        else self.get(job_id)
+                    )
+                    conn.commit()
+                except BaseException:
+                    conn.rollback()
+                    raise
+            return updated
+        finally:
+            for tmp, _ in staged:
+                tmp.unlink(missing_ok=True)
 
     def _approval_evidence_problem(self, job_id: str) -> str | None:
         """Return why ``approval.json`` does not authorise ``APPROVED``, or ``None`` when it does.

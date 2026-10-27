@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime as dt
+import time
 
 import pytest
 
@@ -131,9 +132,90 @@ def test_ownership_does_not_outlive_expiry(db):
     assert keeper.owns() is False
     with pytest.raises(LeaseLost):
         keeper.assert_owned()
-    # The same token may repair its own lapse: renewal is what keeps the worker legitimate.
-    assert keeper.renew() is True
-    assert keeper.owns() is True
+    # A lapsed lease is fair game for a takeover, so renewal must refuse to cross the gap:
+    # repairing a lapse is a fresh acquire, not a renew.
+    assert keeper.renew() is False
+
+
+def test_renew_refuses_after_takeover(db):
+    """An expired-then-taken lease does not resurrect: the rival owns the row now."""
+    store, job_id = db
+    keeper = LeaseKeeper(store.db_path, ttl_s=1, owner="mine")
+    keeper.acquire(job_id)
+    with keeper._connect() as conn:
+        past = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=5)).replace(microsecond=0).isoformat()
+        conn.execute("UPDATE job_leases SET expires_at = ? WHERE job_id = ?", (past, job_id))
+    rival = LeaseKeeper(store.db_path, owner="rival")
+    rival.acquire(job_id)
+
+    assert keeper.renew() is False
+    assert rival.owns() is True
+
+
+def test_acquire_race_serializes_cleanly(db):
+    """Two workers racing on one expired lease under BEGIN IMMEDIATE: exactly one wins.
+
+    The loser must lose cleanly (LeaseLost naming the winner), never a raw IntegrityError or
+    half-committed row from the read-check-write race.
+    """
+    store, job_id = db
+    holder = LeaseKeeper(store.db_path, ttl_s=1, owner="holder")
+    holder.acquire(job_id)
+    with holder._connect() as conn:
+        past = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=5)).replace(microsecond=0).isoformat()
+        conn.execute("UPDATE job_leases SET expires_at = ? WHERE job_id = ?", (past, job_id))
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def race(owner: str) -> str:
+        keeper = LeaseKeeper(store.db_path, owner=owner)
+        try:
+            keeper.acquire(job_id)
+            return f"won:{owner}"
+        except LeaseLost as exc:
+            return f"lost:{exc.reason}"
+        except Exception as exc:  # noqa: BLE001 - any other exception is a fence failure
+            return f"error:{type(exc).__name__}: {exc}"
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = [f.result() for f in [pool.submit(race, "racer-a"), pool.submit(race, "racer-b")]]
+
+    winners = [r for r in results if r.startswith("won:")]
+    assert len(winners) == 1, f"exactly one winner, got {results}"
+    assert all(r.startswith(("won:", "lost:")) for r in results), f"raw error: {results}"
+
+
+def test_heartbeat_renews_while_requested(db):
+    """start_heartbeat renews in the background until told to stop."""
+    store, job_id = db
+    # ttl 2s: whole-second truncation in _iso() can shave up to 1s off a 1s TTL.
+    keeper = LeaseKeeper(store.db_path, ttl_s=2)
+    keeper.acquire(job_id)
+    keeper.start_heartbeat(interval_s=0.05)
+    try:
+        first = keeper.current(job_id).renewed_at
+        import time as _time
+
+        _time.sleep(0.3)
+        second = keeper.current(job_id).renewed_at
+        assert second >= first, "heartbeat must renew in the background"
+        assert keeper.owns() is True, "lease must not lapse while heartbeating"
+    finally:
+        keeper.stop_heartbeat()
+
+
+def test_heartbeat_stops_keeping_alive(db):
+    store, job_id = db
+    keeper = LeaseKeeper(store.db_path, ttl_s=1)
+    keeper.acquire(job_id)
+
+    keeper.start_heartbeat(interval_s=0.05)
+    keeper.stop_heartbeat()
+    with keeper._connect() as conn:
+        past = (dt.datetime.now(dt.UTC) - dt.timedelta(seconds=10)).replace(microsecond=0).isoformat()
+        conn.execute("UPDATE job_leases SET expires_at = ? WHERE job_id = ?", (past, job_id))
+    time.sleep(0.3)
+    assert keeper.owns() is False, "no heartbeat after stop"
 
 
 def test_a_runner_renews_at_every_stage_boundary(db, tmp_path):

@@ -168,11 +168,18 @@ def run_stages(
                 continue
 
         attempts = 0
+        # A stage that runs longer than the TTL must not age its own lease out: heartbeat every
+        # ttl/3 while it executes. A lost lease inside the stage still surfaces through the
+        # stage's own LeaseLost, the post-failure renew, or the post-success renew below.
+        if keeper is not None:
+            keeper.start_heartbeat()
         while True:
             attempts += 1
             try:
                 outcome = stage.run(store, job_id)
             except LeaseLost:
+                if keeper is not None:
+                    keeper.stop_heartbeat()
                 report["ok"] = False
                 report["stopped"] = "lease_lost"
                 report["detail"] = f"lease lost during {stage.name}"
@@ -237,15 +244,19 @@ def run_stages(
             report["stopped"] = outcome.error_code or "failed"
             report["detail"] = outcome.detail
             report["stages"].append({"name": stage.name, "ok": False, "detail": outcome.detail})
+            if keeper is not None:
+                keeper.stop_heartbeat()
             return report
 
         report["stages"].append(
             {"name": stage.name, "ok": True, "attempts": attempts, "detail": outcome.detail}
         )
-        if keeper is not None and not keeper.renew():
-            report["ok"] = False
-            report["stopped"] = "lease_lost"
-            return report
+        if keeper is not None:
+            keeper.stop_heartbeat()
+            if not keeper.renew():
+                report["ok"] = False
+                report["stopped"] = "lease_lost"
+                return report
         current = store.get(job_id).state
         if current != stage.state:
             store.transition(job_id, stage.state, detail=f"{stage.name} completed")

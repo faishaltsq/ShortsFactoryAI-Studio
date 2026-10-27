@@ -37,7 +37,7 @@ PROPS_NAME = "render-props.json"
 THUMBNAIL_COMPOSITION = "Thumbnail"
 
 
-def build_thumbnail_stage(state: Any, *, video_dir: Path) -> Stage:
+def build_thumbnail_stage(state: Any, *, video_dir: Path, token: str | None = None) -> Stage:
     store = state.store
 
     def run(_store: JobStore, job_id: str) -> StageOutcome:
@@ -77,13 +77,26 @@ def build_thumbnail_stage(state: Any, *, video_dir: Path) -> Stage:
             raise StageError(
                 "thumbnail_failed", "the renderer produced no thumbnail file", retryable=True
             )
-        os.replace(tmp, out)
-
-        digest = sha256_file(out)
+        digest = sha256_file(tmp)
         updated = metadata.model_copy(
-            update={"thumbnail": {"path": THUMB_NAME, "sha256": digest, "bytes": out.stat().st_size}}
+            update={"thumbnail": {"path": THUMB_NAME, "sha256": digest, "bytes": tmp.stat().st_size}}
         )
-        store.write_artifact(job_id, METADATA_NAME, updated.to_json())
+        if token is None:
+            # No lease token in play (unit-level use): promote directly, as before.
+            os.replace(tmp, out)
+            store.write_artifact(job_id, METADATA_NAME, updated.to_json())
+        else:
+            # The png and the metadata naming it must land together or not at all, and only
+            # while this worker still owns the job: commit_stage checks the lease, promotes
+            # both files, and advances APPROVED -> PRIVATE_UPLOAD in one guarded step.
+            store.commit_stage(
+                job_id,
+                token=token,
+                json_artifacts=[(METADATA_NAME, updated.to_json())],
+                files=[(THUMB_NAME, tmp)],
+                target=JobState.PRIVATE_UPLOAD,
+                detail="ThumbnailAgent completed",
+            )
 
         _emit(
             state, job_id, "STORYBOARD_READY", "stage_completed",

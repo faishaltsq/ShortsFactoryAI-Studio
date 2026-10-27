@@ -119,6 +119,9 @@ class LeaseKeeper:
         self._token = uuid.uuid4().hex
         self._job_id: str | None = None
         self._lock = threading.Lock()
+        self._heartbeat_timer: threading.Timer | None = None
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_interval_s = 1.0
 
     @property
     def token(self) -> str:
@@ -138,30 +141,43 @@ class LeaseKeeper:
         return conn
 
     def acquire(self, job_id: str) -> Lease:
-        """Take the lease, or raise if another live worker holds it."""
+        """Take the lease, or raise if another live worker holds it.
+
+        The read-check-write runs under ``BEGIN IMMEDIATE``: two workers racing on an expired
+        lease serialize, so the loser loses *cleanly* (``LeaseLost`` on a live row) instead of
+        crashing on a foreign-key/insert race the winner already resolved.
+        """
         now = _now()
         expires = now + dt.timedelta(seconds=self.ttl_s)
         with self._lock, self._connect() as conn:
-            row = conn.execute(
-                "SELECT * FROM job_leases WHERE job_id = ?", (job_id,)
-            ).fetchone()
-            if row is not None:
-                holder = Lease(
-                    row["job_id"], row["token"], row["owner"],
-                    row["acquired_at"], row["renewed_at"], row["expires_at"],
-                )
-                if not holder.expired:
-                    raise LeaseLost(
-                        job_id,
-                        f"held by {holder.owner} until {holder.expires_at}",
-                        token=self._token,
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT * FROM job_leases WHERE job_id = ?", (job_id,)
+                ).fetchone()
+                if row is not None:
+                    holder = Lease(
+                        row["job_id"], row["token"], row["owner"],
+                        row["acquired_at"], row["renewed_at"], row["expires_at"],
                     )
-                conn.execute("DELETE FROM job_leases WHERE job_id = ?", (job_id,))
-            conn.execute(
-                "INSERT INTO job_leases(job_id, token, owner, acquired_at, renewed_at, expires_at)"
-                " VALUES (?,?,?,?,?,?)",
-                (job_id, self._token, self.owner, _iso(now), _iso(now), _iso(expires)),
-            )
+                    if not holder.expired:
+                        raise LeaseLost(
+                            job_id,
+                            f"held by {holder.owner} until {holder.expires_at}",
+                            token=self._token,
+                        )
+                    # Takeover in the same transaction that inserts ours: no window where the
+                    # expired row is gone but the thief has not claimed it.
+                    conn.execute("DELETE FROM job_leases WHERE job_id = ?", (job_id,))
+                conn.execute(
+                    "INSERT INTO job_leases(job_id, token, owner, acquired_at, renewed_at, expires_at)"
+                    " VALUES (?,?,?,?,?,?)",
+                    (job_id, self._token, self.owner, _iso(now), _iso(now), _iso(expires)),
+                )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
             self._job_id = job_id
         return Lease(job_id, self._token, self.owner, _iso(now), _iso(now), _iso(expires))
 
@@ -178,14 +194,61 @@ class LeaseKeeper:
         now = _now()
         expires = now + dt.timedelta(seconds=self.ttl_s)
         with self._lock, self._connect() as conn:
-            # Renewal extends the row this token owns. Proof of ownership is the token, not the
-            # expiry: this call is what repairs an expiry this same worker let lapse.
+            # Renewal extends the row only while this token still owns it *and* has not let it
+            # lapse: a lapsed lease was fair game for a takeover, so renewing across that gap
+            # would resurrect ownership the studio already declared dead. Repairing a lapse is a
+            # fresh acquire, not a renew.
             cursor = conn.execute(
                 "UPDATE job_leases SET renewed_at = ?, expires_at = ?"
-                " WHERE job_id = ? AND token = ?",
-                (_iso(now), _iso(expires), self._job_id, self._token),
+                " WHERE job_id = ? AND token = ? AND expires_at > ?",
+                (_iso(now), _iso(expires), self._job_id, self._token, _iso(now)),
             )
             return cursor.rowcount == 1
+
+    def heartbeat(self) -> bool:
+        """Renew while run-owned stages execute, so a long stage cannot age its own lease out.
+
+        The runner calls this from the heartbeat thread it owns for long stages; a plain renew is
+        what marks the boundary. False here means ownership is gone and the run must stop.
+        """
+        return self.renew()
+
+    def start_heartbeat(self, interval_s: float | None = None) -> None:
+        """Run ``heartbeat`` every ``max(1, ttl_s / 3)`` seconds until ``stop_heartbeat``.
+
+        Default interval is ttl/3 so one missed beat still leaves two-thirds of the TTL before
+        expiry; two missed beats expire the lease and stop the run.
+        """
+        if interval_s is None:
+            interval_s = max(1.0, self.ttl_s / 3.0)
+        with self._lock:
+            if self._heartbeat_timer is not None:
+                return
+            self._heartbeat_interval_s = interval_s
+
+        def _beat() -> None:
+            if self._heartbeat_stop.is_set():
+                return
+            if not self.renew():
+                self._heartbeat_stop.set()  # lost lease: stop beating, the run will notice
+                return
+            with self._lock:
+                if not self._heartbeat_stop.is_set():
+                    self._heartbeat_timer = threading.Timer(self._heartbeat_interval_s, _beat)
+                    self._heartbeat_timer.daemon = True
+                    self._heartbeat_timer.start()
+
+        self._heartbeat_stop = threading.Event()
+        self._heartbeat_timer = threading.Timer(interval_s, _beat)
+        self._heartbeat_timer.daemon = True
+        self._heartbeat_timer.start()
+
+    def stop_heartbeat(self) -> None:
+        with self._lock:
+            self._heartbeat_stop.set()
+            timer, self._heartbeat_timer = self._heartbeat_timer, None
+        if timer is not None:
+            timer.join(timeout=2.0)
 
     def owns(self) -> bool:
         """Do I still hold an unexpired lease? An expired row is not ownership, whatever the token.
@@ -215,6 +278,7 @@ class LeaseKeeper:
         """Give up the lease. Only removes the row if this token still owns it."""
         if self._job_id is None:
             return
+        self.stop_heartbeat()
         with self._lock, self._connect() as conn:
             conn.execute(
                 "DELETE FROM job_leases WHERE job_id = ? AND token = ?",
