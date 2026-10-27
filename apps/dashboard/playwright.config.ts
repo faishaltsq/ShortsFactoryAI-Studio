@@ -12,15 +12,13 @@ export default defineConfig({
   },
   webServer: [
     {
-      command: "node -e \"require('fs').rmSync('../../data/e2e',{recursive:true,force:true})\" && uv run uvicorn apps.api.main:app --host 127.0.0.1 --port 8019",
+      // The wrapper (scripts/dashboard_e2e.py) is the safe path: it owns a TemporaryDirectory
+      // and never deletes a fixed repository path. Ports match its API_URL/UI_URL, so servers
+      // it started satisfy this probe and no second server spawns.
+      command: "uv run python ../../scripts/dashboard_e2e.py --hold",
       url: "http://127.0.0.1:8019/api/health",
       cwd: "../..",
       env: {
-        SHORTS_DATA_DIR: "data/e2e",
-        SHORTS_DB_PATH: "data/e2e/factory.db",
-        SHORTS_JOBS_DIR: "data/e2e/jobs",
-        SHORTS_SECRETS_DIR: "data/e2e/secrets",
-        SHORTS_STUDIO_CONFIG: "data/e2e/studio.json",
         SHORTS_MOCK_DELAY_MS: "1500",
       },
       reuseExistingServer: false,

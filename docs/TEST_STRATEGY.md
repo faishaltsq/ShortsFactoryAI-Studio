@@ -189,6 +189,9 @@ uv run pytest -q                       # python suite
 uv run pytest -q -k "not slow"         # fast loop
 npm --prefix apps/dashboard run test   # vitest
 npm --prefix apps/dashboard run test:e2e
+# Browser playback proof (minutes, real Remotion render); with STUDIO_VIDEO_PROOF=1 the spec
+# provisions its own fixture through the real pipeline and FAILS if none exists afterwards:
+#   STUDIO_VIDEO_PROOF=1 npm --prefix apps/dashboard run test:e2e -- --grep "synced narration"
 npm --prefix packages/video run test:adapter        # product storyboard -> donor contract
 npm --prefix packages/video run test:render-props   # props resolution in calculateMetadata
 npm --prefix packages/video run still-smoke -- <abs-output-dir>   # 7 stills, needs a browser
@@ -259,14 +262,17 @@ failure, quarantined with a written cause.
 
 ### E2E harness contract
 
-`apps/dashboard/playwright.config.ts` owns both servers: the API on `127.0.0.1:8019` with
-`SHORTS_DATA_DIR`, `SHORTS_DB_PATH`, `SHORTS_JOBS_DIR`, `SHORTS_SECRETS_DIR` and
-`SHORTS_STUDIO_CONFIG` all under `data/e2e/` (deleted when the API starts), and the dashboard on
-`3018` with `STUDIO_API_ORIGIN=http://127.0.0.1:8019`. `data/e2e/` and `test-results/` are
-gitignored. `SHORTS_MOCK_DELAY_MS` (default `0`, digits only; anything else raises `ValueError`)
-slows the mock transport so a test can observe a running job; it does not change provider
-resolution and never makes mock reachable for a live job. The studio assertion compares each
-rendered `data-state` against the persisted snapshot, not the DOM alone.
+`scripts/dashboard_e2e.py` owns both servers and all test state: it creates one
+`tempfile.TemporaryDirectory`, points `SHORTS_DATA_DIR`, `SHORTS_DB_PATH`, `SHORTS_JOBS_DIR`,
+`SHORTS_SECRETS_DIR` and `SHORTS_STUDIO_CONFIG` into it, starts the API on `127.0.0.1:8019` and
+the dashboard on `3018` with `STUDIO_API_ORIGIN=http://127.0.0.1:8019`, and removes only that
+directory after both children stop. `apps/dashboard/playwright.config.ts` spawns the wrapper
+(`--hold`) as its API webServer and probes `:3018`, which the wrapper's UI child already owns, so
+no second server ever spawns and **no fixed repository path is ever deleted by a test hook**
+(the previous `rmSync('../../data/e2e')` was both wrong-pathed and unsafe and is gone).
+`SHORTS_MOCK_DELAY_MS` still slows the mock transport so a test can observe a running job; it
+does not change provider resolution and never makes mock reachable for a live job. The studio
+assertion compares each rendered `data-state` against the persisted snapshot, not the DOM alone.
 
 The spec also proves the 2D path is genuinely mounted rather than merely present: it waits for a
 zone heading (`Ruang Direktur`) that only `StudioFallback` emits, since `StudioScene` is a canvas

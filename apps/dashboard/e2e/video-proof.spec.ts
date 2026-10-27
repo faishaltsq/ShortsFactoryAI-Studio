@@ -1,4 +1,5 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -6,9 +7,11 @@ import path from "node:path";
  * The Phase 2.6 browser gate: a real rendered MP4, played by a real Chromium.
  *
  * Gated behind `STUDIO_VIDEO_PROOF=1` because the fixture is a genuine Remotion render — minutes,
- * not seconds — and the default E2E budget is three minutes. The fixture is produced by
- * `uv run python scripts/render_proof_job.py --render` against the E2E API, which writes into
- * `data/e2e/`; this spec never fabricates a file and skips loudly when the fixture is absent.
+ * not seconds — and the default E2E budget is three minutes. When the flag is set and no fixture
+ * pointer exists yet, this spec provisions its own: it runs
+ * `uv run python scripts/render_proof_job.py --render` against the already-running E2E API with a
+ * 900-second budget, which writes the pointer into that server's data dir. A requested proof with
+ * no fixture afterwards is a failure, not a skip.
  *
  * What it proves that a DOM assertion cannot:
  * - the element is a `<video>` with `controls` and `preload="metadata"`, no autoplay, not muted;
@@ -32,6 +35,39 @@ function readJobId(): string | null {
   if (!fs.existsSync(file)) return null;
   const parsed = JSON.parse(fs.readFileSync(file, "utf8")) as { job_id?: unknown };
   return typeof parsed.job_id === "string" && parsed.job_id !== "" ? parsed.job_id : null;
+}
+
+/**
+ * Provision the render fixture through the real pipeline if it does not exist yet.
+ * Runs from repo root so `uv` resolves the project environment; the script talks to the API
+ * this Playwright run already started, and writes the pointer into the same STUDIO_E2E_DATA.
+ */
+function ensureProofJob(): string {
+  const existing = readJobId();
+  if (existing !== null) {
+    const detailPath = path.join(DATA_DIR, "jobs", existing, "state.json");
+    if (fs.existsSync(detailPath)) return existing;
+  }
+  const repoRoot = path.resolve(import.meta.dirname, "../../..");
+  execFileSync("uv", ["run", "python", "scripts/render_proof_job.py", "--render"], {
+    cwd: repoRoot,
+    env: {
+      ...process.env,
+      STUDIO_API_ORIGIN: API,
+      SHORTS_DATA_DIR: DATA_DIR,
+      SHORTS_DB_PATH: path.join(DATA_DIR, "factory.db"),
+      SHORTS_JOBS_DIR: path.join(DATA_DIR, "jobs"),
+      SHORTS_SECRETS_DIR: path.join(DATA_DIR, "secrets"),
+      SHORTS_STUDIO_CONFIG: path.join(DATA_DIR, "studio.json"),
+    },
+    stdio: "inherit",
+    timeout: 900_000,
+  });
+  const provisioned = readJobId();
+  if (provisioned === null) {
+    throw new Error("render_proof_job.py --render completed but wrote no proof-job.json");
+  }
+  return provisioned;
 }
 
 function readNarrationMs(jobId: string): number | null {
@@ -96,13 +132,15 @@ const readMedia = (page: Page): Promise<MediaFacts> =>
 test.describe("job detail video surface", () => {
   test.skip(FLAG !== "1", "set STUDIO_VIDEO_PROOF=1 (fixture is a real Remotion render)");
 
+  // Provisioning a fresh render can take minutes; the 900s budget lives in ensureProofJob.
+  test.setTimeout(960_000);
+
   test("a real rendered job plays in the browser with synced narration", async ({
     page,
     request,
   }) => {
-    const jobId = readJobId();
-    test.skip(jobId === null, "no proof fixture; run scripts/render_proof_job.py --render first");
-    const id = jobId as string;
+    // STUDIO_VIDEO_PROOF=1 means: prove it. No fixture after provisioning is a failure.
+    const id = ensureProofJob();
 
     const narrationMs = readNarrationMs(id);
     expect(narrationMs, `audio.json narration duration for ${id}`).not.toBeNull();

@@ -61,17 +61,22 @@ def _api() -> str:
 
 
 def _post(path: str, body: dict[str, Any] | None = None) -> Any:
-    import httpx
+    from packages.core.providers.http_base import PinnedHTTP
 
-    response = httpx.post(f"{_api()}{path}", json=body or {}, timeout=30.0)
+    # Local loopback only; the explicit flag is the documented opt-in for private hosts.
+    response = PinnedHTTP(timeout_s=30.0, max_retries=0).request(
+        "POST", f"{_api()}{path}", json=body or {}, allow_private_hosts=True,
+    )
     response.raise_for_status()
     return response.json()
 
 
 def _get(path: str) -> Any:
-    import httpx
+    from packages.core.providers.http_base import PinnedHTTP
 
-    response = httpx.get(f"{_api()}{path}", timeout=30.0)
+    response = PinnedHTTP(timeout_s=30.0, max_retries=0).request(
+        "GET", f"{_api()}{path}", allow_private_hosts=True,
+    )
     response.raise_for_status()
     return response.json()
 
@@ -100,10 +105,18 @@ def render_job(*, timeout_s: int) -> int:
         return 1
 
     detail = _get(f"/api/jobs/{job_id}")
+    if detail["state"] != "READY_FOR_APPROVAL":
+        # A blocked job still has has_video=True from a partial chain; only a settled
+        # READY_FOR_APPROVAL with valid readiness/QC evidence counts as proof.
+        print(
+            f"FAIL job {job_id} ended at {detail['state']}, not READY_FOR_APPROVAL"
+            f" (last_error: {detail.get('last_error')})",
+            file=sys.stderr,
+        )
+        return 2
     if not detail["has_video"]:
         print(
-            f"FAIL job {job_id} ended at {detail['state']} with no output.mp4"
-            f" (last_error: {detail.get('last_error')})",
+            f"FAIL job {job_id} reached READY_FOR_APPROVAL with no output.mp4",
             file=sys.stderr,
         )
         return 2

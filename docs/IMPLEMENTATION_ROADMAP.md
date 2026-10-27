@@ -212,7 +212,12 @@ producing a valid file from the same storyboard.
 (`verify_video.py` exit 0, 13/13 checks), with narration and subtitle cues derived from measured
 SAPI speech and the whole file played in Chromium by the gated Playwright spec
 (`apps/dashboard/e2e/video-proof.spec.ts`, which asserts `readyState ≥ 1`, `videoWidth/Height`, and
-that `currentTime` advances). Both renderers pass the same `validate_probe` from the same props, and
+that `currentTime` advances). With `STUDIO_VIDEO_PROOF=1` the spec provisions its own fixture —
+`scripts/render_proof_job.py --render`, which itself refuses any terminal state other than
+`READY_FOR_APPROVAL` (a blocked job with a partial video is exit 2, not success) and goes through
+`PinnedHTTP` like every other caller — and a requested proof with no fixture afterwards is a
+failure, not a skip. The E2E suite runs inside `scripts/dashboard_e2e.py`, which owns a
+`TemporaryDirectory` test root instead of deleting a fixed repository path. Both renderers pass the same `validate_probe` from the same props, and
 each is deterministic within itself (60/60 identical framemd5 twice). A seven-scene storyboard —
 one scene per template — renders through both renderers and passes the identical gate
 (`test_every_template_renders_through_both_renderers`), with every declared scene boundary proven
