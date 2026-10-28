@@ -94,6 +94,17 @@ def _context(state: Any, job: JobRecord, agent_name: str) -> CallContext:
         job_id=job.id,
         price_in=spec.price_in_per_mtok if spec else None,
         price_out=spec.price_out_per_mtok if spec else None,
+        journal=getattr(state, "requests", None),
+        request_identity={
+            "provider": call.provider,
+            "transport": call.transport,
+            "model": call.model,
+            "temperature": call.temperature,
+            "max_tokens": call.max_tokens,
+            "ordinal": getattr(state, "_call_ordinal", 0),
+            "prompt_sha256": "",
+            "call_config_sha256": "",
+        },
     )
     return CallContext(call=call, provider=recorder, job_id=job.id)
 

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from .base import Health, Provider, ProviderResult, ResolvedCall, Usage, VisionImage
+from .journal import RequestJournal
 
 
 def _utc_day() -> str:
@@ -312,6 +313,8 @@ class RecordingProvider:
         price_in: float | None = None,
         price_out: float | None = None,
         worst_case_tokens: int = 8000,
+        journal: RequestJournal | None = None,
+        request_identity: dict[str, Any] | None = None,
     ) -> None:
         self.inner = inner
         self.tracker = tracker
@@ -320,8 +323,53 @@ class RecordingProvider:
         self.price_in = price_in
         self.price_out = price_out
         self.worst_case_tokens = worst_case_tokens
+        # The journal is what makes a crash between "sent" and "recorded" recoverable. Without it
+        # the call either gets retried (double spend) or dropped (lost work); with it, the restart
+        # blocks until the operator acknowledges the uncertainty.
+        self.journal = journal
+        self.request_identity = request_identity or {}
         self.transport = inner.transport
         self.name = inner.name
+
+    # -- journal boundary --------------------------------------------------------------------
+    def _identity(self, *, user: str, system: str, task: str) -> tuple[str, int]:
+        """The journal key for this call, and the attempt number to use.
+
+        Semantic inputs only: the prompt text, the task, and the effective call configuration.
+        A timeout or a price change does not change the identity, so a recorded result stays
+        replayable across an operator's settings edit.
+        """
+        from .journal import hash_inputs, request_key
+
+        identity = self.request_identity
+        inputs = hash_inputs(
+            {
+                "system": system,
+                "user": user,
+                "task": task,
+                "model": identity.get("model"),
+                "temperature": identity.get("temperature"),
+                "max_tokens": identity.get("max_tokens"),
+                "provider": identity.get("provider"),
+                "transport": identity.get("transport"),
+            }
+        )
+        key = request_key(
+            job_id=self.job_id,
+            agent=self.agent,
+            ordinal=int(identity.get("ordinal", 0)),
+            inputs_sha256=inputs,
+            prompt_sha256=identity.get("prompt_sha256", ""),
+            call_config_sha256=identity.get("call_config_sha256", ""),
+        )
+        attempt = self.journal.next_attempt(key) if self.journal is not None else 1
+        return key, attempt
+
+    def _recorded_result(self, key: str) -> Any | None:
+        """A previously completed response for this exact request, if the journal has one."""
+        if self.journal is None:
+            return None
+        return self.journal.completed(key)
 
     def health(self, call: ResolvedCall) -> Health:
         return self.inner.health(call)
@@ -388,8 +436,47 @@ class RecordingProvider:
         self.tracker.assert_can_spend(
             worst_case_tokens=self.worst_case_tokens, worst_case_cost_usd=worst_cost
         )
-        result = self.inner.complete(call, system=system, user=user, task=task)
+        key, attempt = self._identity(user=user, system=system, task=task)
+        recorded = self._recorded_result(key)
+        if recorded is not None:
+            # A completed response replays locally: zero new transport calls, and the usage is
+            # already in the log from the attempt that produced it.
+            from .base import ProviderResult
+
+            return ProviderResult(
+                content=str(recorded["result"].get("text", "")),
+                usage=Usage(
+                    prompt_tokens=int(recorded["usage"].get("prompt_tokens", 0)),
+                    completion_tokens=int(recorded["usage"].get("completion_tokens", 0)),
+                ),
+                provider=recorded["provider"],
+                model=recorded["model"],
+                elapsed_ms=0,
+            )
+        if self.journal is not None:
+            self.journal.prepare(
+                request_key=key, job_id=self.job_id, agent=self.agent, attempt=attempt,
+                provider=call.provider, model=call.model,
+            )
+            self.journal.reserve(
+                request_key=key, attempt=attempt, job_id=self.job_id, agent=self.agent,
+                tokens=len(user) // 3 + self.worst_case_tokens, cost_usd=worst_cost,
+            )
+        try:
+            result = self.inner.complete(call, system=system, user=user, task=task)
+        except Exception as exc:  # noqa: BLE001 - the journal must survive the transport's errors
+            if self.journal is not None:
+                # The call left this process. Nobody knows whether the provider accepted it, so
+                # the attempt is uncertain and the reservation stays held: retrying here is the
+                # duplicate-spend bug this whole mechanism exists to prevent.
+                self.journal.mark_uncertain(request_key=key, attempt=attempt, error=f"{type(exc).__name__}: {exc}")
+                self.journal.retained(request_key=key, attempt=attempt)
+            raise
         cost = estimate_cost(result.usage, price_in=self.price_in, price_out=self.price_out)
+        if self.journal is not None:
+            self.journal.mark_sent(
+                request_key=key, attempt=attempt, provider=result.provider, model=result.model
+            )
         self.tracker.record(
             job_id=self.job_id,
             agent=self.agent,
@@ -401,4 +488,16 @@ class RecordingProvider:
             price_in_per_mtok=self.price_in,
             price_out_per_mtok=self.price_out,
         )
+        if self.journal is not None:
+            self.journal.mark_completed(
+                request_key=key, attempt=attempt,
+                usage={"prompt_tokens": result.usage.prompt_tokens,
+                       "completion_tokens": result.usage.completion_tokens},
+                result={"text": result.content},
+            )
+            self.journal.settle(
+                request_key=key, attempt=attempt,
+                tokens=result.usage.prompt_tokens + result.usage.completion_tokens,
+                cost_usd=cost,
+            )
         return result

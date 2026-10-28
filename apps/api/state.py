@@ -15,6 +15,7 @@ from packages.core.orchestration.jobstore import JobStore
 from packages.core.orchestration.scheduler import SchedulerConfig, SchedulerLoop
 from packages.core.providers.base import Capability, Provider
 from packages.core.providers.factory import build_transports, default_registry
+from packages.core.providers.journal import RequestJournal
 from packages.core.providers.registry import ProviderRegistry, ProviderSpec
 from packages.core.providers.usage import Budget, UsageTracker
 from packages.core.security.secretstore import SecretStore
@@ -29,6 +30,9 @@ class AppState:
     events: StudioEventStore
     secrets: SecretStore
     usage: UsageTracker
+    #: The paid-call journal. Present on every AppState so a provider call is journalled whether it
+    #: comes from a job, a discovery run or a diagnostic — a call that escapes the journal is a
+    #: call a crash can duplicate.
     registry: ProviderRegistry
     transports: dict[str, Provider]
     cancel_flags: dict[str, threading.Event] = field(default_factory=dict)
@@ -39,6 +43,10 @@ class AppState:
     #: nothing is a silent misconfiguration).
     bindings: dict[str, dict[str, Any]] = field(default_factory=dict)
     lock: threading.RLock = field(default_factory=threading.RLock)
+    #: The paid-call journal. Present on every AppState so a provider call is journalled whether it
+    #: comes from a job, a discovery run or a diagnostic — a call that escapes the journal is a
+    #: call a crash can duplicate.
+    requests: Any = None
     #: Off unless the operator set ``SHORTS_SCHEDULER_ENABLED``. ``None`` means "not built yet":
     #: the loop needs the service to hand jobs to, and the service needs this object.
     scheduler: SchedulerLoop | None = None
@@ -55,6 +63,8 @@ class AppState:
             registry=default_registry(),
             transports=build_transports(),
         )
+        state.requests = RequestJournal(settings.db_path)
+        state.requests.reconcile()
         state._load_configured_providers()
         state._publish_configured_rates()
         return state

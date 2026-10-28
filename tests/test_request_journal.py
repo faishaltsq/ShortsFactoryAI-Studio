@@ -6,6 +6,7 @@ import sqlite3
 import pytest
 
 from packages.core.providers.journal import (
+    COMPLETED,
     UNCERTAIN,
     RequestJournal,
     hash_inputs,
@@ -182,3 +183,86 @@ def test_the_surviving_schema_is_queryable(journal):
         }
     assert "provider_requests" in tables
     assert "budget_reservations" in tables
+
+
+# -- the boundary the pipeline actually uses ------------------------------------------------
+def _recorder(tmp_path, *, journal: RequestJournal, fail_first: bool = False):
+    from packages.core.providers.base import Provider
+    from packages.core.providers.usage import RecordingProvider, UsageTracker
+
+    class Stub(Provider):
+        transport = "mock"
+        name = "stub"
+
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def complete(self, call, *, system, user, task):  # type: ignore[override]
+            from packages.core.providers.base import ProviderResult, Usage
+
+            self.calls += 1
+            if fail_first and self.calls == 1:
+                raise ConnectionError("reset by peer")
+            return ProviderResult(
+                content="hello", provider="stub", model="m",
+                usage=Usage(prompt_tokens=7, completion_tokens=3), elapsed_ms=1,
+            )
+
+        def health(self, call):  # type: ignore[override]
+            from packages.core.providers.base import Health
+
+            return Health(ok=True, detail="")
+
+        def list_models(self, call):  # type: ignore[override]
+            return ["m"]
+
+    inner = Stub()
+    tracker = UsageTracker(tmp_path / "usage.db")
+    recorder = RecordingProvider(
+        inner, tracker=tracker, agent="ScriptAgent", job_id="job1", journal=journal
+    )
+    from packages.core.providers.base import ResolvedCall
+    from packages.core.providers.base import Capability
+
+    call = ResolvedCall(
+        provider="stub", transport="mock", base_url="", model="m", temperature=None,
+        max_tokens=None, timeout_s=1.0, max_retries=0,
+        capabilities=frozenset({Capability.CHAT}), allow_private_hosts=False,
+    )
+    return inner, recorder, call
+
+
+def test_a_completed_call_is_journalled_and_replays_locally(tmp_path):
+    journal = RequestJournal(tmp_path / "r.db")
+    inner, recorder, call = _recorder(tmp_path, journal=journal)
+    first = recorder.complete(call, system="s", user="u", task="script")
+    assert first.content == "hello"
+    assert inner.calls == 1
+    statuses = journal.statuses("job1")
+    assert [row["status"] for row in statuses] == [COMPLETED]
+    # A second identical call replays the recorded response with no new transport call.
+    second = recorder.complete(call, system="s", user="u", task="script")
+    assert second.content == "hello"
+    assert inner.calls == 1, "a completed request must not hit the transport again"
+
+
+def test_a_failed_send_becomes_uncertain_and_is_not_retried_blindly(tmp_path):
+    journal = RequestJournal(tmp_path / "r.db")
+    inner, recorder, call = _recorder(tmp_path, journal=journal, fail_first=True)
+    from packages.core.providers.base import ProviderError  # noqa: F401 - import sanity
+
+    raised = False
+    try:
+        recorder.complete(call, system="s", user="u", task="script")
+    except ConnectionError:
+        raised = True
+    assert raised, "the transport's error must still surface to the caller"
+    uncertain = journal.uncertain("job1")
+    assert len(uncertain) == 1, "the call left the process; its outcome is unknown"
+    # The allowance stays consumed: the money may already be gone.
+    assert journal.outstanding("job1")["tokens"] > 0
+    # Nothing completed, so nothing can be replayed.
+    assert journal.completed(uncertain[0]["request_key"]) is None
+    # The recorded attempt count means an operator-acknowledged retry is a new attempt, not a
+    # silent duplicate.
+    assert journal.next_attempt(uncertain[0]["request_key"]) == 2
