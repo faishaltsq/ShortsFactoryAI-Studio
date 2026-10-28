@@ -43,6 +43,7 @@ from .schemas import (
     PublishBody,
     ReconcileBody,
     RejectBody,
+    RetryRequestBody,
     SettingsBody,
     TestProviderBody,
 )
@@ -654,6 +655,63 @@ def create_app(state: AppState | None = None) -> FastAPI:
         return artifact.to_json()
 
     # ---------------------------------------------------------------- usage summary
+    # ---------------------------------------------------------------- request journal
+    @app.get("/api/jobs/{job_id}/requests")
+    def job_requests(job_id: str) -> dict[str, Any]:
+        """Safe per-request status summaries for one job. No payload content, ever."""
+        try:
+            app_state.store.get(job_id)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        journal = getattr(app_state, "requests", None)
+        if journal is None:
+            return {"job_id": job_id, "requests": [], "uncertain": []}
+        return {
+            "job_id": job_id,
+            "requests": journal.statuses(job_id),
+            "uncertain": journal.uncertain(job_id),
+        }
+
+    @app.post("/api/jobs/{job_id}/requests/{request_key}/retry")
+    def retry_request(
+        job_id: str,
+        request_key: str,
+        body: RetryRequestBody,
+        _: None = Depends(require_token),
+    ) -> dict[str, Any]:
+        """Record the operator's decision to make a fresh, deliberate attempt.
+
+        The honest guarantee is stated plainly in the response: this cannot make the remote call
+        exactly-once, because nobody — including the provider — can retract a call whose outcome
+        was never observed. What it *does* guarantee is that nothing retries automatically after
+        an unknown outcome, and that every committed response is reused. The next attempt is a new
+        attempt number for the same logical request, with the operator's name on the decision.
+        """
+        app_state.store.get(job_id)  # 404 on an unknown job
+        journal = getattr(app_state, "requests", None)
+        if journal is None:
+            raise HTTPException(status_code=409, detail="request journal unavailable")
+        uncertain = journal.uncertain(job_id)
+        row = next((r for r in uncertain if r["request_key"] == request_key), None)
+        if row is None:
+            raise HTTPException(
+                status_code=409,
+                detail="that request is not waiting for acknowledgement",
+            )
+        journal.acknowledge(
+            request_key=request_key, attempt=row["attempt"], operator=body.operator
+        )
+        return {
+            "job_id": job_id,
+            "request_key": request_key,
+            "next_attempt": journal.next_attempt(request_key),
+            "acknowledged_by": body.operator,
+            "note": (
+                "outcome remains unknown; the next attempt is deliberate and recorded. "
+                "Exactly-once remote execution cannot be enforced by this system."
+            ),
+        }
+
     @app.get("/api/usage/summary")
     def usage_summary() -> dict[str, Any]:
         """Per-day, per-agent and per-model totals.

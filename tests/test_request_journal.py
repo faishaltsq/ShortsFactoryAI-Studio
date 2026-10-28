@@ -221,8 +221,7 @@ def _recorder(tmp_path, *, journal: RequestJournal, fail_first: bool = False):
     recorder = RecordingProvider(
         inner, tracker=tracker, agent="ScriptAgent", job_id="job1", journal=journal
     )
-    from packages.core.providers.base import ResolvedCall
-    from packages.core.providers.base import Capability
+    from packages.core.providers.base import Capability, ResolvedCall
 
     call = ResolvedCall(
         provider="stub", transport="mock", base_url="", model="m", temperature=None,
@@ -266,3 +265,69 @@ def test_a_failed_send_becomes_uncertain_and_is_not_retried_blindly(tmp_path):
     # The recorded attempt count means an operator-acknowledged retry is a new attempt, not a
     # silent duplicate.
     assert journal.next_attempt(uncertain[0]["request_key"]) == 2
+
+
+# -- the HTTP surface -----------------------------------------------------------------------
+def _api(tmp_path):
+    from fastapi.testclient import TestClient
+
+    from apps.api.main import create_app
+    from apps.api.settings import Settings
+    from apps.api.state import AppState
+    from packages.core.providers.usage import Budget
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "factory.db",
+        jobs_dir=tmp_path / "data" / "jobs",
+        secrets_dir=tmp_path / "data" / "secrets",
+        studio_config=tmp_path / "config" / "studio.json",
+    ).ensure()
+    state = AppState.build(settings, budget=Budget())
+    return TestClient(create_app(state)), state
+
+
+def test_the_job_requests_view_projects_no_payload(tmp_path):
+    client, state = _api(tmp_path)
+    job = state.store.create(title="uji")
+    key = _key()
+    state.requests.prepare(request_key=key, job_id=job.id, agent="ScriptAgent", attempt=1,
+                           provider="p", model="m")
+    state.requests.mark_sent(request_key=key, attempt=1, provider="p", model="m")
+    state.requests.mark_completed(request_key=key, attempt=1, usage={"prompt_tokens": 3},
+                                  result={"text": "sensitive body"})
+    body = client.get(f"/api/jobs/{job.id}/requests").json()
+    assert body["uncertain"] == []
+    assert len(body["requests"]) == 1
+    assert body["requests"][0]["status"] == COMPLETED
+    assert "sensitive body" not in str(body)
+
+
+def test_an_uncertain_request_needs_an_operator_acknowledgement(tmp_path):
+    client, state = _api(tmp_path)
+    job = state.store.create(title="uji")
+    key = _key()
+    state.requests.prepare(request_key=key, job_id=job.id, agent="ScriptAgent", attempt=1,
+                           provider="p", model="m")
+    state.requests.mark_sent(request_key=key, attempt=1, provider="p", model="m")
+    state.requests.mark_uncertain(request_key=key, attempt=1, error="reset")
+    body = client.get(f"/api/jobs/{job.id}/requests").json()
+    assert len(body["uncertain"]) == 1
+    # The retry route refuses anything that is not waiting for acknowledgement.
+    other = client.post(f"/api/jobs/{job.id}/requests/{'0' * 64}/retry", json={"operator": "op"})
+    assert other.status_code == 409
+    # The acknowledgement records the operator and hands back the next attempt number.
+    ack = client.post(
+        f"/api/jobs/{job.id}/requests/{key}/retry",
+        json={"operator": "faishal", "confirm_possible_duplicate": True},
+    )
+    assert ack.status_code == 200, ack.text
+    payload = ack.json()
+    assert payload["next_attempt"] == 2
+    assert payload["acknowledged_by"] == "faishal"
+    assert "Exactly-once remote execution cannot be enforced" in payload["note"]
+
+
+def test_the_requests_view_404s_for_an_unknown_job(tmp_path):
+    client, _state = _api(tmp_path)
+    assert client.get("/api/jobs/nope/requests").status_code == 404

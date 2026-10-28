@@ -173,6 +173,11 @@ class AgentBindingUpdate(BaseModel):
     temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     max_tokens: int | None = Field(default=None, ge=1, le=200_000)
     system_prompt_override: str | None = Field(default=None, max_length=8000)
+class RetryRequestBody(BaseModel):
+    """An operator's deliberate decision to re-attempt a call whose outcome is unknown."""
+    model_config = ConfigDict(extra="forbid")
+    operator: str = Field(min_length=1, max_length=120)
+    confirm_possible_duplicate: bool = False
 class PublishBody(BaseModel):
     """Which transport to publish through.
 
