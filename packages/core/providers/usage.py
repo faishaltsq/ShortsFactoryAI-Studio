@@ -6,6 +6,7 @@ completion size, because a budget that is enforced after the money is spent is n
 
 from __future__ import annotations
 
+import contextlib
 import datetime as dt
 import sqlite3
 import threading
@@ -46,8 +47,18 @@ class UsageTracker:
         self.db_path = Path(db_path)
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.budget = budget or Budget()
+        self.configured_rates: dict[str, tuple[float, float]] = {}
         self._lock = threading.Lock()
         self._init()
+
+    def set_configured_rates(self, rates: dict[str, tuple[float, float]]) -> None:
+        """Record which providers currently have both rates configured (a zero rate counts).
+
+        The registry is in-memory, so the log cannot answer this itself. Passing the fact in keeps
+        ``price_configured`` about today's configuration rather than about historical rows.
+        """
+        with self._lock:
+            self.configured_rates = dict(rates)
 
     def set_limits(
         self,
@@ -92,11 +103,28 @@ class UsageTracker:
                     est_cost_usd REAL NOT NULL DEFAULT 0,
                     elapsed_ms INTEGER NOT NULL DEFAULT 0,
                     day TEXT NOT NULL,
-                    created_at TEXT NOT NULL
+                    created_at TEXT NOT NULL,
+                    price_in_per_mtok REAL,
+                    price_out_per_mtok REAL,
+                    pricing_status TEXT NOT NULL DEFAULT 'priced'
                 )
                 """
             )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_usage_day ON usage_log(day)")
+            # Historical rows predate the price snapshot: they are "legacy_unknown", never
+            # re-priced from today's rates and never inferred "free" from a zero cost.
+            for statement in (
+                "ALTER TABLE usage_log ADD COLUMN price_in_per_mtok REAL",
+                "ALTER TABLE usage_log ADD COLUMN price_out_per_mtok REAL",
+                "ALTER TABLE usage_log ADD COLUMN pricing_status TEXT NOT NULL DEFAULT 'priced'",
+            ):
+                with contextlib.suppress(sqlite3.OperationalError):
+                    conn.execute(statement)
+            conn.execute(
+                "UPDATE usage_log SET pricing_status = 'legacy_unknown'"
+                " WHERE pricing_status = 'priced' AND price_in_per_mtok IS NULL"
+                " AND price_out_per_mtok IS NULL"
+            )
 
     def record(
         self,
@@ -108,13 +136,29 @@ class UsageTracker:
         usage: Usage,
         est_cost_usd: float,
         elapsed_ms: int,
+        price_in_per_mtok: float | None = None,
+        price_out_per_mtok: float | None = None,
     ) -> None:
+        """Record one call with the price snapshot that produced its cost.
+
+        The snapshot is the point: a cost computed from today's rates cannot be compared against a
+        cost computed after the operator changed the price, and a zero with no rates is not a zero
+        cost. ``pricing_status`` says which of the three cases this row is, so a summary can report
+        what it does not know instead of presenting an incomplete total as a complete one.
+        """
         now = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
+        if price_in_per_mtok is None and price_out_per_mtok is None:
+            status = "unpriced"
+        elif price_in_per_mtok is None or price_out_per_mtok is None:
+            status = "partial"
+        else:
+            status = "priced"
         with self._lock, self._connect() as conn:
             conn.execute(
                 "INSERT INTO usage_log(job_id, agent, provider, model, prompt_tokens,"
-                " completion_tokens, est_cost_usd, elapsed_ms, day, created_at)"
-                " VALUES (?,?,?,?,?,?,?,?,?,?)",
+                " completion_tokens, est_cost_usd, elapsed_ms, day, created_at,"
+                " price_in_per_mtok, price_out_per_mtok, pricing_status)"
+                " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     job_id,
                     agent,
@@ -126,6 +170,9 @@ class UsageTracker:
                     elapsed_ms,
                     _utc_day(),
                     now,
+                    price_in_per_mtok,
+                    price_out_per_mtok,
+                    status,
                 ),
             )
 
@@ -156,31 +203,46 @@ class UsageTracker:
         unpriced providers reports 0.0 for every call. The ``price_configured`` flag says which
         case this is, so a dashboard cannot present an unpriced zero as "free".
         """
+        # One predicate for "this total knows what it cost": a fully-priced row is one whose
+        # snapshot carried both rates. Anything else — partial, unpriced, or a legacy row from
+        # before snapshots existed — is explicitly incomplete, and the counts below say so rather
+        # than letting a smaller total look like a smaller spend.
+        priced_calls = "COUNT(*) FILTER (WHERE pricing_status = 'priced')"
+        unknown_calls = "COUNT(*) FILTER (WHERE pricing_status <> 'priced')"
         with self._connect() as conn:
             days = conn.execute(
-                "SELECT day,"
-                " SUM(prompt_tokens + completion_tokens) AS tokens,"
-                " COUNT(*) AS calls,"
-                " SUM(est_cost_usd) AS cost"
+                f"SELECT day,"
+                f" SUM(prompt_tokens + completion_tokens) AS tokens,"
+                f" COUNT(*) AS calls,"
+                f" SUM(est_cost_usd) AS cost,"
+                f" {priced_calls} AS priced_calls,"
+                f" {unknown_calls} AS unknown_price_calls"
                 " FROM usage_log GROUP BY day ORDER BY day"
             ).fetchall()
             by_agent = conn.execute(
                 "SELECT day, agent,"
                 " SUM(prompt_tokens + completion_tokens) AS tokens,"
                 " COUNT(*) AS calls,"
-                " SUM(est_cost_usd) AS cost"
+                " SUM(est_cost_usd) AS cost,"
+                " COUNT(*) FILTER (WHERE pricing_status = 'priced') AS priced_calls,"
+                " COUNT(*) FILTER (WHERE pricing_status <> 'priced') AS unknown_price_calls"
                 " FROM usage_log GROUP BY day, agent ORDER BY day, agent"
             ).fetchall()
             by_model = conn.execute(
                 "SELECT day, provider, model,"
                 " SUM(prompt_tokens + completion_tokens) AS tokens,"
                 " COUNT(*) AS calls,"
-                " SUM(est_cost_usd) AS cost"
+                " SUM(est_cost_usd) AS cost,"
+                " COUNT(*) FILTER (WHERE pricing_status = 'priced') AS priced_calls,"
+                " COUNT(*) FILTER (WHERE pricing_status <> 'priced') AS unknown_price_calls"
                 " FROM usage_log GROUP BY day, provider, model ORDER BY day, provider, model"
             ).fetchall()
-            priced = conn.execute(
-                "SELECT COUNT(*) AS n FROM usage_log WHERE est_cost_usd > 0"
-            ).fetchone()
+            # ``price_configured`` describes the *rates the operator configured now*, not whether
+            # any row happens to have a nonzero cost: a zero rate is a real price, and a nonzero
+            # cost from a rate that has since been removed is not a configured price today. The
+            # configured rates are a registry fact, so the caller passes them in; this module only
+            # reads its own log.
+            configured = self.configured_rates
 
         def row(item: sqlite3.Row) -> dict[str, Any]:
             return {
@@ -188,13 +250,17 @@ class UsageTracker:
                 "tokens": int(item["tokens"] or 0),
                 "calls": int(item["calls"] or 0),
                 "cost_usd": float(item["cost"] or 0.0),
+                # "is this total complete?" belongs next to the total itself: a group whose cost
+                # covers every call in it is fully priced; anything else is a partial number.
+                "fully_priced": int(item["priced_calls"] or 0) == int(item["calls"] or 0),
+                "unknown_price_calls": int(item["unknown_price_calls"] or 0),
             }
 
         return {
             "days": [row(item) for item in days],
             "by_agent": [row(item) for item in by_agent],
             "by_model": [row(item) for item in by_model],
-            "price_configured": bool(priced["n"]) if priced else False,
+            "price_configured": bool(configured),
         }
 
     def assert_can_spend(self, *, worst_case_tokens: int, worst_case_cost_usd: float) -> None:
@@ -305,6 +371,8 @@ class RecordingProvider:
             usage=result.usage,
             est_cost_usd=cost,
             elapsed_ms=result.elapsed_ms,
+            price_in_per_mtok=self.price_in,
+            price_out_per_mtok=self.price_out,
         )
         return result
 
@@ -330,5 +398,7 @@ class RecordingProvider:
             usage=result.usage,
             est_cost_usd=cost,
             elapsed_ms=result.elapsed_ms,
+            price_in_per_mtok=self.price_in,
+            price_out_per_mtok=self.price_out,
         )
         return result

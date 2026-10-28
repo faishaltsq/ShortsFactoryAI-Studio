@@ -348,7 +348,12 @@ def test_migrations_are_idempotent(tmp_path):
     assert second.get(job.id).title == "x"
     with second._connect() as conn:
         versions = [row["version"] for row in conn.execute("SELECT version FROM schema_migrations")]
-    assert versions == [1, 2, 3], "each migration applies exactly once, never re-running an earlier one"
+    # The property, not the list: strictly increasing (each applied once), no duplicates, and the
+    # highest version is what the code declares — so adding a migration is not a test edit.
+    from packages.core.orchestration.jobstore import MIGRATIONS
+
+    assert versions == sorted(set(versions)), "each migration applies exactly once"
+    assert versions[-1] == max(version for version, _ in MIGRATIONS)
 
 
 def test_wal_is_enabled(store):

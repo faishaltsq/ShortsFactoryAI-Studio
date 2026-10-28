@@ -56,7 +56,20 @@ class AppState:
             transports=build_transports(),
         )
         state._load_configured_providers()
+        state._publish_configured_rates()
         return state
+    def _publish_configured_rates(self) -> None:
+        """Tell the usage tracker which providers currently have both rates configured.
+
+        The registry is in-memory and the tracker only reads its own log, so "is pricing configured
+        *now*" is a fact the tracker cannot derive. Publishing it keeps ``price_configured`` about
+        today's rates rather than about whether any historical row happens to carry a cost.
+        """
+        rates: dict[str, tuple[float, float]] = {}
+        for spec in self.registry.specs.values():
+            if spec.price_in_per_mtok is not None and spec.price_out_per_mtok is not None:
+                rates[spec.id] = (spec.price_in_per_mtok, spec.price_out_per_mtok)
+        self.usage.set_configured_rates(rates)
 
     def _load_configured_providers(self) -> None:
         """Load operator-declared providers from ``studio.json``, if that file defines any.
@@ -166,6 +179,9 @@ class AppState:
 
     def upsert_provider(self, spec: ProviderSpec) -> None:
         self.registry.add(spec)
+        # A price edit changes what "pricing is configured" means, so republish rather than let the
+        # summary keep answering about the previous configuration.
+        self._publish_configured_rates()
 
     def capability_gaps(self) -> dict[str, list[str]]:
         """Which agents cannot be served because no enabled provider declares a capability."""

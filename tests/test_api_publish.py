@@ -282,6 +282,63 @@ def test_get_metadata_returns_the_artifact(client, app):
 # -- usage summary -----------------------------------------------------------------------------
 
 
+def test_a_priced_zero_is_not_an_unpriced_zero(client, app):
+    """A configured zero rate is a real price; a missing rate is an unknown cost.
+
+    These two cases used to look identical (``est_cost_usd == 0.0``), which let a dashboard
+    present "we do not know what this cost" as "this cost nothing".
+    """
+    from packages.core.providers.base import Usage
+    tracker = app.state.studio.usage
+    # Both rates configured at zero: a deliberate free tier, fully priced.
+    tracker.record(
+        job_id=None, agent="ScriptAgent", provider="stub", model="free-model",
+        usage=Usage(prompt_tokens=10, completion_tokens=5), est_cost_usd=0.0, elapsed_ms=1,
+        price_in_per_mtok=0.0, price_out_per_mtok=0.0,
+    )
+    # No rates at all: the cost is unknown, not zero.
+    tracker.record(
+        job_id=None, agent="ScriptAgent", provider="stub", model="unpriced-model",
+        usage=Usage(prompt_tokens=10, completion_tokens=5), est_cost_usd=0.0, elapsed_ms=1,
+    )
+    # One rate only: partial.
+    tracker.record(
+        job_id=None, agent="ScriptAgent", provider="stub", model="partial-model",
+        usage=Usage(prompt_tokens=10, completion_tokens=5), est_cost_usd=0.5, elapsed_ms=1,
+        price_in_per_mtok=1.0,
+    )
+    tracker.set_configured_rates({"stub": (0.0, 0.0)})
+    body = client.get("/api/usage/summary").json()
+    assert body["price_configured"] is True, "a configured zero rate is a configured price"
+    by_model = {(row["model"]): row for row in body["by_model"]}
+    assert by_model["free-model"]["fully_priced"] is True
+    assert by_model["free-model"]["unknown_price_calls"] == 0
+    assert by_model["unpriced-model"]["fully_priced"] is False
+    assert by_model["unpriced-model"]["unknown_price_calls"] == 1
+    assert by_model["partial-model"]["fully_priced"] is False
+
+
+def test_legacy_rows_are_never_inferred_to_be_free(client, app):
+    """A row written before price snapshots existed is explicitly unknown, never "free"."""
+    from packages.core.providers.base import Usage
+    tracker = app.state.studio.usage
+    tracker.record(
+        job_id=None, agent="ScriptAgent", provider="stub", model="legacy",
+        usage=Usage(prompt_tokens=10, completion_tokens=0), est_cost_usd=0.0, elapsed_ms=1,
+    )
+    with tracker._connect() as conn:
+        conn.execute(
+            "UPDATE usage_log SET pricing_status = 'legacy_unknown',"
+            " price_in_per_mtok = NULL, price_out_per_mtok = NULL"
+        )
+    tracker.set_configured_rates({})
+    body = client.get("/api/usage/summary").json()
+    row = next(r for r in body["by_model"] if r["model"] == "legacy")
+    assert row["fully_priced"] is False
+    assert row["unknown_price_calls"] == 1
+    assert body["price_configured"] is False
+
+
 def test_usage_summary_groups_by_day_agent_and_model(client, app):
     from packages.core.providers.base import Usage
 
