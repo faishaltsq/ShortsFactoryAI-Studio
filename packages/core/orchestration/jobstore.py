@@ -586,6 +586,24 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
         ],
     ),
     (
+        4,
+        [
+            # One global render slot: video, fragments, thumbnails and skill validation all go
+            # through it, so two expensive ffmpeg/Remotion runs cannot starve each other on a
+            # single-operator machine. Keyed by token like the job leases, so a crashed worker's
+            # row expires instead of blocking renders forever.
+            """
+            CREATE TABLE IF NOT EXISTS render_slots (
+                slot TEXT PRIMARY KEY,
+                token TEXT NOT NULL,
+                owner TEXT NOT NULL,
+                acquired_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+            """,
+        ],
+    ),
+    (
         3,
         [
             # Additive per DATA_CONTRACTS rule 0: new columns with defaults, no renames.
