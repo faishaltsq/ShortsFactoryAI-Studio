@@ -94,6 +94,10 @@ class ProviderBody(BaseModel):
     cli_command: str = Field(default="", max_length=260)
     credential_env: str = Field(default="", max_length=120)
     credential_secret: str = Field(default="", max_length=4000, exclude=True)
+    #: Omitted/empty credential inputs *preserve* the stored reference, so a label or URL edit
+    #: never silently unbinds a working credential. This flag is the only way to remove one, and
+    #: it cannot be combined with a replacement.
+    clear_credential: bool = False
     #: USD per million tokens. Absent, ``estimate_cost`` returns 0.0 by design rather than
     #: inventing a price — so every recorded cost would be 0.0 and the cost dashboard would show
     #: a real-looking zero. Setting these is what makes ``est_cost_usd`` a measurement.

@@ -226,3 +226,100 @@ def test_an_agent_binding_saves_and_is_refused_for_an_unknown_agent(tmp_path):
     unknown = client.put("/api/agents/NotAnAgent/binding", json={"primary": "mock"})
     assert unknown.status_code == 422
     assert "unknown agent" in unknown.json()["detail"]
+
+
+def test_an_edit_without_a_credential_preserves_the_stored_reference(tmp_path):
+    client = _client(tmp_path)
+    client.put(
+        "/api/providers",
+        json={"id": "keepme", "base_url": "https://api.example.com/v1", "model": "m",
+              "credential_env": "MY_KEY"},
+    )
+    # A label edit with no credential input must not unbind the reference.
+    client.put(
+        "/api/providers",
+        json={"id": "keepme", "label": "Renamed", "base_url": "https://api.example.com/v1",
+              "model": "m"},
+    )
+    listed = {p["id"]: p for p in client.get("/api/providers").json()["providers"]}
+    assert listed["keepme"]["label"] == "Renamed"
+    assert listed["keepme"]["credential_source"] == "env:MY_KEY", (
+        "an edit without credential input must preserve the stored reference"
+    )
+
+
+def test_replacing_and_clearing_a_credential_are_explicit(tmp_path):
+    client = _client(tmp_path)
+    client.put(
+        "/api/providers",
+        json={"id": "swap", "base_url": "https://api.example.com/v1", "model": "m",
+              "credential_env": "FIRST"},
+    )
+    client.put(
+        "/api/providers",
+        json={"id": "swap", "base_url": "https://api.example.com/v1", "model": "m",
+              "credential_env": "SECOND"},
+    )
+    listed = {p["id"]: p for p in client.get("/api/providers").json()["providers"]}
+    assert listed["swap"]["credential_source"] == "env:SECOND"
+    # Clear is the only removal path, and it cannot be combined with a replacement.
+    both = client.put(
+        "/api/providers",
+        json={"id": "swap", "base_url": "https://api.example.com/v1", "model": "m",
+              "credential_env": "THIRD", "clear_credential": True},
+    )
+    assert both.status_code == 422
+    client.put(
+        "/api/providers",
+        json={"id": "swap", "base_url": "https://api.example.com/v1", "model": "m",
+              "clear_credential": True},
+    )
+    listed = {p["id"]: p for p in client.get("/api/providers").json()["providers"]}
+    assert listed["swap"]["credential_source"] is None
+
+
+def test_a_provider_survives_a_restart_with_its_prices(tmp_path):
+    client = _client(tmp_path)
+    client.put(
+        "/api/providers",
+        json={"id": "durable", "base_url": "https://api.example.com/v1", "model": "m",
+              "price_in_per_mtok": 0.25, "price_out_per_mtok": 1.25},
+    )
+    # A brand-new app over the same settings must see the same provider, prices included.
+    from apps.api.main import create_app
+    from apps.api.settings import Settings
+    from apps.api.state import AppState
+    from packages.core.providers.usage import Budget
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "factory.db",
+        jobs_dir=tmp_path / "data" / "jobs",
+        secrets_dir=tmp_path / "data" / "secrets",
+        studio_config=tmp_path / "config" / "studio.json",
+    )
+    rebuilt = create_app(AppState.build(settings, budget=Budget()))
+    from fastapi.testclient import TestClient
+
+    again = TestClient(rebuilt)
+    listed = {p["id"]: p for p in again.get("/api/providers").json()["providers"]}
+    assert "durable" in listed
+    assert listed["durable"]["credential_source"] is None
+
+
+def test_deleting_a_bound_provider_is_refused(tmp_path):
+    client = _client(tmp_path)
+    client.put(
+        "/api/providers",
+        json={"id": "bound", "base_url": "https://api.example.com/v1", "model": "m",
+              "capabilities": ["chat", "json_schema"]},
+    )
+    client.put("/api/agents/ScriptAgent/binding", json={"primary": "bound"})
+    response = client.delete("/api/providers/bound")
+    assert response.status_code == 409, response.text
+    assert "ScriptAgent" in response.json()["detail"]
+    # Once unbound, the same delete succeeds.
+    client.put("/api/agents/ScriptAgent/binding", json={"primary": None})
+    assert client.delete("/api/providers/bound").status_code == 200
+    listed = {p["id"] for p in client.get("/api/providers").json()["providers"]}
+    assert "bound" not in listed

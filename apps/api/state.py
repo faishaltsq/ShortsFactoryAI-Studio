@@ -72,39 +72,68 @@ class AppState:
         self.usage.set_configured_rates(rates)
 
     def _load_configured_providers(self) -> None:
-        """Load operator-declared providers from ``studio.json``, if that file defines any.
+        """Load operator-declared providers from the durable configuration store.
 
-        The file is optional and ignored when absent; the mock registry is the default. A provider
-        entry carries a credential *reference* (``{"env": NAME}``), never a value — the same rule
-        the API enforces. Recognising the local router here is what lets the visual QA pass run for
-        real without a UI round-trip.
+        The store is the single writer of ``studio.json``; this is the single reader. A malformed
+        file raises: a configuration the process cannot understand must not degrade into "the first
+        enabled provider", because that silently picks a provider the operator never chose. The
+        credentials are references and stay references — resolution happens at call time, through
+        the origin the credential was bound to.
         """
-        import json
+        from .config import ConfigError, ConfigStore
 
-        path = self.settings.studio_config
-        if not path.is_file():
-            return
+        store = ConfigStore(self.settings.studio_config, secrets=self.secrets)
         try:
-            payload = json.loads(path.read_text(encoding="utf-8"))
-        except (OSError, ValueError):
-            return
-        for entry in payload.get("providers", []) if isinstance(payload, dict) else []:
+            config = store.load()
+        except ConfigError:
+            raise
+        for entry in config.providers:
             try:
                 spec = ProviderSpec(
                     id=entry["id"],
                     label=entry.get("label", ""),
                     transport=entry.get("transport", "openai_compat"),
                     base_url=entry["base_url"],
-                    model=entry["model"],
+                    model=entry.get("model", ""),
                     credential=entry.get("credential"),
                     capabilities=[Capability(c) for c in entry.get("capabilities", ["chat"])],
                     allow_private_hosts=entry.get("allow_private_hosts", False),
                     enabled=entry.get("enabled", True),
+                    cli_command=entry.get("cli_command", ""),
+                    timeout_s=entry.get("timeout_s", 90.0),
+                    max_retries=entry.get("max_retries", 2),
+                    max_tokens=entry.get("max_tokens"),
+                    temperature=entry.get("temperature"),
+                    price_in_per_mtok=entry.get("price_in_per_mtok"),
+                    price_out_per_mtok=entry.get("price_out_per_mtok"),
                 )
             except (KeyError, ValueError):
                 continue  # a malformed entry is skipped, never silently half-applied
             self.registry.add(spec)
-        self._load_configured_bindings(payload if isinstance(payload, dict) else {})
+        self._load_configured_bindings(
+            {"bindings": config.bindings, "budget": config.budget.to_json(),
+             "render": config.render.to_json()}
+        )
+        from .config import malformed_bindings
+
+        try:
+            raw = __import__("json").loads(
+                self.settings.studio_config.read_text(encoding="utf-8")
+            )
+        except (OSError, ValueError):
+            raw = {}
+        dropped = malformed_bindings(raw.get("bindings", []) if isinstance(raw, dict) else [])
+        if dropped:
+            self._note_skipped_binding(
+                f"{dropped} binding entri dilewati karena formatnya tidak valid"
+            )
+        # A saved budget is the operator's limit from the previous run; it takes effect at startup
+        # rather than after the next save.
+        self.usage.set_limits(
+            max_daily_tokens=config.budget.max_daily_tokens,
+            max_daily_cost_usd=config.budget.max_daily_cost_usd,
+            unlimited=config.budget.unlimited,
+        )
 
     def _load_configured_bindings(self, payload: dict[str, Any]) -> None:
         """Load per-agent provider bindings.

@@ -404,13 +404,35 @@ def create_app(state: AppState | None = None) -> FastAPI:
     def upsert_provider(
         body: ProviderBody, _: None = Depends(require_token)
     ) -> dict[str, Any]:
-        credential: dict[str, str] | None = None
+        # Credential policy: an omitted/empty credential input preserves the existing reference,
+        # a nonempty value replaces it, and only an explicit clear removes it. Preserving is what
+        # keeps an unrelated label or URL edit from silently unbinding a working credential.
+        existing = None
+        try:
+            existing = app_state.registry.get(body.id)
+        except KeyError:
+            existing = None
+        if body.credential_secret and body.credential_env:
+            raise HTTPException(
+                status_code=422,
+                detail="send credential_secret or credential_env, not both",
+            )
+        if body.clear_credential and (body.credential_secret or body.credential_env):
+            raise HTTPException(
+                status_code=422,
+                detail="clear_credential cannot be combined with a replacement credential",
+            )
+        credential: dict[str, str] | None
         if body.credential_secret:
             # Seal the value immediately; the plaintext never reaches the registry or a response.
             ref = app_state.secrets.put(f"provider-{body.id}", body.credential_secret)
             credential = ref.to_json()
         elif body.credential_env:
             credential = {"env": body.credential_env}
+        elif body.clear_credential:
+            credential = None
+        else:
+            credential = dict(existing.credential) if existing is not None else None
         try:
             spec = ProviderSpec(
                 id=body.id,
@@ -433,7 +455,42 @@ def create_app(state: AppState | None = None) -> FastAPI:
         except (ValueError, BlockedTarget) as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         app_state.upsert_provider(spec)
+        _persist_provider(app_state, spec)
         return {"provider": spec.public_view()}
+
+    @app.delete("/api/providers/{provider_id}", status_code=200)
+    def delete_provider(provider_id: str, _: None = Depends(require_token)) -> dict[str, Any]:
+        """Remove a provider. Refused while a persisted binding still references it (409):
+        deleting the provider a binding names would leave the binding pointing at nothing, which
+        is a silent misconfiguration rather than a visible error.
+        """
+        from .config import ConfigError, ConfigStore
+
+        store = ConfigStore(app_state.settings.studio_config, secrets=app_state.secrets)
+        try:
+            config = store.load()
+        except ConfigError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        referencing = sorted(
+            str(binding.get("agent"))
+            for binding in config.bindings
+            if binding.get("primary") == provider_id
+            or provider_id in (binding.get("fallback") or [])
+        )
+        if referencing:
+            raise HTTPException(
+                status_code=409,
+                detail="provider is still bound to: " + ", ".join(referencing),
+            )
+        config.providers = [e for e in config.providers if e.get("id") != provider_id]
+        config.credential_origins.pop(provider_id, None)
+        try:
+            store.save(config)
+        except ConfigError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        app_state.registry.specs.pop(provider_id, None)
+        app_state._publish_configured_rates()  # noqa: SLF001 - same object, one republish path
+        return {"deleted": provider_id}
 
     @app.post("/api/providers/test")
     def test_provider(
@@ -693,7 +750,7 @@ def create_app(state: AppState | None = None) -> FastAPI:
                     min_free_vram_mib=body.render.min_free_vram_mib,
                     allow_unmeasured_gpu=body.render.allow_unmeasured_gpu,
                 )
-            pass  # BUG INJECTION
+            store.save(config)
         except ConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         app_state.usage.set_limits(
@@ -808,6 +865,40 @@ def create_app(state: AppState | None = None) -> FastAPI:
         return {"agent": agent_id, "binding": entry}
 
     return app
+
+
+def _persist_provider(app_state: Any, spec: ProviderSpec) -> None:
+    """Write one provider into ``studio.json`` durably, replacing its previous entry.
+
+    The credential's *origin* is persisted next to it, so a later URL edit cannot rebind a
+    credential that was validated against a different host. A provider is only in the durable file
+    if the save succeeded: a registry-only edit would vanish on restart, which is the "my settings
+    did not stick" bug class.
+    """
+    from .config import ConfigError, ConfigStore
+
+    store = ConfigStore(app_state.settings.studio_config, secrets=app_state.secrets)
+    try:
+        config = store.load()
+        config.providers = [
+            entry for entry in config.providers if entry.get("id") != spec.id
+        ] + [spec.durable_view()]
+        config.credential_origins[spec.id] = _origin(spec.base_url)
+        store.save(config)
+    except ConfigError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
+def _origin(base_url: str) -> dict[str, Any]:
+    """The ``(scheme, host, port)`` a credential is bound to. Never a full URL with a path."""
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(base_url)
+    return {
+        "scheme": parts.scheme,
+        "host": parts.hostname,
+        "port": parts.port,
+    }
 
 
 def _capability_gaps(app_state: Any, requires: list[Any]) -> list[str]:

@@ -180,14 +180,34 @@ def _provider_list(value: Any) -> list[dict[str, Any]]:
 
 
 def _binding_list(value: Any) -> list[dict[str, Any]]:
+    """Validated bindings. Two failure classes, kept distinct on purpose.
+
+    A binding naming an agent that can never run would bind silently to nothing, so an *unknown
+    agent* is a hard error at build time. A malformed *field* is dropped here and reported by the
+    caller with a persisted note — one broken entry must not stop the studio from starting, and it
+    must not vanish silently either.
+    """
     if not isinstance(value, list):
         raise ConfigError("'bindings' must be a list")
+    kept: list[dict[str, Any]] = []
     for entry in value:
         if not isinstance(entry, dict) or not isinstance(entry.get("agent"), str):
-            raise ConfigError("every binding entry needs a string 'agent'")
+            continue
         if entry["agent"] not in AGENT_IDS:
             raise ConfigError(f"binding names unknown agent {entry['agent']!r}")
-    return [dict(entry) for entry in value]
+        kept.append(dict(entry))
+    return kept
+
+
+def malformed_bindings(value: Any) -> int:
+    """How many binding entries were dropped, for the skipped-binding note."""
+    if not isinstance(value, list):
+        return 0
+    return sum(
+        1
+        for entry in value
+        if not isinstance(entry, dict) or not isinstance(entry.get("agent"), str)
+    )
 
 
 def _origins(value: Any) -> dict[str, dict[str, Any]]:

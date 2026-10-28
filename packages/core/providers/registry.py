@@ -119,6 +119,24 @@ class ProviderSpec(BaseModel):
             "cli_command": self.cli_command,
         }
 
+    def durable_view(self) -> dict[str, Any]:
+        """Everything needed to rebuild this provider, including prices and the credential *reference*.
+
+        ``public_view`` is the API projection: no prices, no credential. The durable form is the
+        opposite — it must round-trip through ``config/studio.json`` so a restart restores the same
+        provider, prices included. The credential is still a reference (``{"env": NAME}`` or
+        ``{"dpapi": ID}``); the sealed value lives in the secret store, never in this dict.
+        """
+        view = {
+            key: value
+            for key, value in self.public_view().items()
+            if key != "credential_source"
+        }
+        view["credential"] = dict(self.credential) if self.credential else None
+        view["price_in_per_mtok"] = self.price_in_per_mtok
+        view["price_out_per_mtok"] = self.price_out_per_mtok
+        return view
+
 
 @dataclass
 class ProviderRegistry:
