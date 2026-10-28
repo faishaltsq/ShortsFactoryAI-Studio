@@ -337,10 +337,15 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
                 agent=agent_name,
                 model=ctx.call.model,
             )
-            raise StageError(
-                "revision_required",
-                "creative review rejected the script; a new script is needed",
-                retryable=False,
+            # A revise verdict is a decision, not a crash: the review evidence is committed and
+            # the chain stops at BLOCKED, where the revision controller (step 6) reopens it with
+            # the findings attached. Raising StageError instead marked the job FAILED, which
+            # invited a bare retry of the same review call.
+            return StageOutcome(
+                ok=True,
+                detail="creative review requested a revision",
+                control="revision_required",
+                artifacts=[produces],
             )
 
         ctx.write_artifact(produces, artifact.to_json())

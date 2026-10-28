@@ -16,7 +16,7 @@ def store(tmp_path):
 
 
 def _stage(name, state, *, produces=("out.json",), behaviour=None, contract=None,
-           contract_artifact=""):
+           contract_artifact="", done_when=None):
     calls = {"n": 0}
 
     def run(ctx):
@@ -34,6 +34,7 @@ def _stage(name, state, *, produces=("out.json",), behaviour=None, contract=None
         run=run,
         contract=contract,
         contract_artifact=contract_artifact,
+        done_when=done_when,
     )
     return stage, calls
 
@@ -278,3 +279,65 @@ def test_a_generic_non_retryable_failure_still_fails(store):
     report = run_stages(store=store, job_id=job.id, stages=[stage])
     assert report["stopped"] == "stage_exception"
     assert store.get(job.id).state is JobState.FAILED
+
+
+def test_a_control_outcome_commits_evidence_and_stops_without_success(store):
+    """``control`` is a decision, not a result.
+
+    A review that says ``revision_required`` has produced evidence the operator must be able to
+    read (``review.json``), but the stage did not succeed and must not be reused as if it had.
+    The runner commits the staged artifact, moves the job to ``BLOCKED`` (the rework controller's
+    entry point), and stops the chain — it does not advance to the stage's target state and it
+    does not retry.
+    """
+    job = store.create(title="x")
+
+    def behaviour(ctx, _job_id, _n):
+        ctx.write_artifact("out.json", {"verdict": "revise", "findings": ["hook too slow"]})
+        return StageOutcome(
+            ok=True, detail="revise the hook", control="revision_required",
+            artifacts=["out.json"],
+        )
+
+    # The review's own completion predicate: an accept verdict is a finished review, a revise
+    # verdict is evidence plus a decision. Without it the second run would reuse the committed
+    # revise verdict as if it were an accepted one.
+    stage, calls = _stage(
+        "review",
+        JobState.TOPIC_SELECTED,
+        behaviour=behaviour,
+        contract_artifact="out.json",
+        done_when=lambda payload, _job_id: payload.get("verdict") == "accept",
+    )
+    report = run_stages(store=store, job_id=job.id, stages=[stage])
+    assert report["ok"] is False
+    assert report["stopped"] == "revision_required"
+    assert calls["n"] == 1, "a control outcome is not a retryable failure"
+    assert store.get(job.id).state is JobState.BLOCKED
+    # The evidence is committed, so the operator can read why the chain stopped.
+    assert store.has_artifact(job.id, "out.json")
+    payload = store.read_artifact(job.id, "out.json")
+    assert payload["verdict"] == "revise"
+    # ...and it does not authorize reuse as a success on the next run.
+    report2 = run_stages(store=store, job_id=job.id, stages=[stage])
+    assert report2["stopped"] == "revision_required"
+    assert calls["n"] == 2
+
+
+def test_waiting_resources_control_blocks_without_failing(store):
+    """A resource wait is the operator-visible waiting state, not a failure."""
+    job = store.create(title="x")
+
+    def behaviour(ctx, _job_id, _n):
+        ctx.write_artifact("out.json", {"waiting": "vram"})
+        return StageOutcome(
+            ok=True, detail="GPU telemetry unavailable", control="waiting_resources",
+            artifacts=["out.json"],
+        )
+
+    stage, _calls = _stage("render", JobState.TOPIC_SELECTED, behaviour=behaviour)
+    report = run_stages(store=store, job_id=job.id, stages=[stage])
+    assert report["ok"] is False
+    assert report["stopped"] == "waiting_resources"
+    assert store.get(job.id).state is JobState.BLOCKED
+    assert "GPU telemetry unavailable" in (store.get(job.id).last_error or "")

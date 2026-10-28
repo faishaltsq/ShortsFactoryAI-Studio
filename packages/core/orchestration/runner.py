@@ -25,7 +25,7 @@ import uuid
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import Any, Literal, Protocol
 
 from ..contracts.base import Artifact, ArtifactValidationError, validate_artifact
 from ..contracts.state import JobState, is_transition_allowed
@@ -52,6 +52,16 @@ class StageOutcome:
     reused: bool = False
     error_code: str = ""
     retryable: bool = False
+    #: A decision the stage wants recorded without a success checkpoint and without a retry.
+    #: ``revision_required`` commits the review evidence and returns to the revising stage;
+    #: ``qa_repair_required`` commits the QA verdict and waits for the rework controller;
+    #: ``waiting_resources`` releases ownership and keeps the request visible for later;
+    #: ``paused`` stops at a safe boundary without cancelling the operator's intent. None of
+    #: these is a failure, and none is a success: the runner commits what the stage staged
+    #: (its evidence) and stops the chain.
+    control: (
+        Literal["revision_required", "qa_repair_required", "waiting_resources", "paused"] | None
+    ) = None
 
 
 class StageChainError(ValueError):
@@ -217,10 +227,10 @@ def run_stages(
 
         # Reuse: every declared artifact exists, the contract validates, and the artifact says the
         # stage actually succeeded (``done_when``).
-        if stage.produces and all(store.has_artifact(job_id, name) for name in stage.produces):
-            if _validate_produced(store, job_id, stage) is None and _artifact_says_done(
-                store, job_id, stage
-            ):
+        # One predicate, one place: ``_is_done`` is the same test chain validation used above, so
+        # a stage that reports a control decision (a revise verdict) is never mistaken for a
+        # completed stage here just because its artifact validates.
+        if _is_done(store, job_id, stage):
                 # The artifact was verified, so the stage really is done — the state must say so.
                 # Skipping the transition here left a crash between "artifact written" and
                 # "state advanced" unresumable: the next stage was no longer reachable.
@@ -279,6 +289,34 @@ def run_stages(
                     retryable=False,
                 )
 
+            if outcome.ok and outcome.control is not None:
+                # A decision, not a result: commit what the stage staged as evidence, then stop.
+                # ``waiting_resources`` releases ownership so another worker can take the job; the
+                # others keep it and wait for the rework controller (step 8) to reopen.
+                problem = _validate_staged(ctx, stage)
+                if problem is None:
+                    promoted = _promote_staged(store, job_id, ctx, stage, validate=False)
+                    if promoted is not None:
+                        outcome = StageOutcome(ok=False, detail=promoted, error_code="missing_artifact")
+                    else:
+                        store.set_error(job_id, f"{stage.name}: {outcome.control} {outcome.detail}".strip())
+                        if outcome.control == "waiting_resources":
+                            store.transition(job_id, JobState.BLOCKED,
+                                             detail=f"{stage.name} waiting: {outcome.detail}")
+                        else:
+                            store.transition(job_id, JobState.BLOCKED,
+                                             detail=f"{stage.name} {outcome.control}: {outcome.detail}")
+                        report["ok"] = False
+                        report["stopped"] = outcome.control
+                        report["detail"] = outcome.detail
+                        report["stages"].append({"name": stage.name, "ok": False,
+                                                 "control": outcome.control, "detail": outcome.detail})
+                        _discard_staging(staging)
+                        if keeper is not None:
+                            keeper.stop_heartbeat()
+                        return report
+                else:
+                    outcome = StageOutcome(ok=False, detail=problem, error_code="missing_artifact")
             if outcome.ok:
                 problem = _validate_staged(ctx, stage)
                 if problem is None:
