@@ -144,6 +144,31 @@ class StudioPatch(BaseModel):
     patch: dict[str, Any] = Field(default_factory=dict)
 
 
+class SettingsBody(BaseModel):
+    """Budget and render settings. Storage paths are deliberately absent: they are read-only and
+    startup-only, so a request cannot move the operator's data directory."""
+    model_config = ConfigDict(extra="forbid")
+    budget: BudgetSettings | None = None
+    render: RenderSettings | None = None
+class BudgetSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    max_daily_tokens: int | None = Field(default=None, gt=0)
+    max_daily_cost_usd: float | None = Field(default=None, gt=0)
+    unlimited: bool = False
+class RenderSettings(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    min_free_ram_mib: int = Field(default=2048, gt=0)
+    min_free_vram_mib: int = Field(default=1024, gt=0)
+    allow_unmeasured_gpu: bool = False
+class AgentBindingUpdate(BaseModel):
+    """A per-agent binding. Immutable model/temperature/token overrides must reach the call."""
+    model_config = ConfigDict(extra="forbid")
+    primary: str | None = Field(default=None, max_length=64)
+    fallback: list[str] = Field(default_factory=list, max_length=8)
+    model: str | None = Field(default=None, max_length=200)
+    temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    max_tokens: int | None = Field(default=None, ge=1, le=200_000)
+    system_prompt_override: str | None = Field(default=None, max_length=8000)
 class PublishBody(BaseModel):
     """Which transport to publish through.
 

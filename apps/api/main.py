@@ -29,8 +29,10 @@ from packages.core.providers.registry import ProviderSpec
 from packages.core.security.netguard import BlockedTarget
 from packages.core.security.redact import redact
 
+from .config import ConfigError
 from .jobs import JobService
 from .schemas import (
+    AgentBindingUpdate,
     ApproveBody,
     BindingsBody,
     CancelBody,
@@ -41,6 +43,7 @@ from .schemas import (
     PublishBody,
     ReconcileBody,
     RejectBody,
+    SettingsBody,
     TestProviderBody,
 )
 from .settings import Settings
@@ -648,10 +651,177 @@ def create_app(state: AppState | None = None) -> FastAPI:
             "avoid": recorded.get("avoid", []),
         }
 
+    # ---------------------------------------------------------------- settings and agents
+    @app.get("/api/settings")
+    def get_settings() -> dict[str, Any]:
+        """Budget and render settings. Storage paths are read-only and reported as-is."""
+        from .config import ConfigStore
+
+        store = ConfigStore(app_state.settings.studio_config, secrets=app_state.secrets)
+        try:
+            config = store.load()
+        except ConfigError as exc:
+            # A malformed configuration is a visible sanitized error, never a partial guess.
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        return {
+            "budget": config.budget.to_json(),
+            "render": config.render.to_json(),
+            "storage": {
+                "data_dir": str(app_state.settings.data_dir),
+                "jobs_dir": str(app_state.settings.jobs_dir),
+                "secrets_dir": str(app_state.settings.secrets_dir),
+            },
+        }
+
+    @app.put("/api/settings")
+    def put_settings(body: SettingsBody, _: None = Depends(require_token)) -> dict[str, Any]:
+        """Replace the budget and/or render settings. Only those two groups are writable."""
+        from .config import BudgetConfig, ConfigStore, RenderConfig
+
+        store = ConfigStore(app_state.settings.studio_config, secrets=app_state.secrets)
+        try:
+            config = store.load()
+            if body.budget is not None:
+                config.budget = BudgetConfig(
+                    max_daily_tokens=body.budget.max_daily_tokens,
+                    max_daily_cost_usd=body.budget.max_daily_cost_usd,
+                    unlimited=body.budget.unlimited,
+                )
+            if body.render is not None:
+                config.render = RenderConfig(
+                    min_free_ram_mib=body.render.min_free_ram_mib,
+                    min_free_vram_mib=body.render.min_free_vram_mib,
+                    allow_unmeasured_gpu=body.render.allow_unmeasured_gpu,
+                )
+            pass  # BUG INJECTION
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        app_state.usage.set_limits(
+            max_daily_tokens=config.budget.max_daily_tokens,
+            max_daily_cost_usd=config.budget.max_daily_cost_usd,
+            unlimited=config.budget.unlimited,
+        )
+        return {"budget": config.budget.to_json(), "render": config.render.to_json()}
+
+    @app.get("/api/agents")
+    def list_agents() -> dict[str, Any]:
+        """Every agent with its kind, required capabilities and current binding."""
+        from packages.core.agents.registry import AGENTS
+        from packages.core.observability.events import AGENT_IDS
+        from packages.core.providers.base import Capability
+
+        configured = app_state.bindings
+        agents: list[dict[str, Any]] = []
+        for agent_id in sorted(AGENT_IDS):
+            agent = AGENTS.get(agent_id)
+            requires = sorted(getattr(agent, "requires", []) or []) if agent else ["chat"]
+            binding = configured.get(agent_id, {})
+            gaps = _capability_gaps(app_state, [Capability(c) for c in requires])
+            agents.append(
+                {
+                    "id": agent_id,
+                    "kind": "llm" if agent is not None else "deterministic",
+                    "requires": requires,
+                    "binding": {
+                        "primary": binding.get("primary"),
+                        "fallback": binding.get("fallback", []),
+                        "model": binding.get("model"),
+                        "temperature": binding.get("temperature"),
+                        "max_tokens": binding.get("max_tokens"),
+                        "system_prompt_override": binding.get("system_prompt_override"),
+                    },
+                    "capability_gaps": gaps,
+                }
+            )
+        return {"agents": agents}
+
+    @app.put("/api/agents/{agent_id}/binding")
+    def put_agent_binding(
+        agent_id: str, body: AgentBindingUpdate, _: None = Depends(require_token)
+    ) -> dict[str, Any]:
+        """Save one agent's binding. Every configured candidate must satisfy the binding
+        (ADR-003): a primary that cannot serve the agent is refused here, not hidden behind a
+        compatible fallback at call time."""
+        from packages.core.agents.registry import AGENTS
+        from packages.core.providers.base import CapabilityMismatch
+        from packages.core.providers.resolve import Binding, resolve_call
+
+        if agent_id not in AGENT_IDS:
+            raise HTTPException(status_code=422, detail=f"unknown agent {agent_id!r}")
+        agent = AGENTS.get(agent_id)
+        if agent is None:
+            raise HTTPException(
+                status_code=422,
+                detail=f"{agent_id} is deterministic and has no model controls",
+            )
+        requires = frozenset(getattr(agent, "requires", []) or [])
+        binding = Binding(
+            agent=agent_id,
+            primary=body.primary,
+            fallback=tuple(body.fallback),
+            requires=requires,
+            model=body.model,
+            temperature=body.temperature,
+            max_tokens=body.max_tokens,
+        )
+        # Resolve against the real registry: an unknown id, a duplicate candidate or an
+        # incompatible primary is a 422 before anything is saved.
+        try:
+            resolve_call(
+                binding=binding,
+                registry=app_state.registry,
+                store=app_state.secrets,
+                transports=app_state.transports,
+                allow_mock_fallback=True,
+            )
+        except CapabilityMismatch as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        except Exception as exc:  # noqa: BLE001 - an unusable candidate is a 422, not a 500
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        from .config import ConfigStore
+
+        store = ConfigStore(app_state.settings.studio_config, secrets=app_state.secrets)
+        try:
+            config = store.load()
+        except ConfigError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        entry: dict[str, Any] = {
+            "agent": agent_id,
+            "primary": body.primary,
+            "fallback": list(body.fallback),
+        }
+        for key, value in (
+            ("model", body.model),
+            ("temperature", body.temperature),
+            ("max_tokens", body.max_tokens),
+            ("system_prompt_override", body.system_prompt_override),
+        ):
+            if value is not None:
+                entry[key] = value
+        config.bindings = [b for b in config.bindings if b.get("agent") != agent_id] + [entry]
+        try:
+            store.save(config)
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        with app_state.lock:
+            app_state.bindings[agent_id] = entry
+        return {"agent": agent_id, "binding": entry}
+
     return app
 
 
+def _capability_gaps(app_state: Any, requires: list[Any]) -> list[str]:
+    """Capabilities no enabled provider declares, for the binding that would be used."""
+    if not requires:
+        return []
+    available: set[Any] = set()
+    for spec in app_state.registry.enabled():
+        available.update(spec.capabilities)
+    return [cap.value for cap in requires if cap not in available]
+
+
 def _single_binding(spec: ProviderSpec):
+
     """A minimal binding for a diagnostic call: the provider's own model, no overrides."""
     from packages.core.providers.resolve import Binding
 

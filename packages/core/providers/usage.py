@@ -49,6 +49,28 @@ class UsageTracker:
         self._lock = threading.Lock()
         self._init()
 
+    def set_limits(
+        self,
+        *,
+        max_daily_tokens: int | None,
+        max_daily_cost_usd: float | None,
+        unlimited: bool,
+    ) -> Budget:
+        """Swap the budget object for a new one, atomically.
+
+        ``Budget`` is frozen, so "changing a limit" means replacing the object every call site
+        reads. Doing it under the same lock the recorder takes means a call in flight sees either
+        the old limit or the new one — never a half-written pair — and a saved setting takes effect
+        without a restart, which is the difference between a limit and a suggestion.
+        """
+        with self._lock:
+            self.budget = Budget(
+                max_daily_tokens=max_daily_tokens,
+                max_daily_cost_usd=max_daily_cost_usd,
+                unlimited=unlimited,
+            )
+            return self.budget
+
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, timeout=10)
         conn.row_factory = sqlite3.Row
