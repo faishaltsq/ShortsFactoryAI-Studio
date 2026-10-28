@@ -356,3 +356,41 @@ def test_upcoming_lists_calendar_split(client):
     assert [job["title"] for job in body["upcoming"]] == ["Nanti"]
     assert any(job["title"] == "Bebas" for job in body["awaiting_schedule"])
     assert "now" in body
+
+
+def test_run_refuses_terminal_and_gate_states(app, client):
+    """A plain ``/run`` may only start a draft (or eligible blocked work, via rework later).
+
+    The guard is the route's, not the runner's: without it a ``PUBLISHED`` job would start a
+    worker that immediately dies on an illegal transition, marking the job ``FAILED`` — a
+    terminal state overwritten by an ineligible request. Terminal, paused, approval-waiting and
+    publication states need a decision, not a stage chain.
+    """
+    from packages.core.contracts.state import JobState
+
+    state = app.state.studio
+    targets = (
+        JobState.CANCELLED,
+        JobState.REJECTED,
+        JobState.APPROVED,
+        JobState.READY_FOR_APPROVAL,
+        JobState.PRIVATE_UPLOAD,
+        JobState.SCHEDULED,
+        JobState.PUBLISHED,
+        JobState.PAUSED,
+    )
+    for target in targets:
+        fresh = _create(client, title=f"uji-{target.value}")
+        # These states are only reachable through the real pipeline, so the test places the row
+        # directly. That is the point: the guard must not depend on how the job got there.
+        with state.store._connect() as conn:  # noqa: SLF001 - test placement, not production
+            conn.execute(
+                "UPDATE jobs SET state = ? WHERE id = ?", (target.value, fresh["id"])
+            )
+            conn.commit()
+        response = client.post(f"/api/jobs/{fresh['id']}/run")
+        assert response.status_code == 409, f"{target.value} accepted /run: {response.text}"
+        assert target.value in response.json()["detail"]
+    # A draft is still runnable — the guard must not have over-refused.
+    fresh = _create(client, title="Boleh")
+    assert client.post(f"/api/jobs/{fresh['id']}/run").status_code == 202

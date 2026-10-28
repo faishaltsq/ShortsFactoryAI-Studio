@@ -46,6 +46,22 @@ from .schemas import (
 from .settings import Settings
 from .state import AppState
 
+#: States that must never be entered by a plain ``/run``. ``BLOCKED`` is absent: reopening
+#: eligible blocked work is what an explicit rework/resume operation does (step 8), so drafts and
+#: blocked jobs stay runnable while terminal/paused/gate/publication states need a decision.
+_RUN_INELIGIBLE = frozenset(
+    {
+        JobState.CANCELLED,
+        JobState.REJECTED,
+        JobState.PUBLISHED,
+        JobState.SCHEDULED,
+        JobState.APPROVED,
+        JobState.READY_FOR_APPROVAL,
+        JobState.PRIVATE_UPLOAD,
+        JobState.PAUSED,
+    }
+)
+
 POLL_S = 0.5
 
 #: States where a metadata edit is meaningful: the render exists and the operator is deciding.
@@ -213,9 +229,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
     @app.post("/api/jobs/{job_id}/run", status_code=202)
     def run_job(job_id: str, _: None = Depends(require_token)) -> dict[str, Any]:
         try:
-            app_state.store.get(job_id)
+            job = app_state.store.get(job_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
+        # A terminal, paused, approval-waiting or publishing job is not a stage chain: the stage
+        # runner would refuse the transition anyway, but the operator deserves the real reason
+        # (409) instead of a worker that starts, fails, and blocks the job. Reopen paths are
+        # explicit: /rework from an eligible blocked state, or approve/reject at the gate.
+        if job.state in _RUN_INELIGIBLE:
+            raise HTTPException(
+                status_code=409,
+                detail=f"job is {job.state.value}; only a draft or eligible blocked work can run",
+            )
         started = service.start(job_id)
         if not started:
             raise HTTPException(status_code=409, detail="job is already running")
