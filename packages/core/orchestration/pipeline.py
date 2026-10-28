@@ -24,7 +24,16 @@ from ..providers.resolve import Binding, resolve_call
 from ..providers.usage import RecordingProvider
 from ..security.redact import redact
 from .jobstore import JobRecord, JobStore
-from .runner import Stage, StageContext, StageError, StageOutcome
+from .leases import LeaseKeeper
+from .runner import (
+    CancelToken,
+    NullCancel,
+    Stage,
+    StageContext,
+    StageError,
+    StageOutcome,
+    run_stages,
+)
 
 #: How many times the creative director may send a script back. A revision loop with no ceiling is
 #: how a job spends an afternoon and a budget without producing anything.
@@ -395,3 +404,42 @@ def _null_context() -> CallContext:
         allow_private_hosts=False,
     )
     return CallContext(call=call, provider=MockProvider())
+
+
+def run_job(
+    state: Any,
+    job_id: str,
+    *,
+    keeper: LeaseKeeper,
+    cancel: CancelToken | None = None,
+) -> dict[str, Any]:
+    """The bounded controller around ``run_stages`` for one job.
+
+    Why this exists instead of ``apps/api`` calling ``run_stages`` directly: the revision loop is
+    a controller concern, and a controller that lives in the web layer is a controller the
+    scheduler and the rework path cannot reuse. It owns exactly one bound — ``MAX_REVISIONS`` —
+    and stops the chain otherwise. It does not open a second runner, does not retry a paid call
+    whose outcome is unknown, and does not write state its lease does not cover.
+    """
+    cancel = cancel or NullCancel()
+    revisions = 0
+    while True:
+        stages = build_stages(state, job_id)
+        report = run_stages(
+            store=state.store, job_id=job_id, stages=stages, keeper=keeper, cancel=cancel
+        )
+        stopped = report.get("stopped")
+        if stopped != "revision_required":
+            return report
+        # The review asked for a revision. The revision controller (step 6) persists attempts and
+        # compares authored content; until it lands, the honest bound here is the ceiling: two
+        # revisions, then the job stays blocked with the findings attached rather than looping
+        # until the budget runs out.
+        revisions += 1
+        if revisions > MAX_REVISIONS:
+            state.store.set_error(job_id, f"revision ceiling reached after {revisions - 1} revisions")
+            return report
+        # A revise verdict lands at CREATIVE_REVIEW -> BLOCKED; reopening into SCRIPT_GENERATED
+        # is the revising stage's own edge, and the script stage re-runs with the findings. The
+        # loop above rebuilds the chain, so the next iteration starts from wherever the job is.
+        state.store.transition(job_id, JobState.SCRIPT_GENERATED, detail="revision requested")

@@ -25,7 +25,11 @@ from packages.core.media.qc import sha256_file
 from packages.core.orchestration.editorial import compute_inputs_hash
 from packages.core.orchestration.jobstore import JobRecord
 from packages.core.orchestration.leases import LeaseKeeper, LeaseLost
-from packages.core.orchestration.pipeline import _video_dir, build_stages, mock_pipeline_supported
+from packages.core.orchestration.pipeline import (
+    _video_dir,
+    mock_pipeline_supported,
+    run_job,
+)
 from packages.core.orchestration.runner import run_stages
 from packages.core.publish.stage import build_publish_stage
 from packages.core.publish.thumbnail import build_thumbnail_stage
@@ -167,14 +171,10 @@ class JobService:
 
         cancel = _Cancel(self.state.cancel_flag(job_id))
         try:
-            stages = build_stages(self.state, job_id)
-            report = run_stages(
-                store=self.state.store,
-                job_id=job_id,
-                stages=stages,
-                keeper=keeper,
-                cancel=cancel,
-            )
+            # The pipeline owns the chain and its bounds; this layer owns the lease, the thread and
+            # the failure reporting. Keeping the revision loop out of the web layer is what lets
+            # the scheduler and the rework path run the same controller.
+            report = run_job(self.state, job_id, keeper=keeper, cancel=cancel)
             if report.get("stopped") == "lease_lost":
                 self.state.events.emit(
                     job_id=job_id,

@@ -82,6 +82,9 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
             JobState.BLOCKED,
             JobState.FAILED,
             JobState.CANCELLED,
+            # A pending revision decision may be parked without cancelling the operator's intent;
+            # ``PAUSED -> CREATIVE_REVIEW`` brings the same review back.
+            JobState.PAUSED,
         }
     ),
     JobState.STORYBOARD_READY: frozenset(
@@ -127,7 +130,16 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
         }
     ),
     JobState.READY_FOR_APPROVAL: frozenset(
-        {JobState.APPROVED, JobState.REJECTED, JobState.CANCELLED}
+        {
+            JobState.APPROVED,
+            JobState.REJECTED,
+            JobState.CANCELLED,
+            # A rework edit after the gate (script/metadata) invalidates the evidence this state
+            # was reached with, so it returns to BLOCKED for controlled rework. It never goes
+            # straight back to a production stage: the rework controller decides which artifacts
+            # must be rebuilt, and approval is re-earned at this same gate.
+            JobState.BLOCKED,
+        }
     ),
     JobState.APPROVED: frozenset(
         {JobState.PRIVATE_UPLOAD, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED}

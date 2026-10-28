@@ -70,7 +70,10 @@ function Invoke-Gate {
 }
 
 Invoke-Gate -Name 'ruff' -Command 'uv run ruff check .' -Action { uv run ruff check . }
-Invoke-Gate -Name 'pytest' -Command 'uv run pytest -q' -Action { uv run pytest -q }
+$pytestCmd = if ($Quick) { 'uv run pytest -q -m "not slow"' } else { 'uv run pytest -q' }
+Invoke-Gate -Name 'pytest' -Command $pytestCmd -Action {
+    if ($Quick) { uv run pytest -q -m "not slow" } else { uv run pytest -q }
+}
 Invoke-Gate -Name 'dash-typecheck' -Command 'npm --prefix apps/dashboard run typecheck' -Action {
     npm --prefix apps/dashboard run typecheck
 }

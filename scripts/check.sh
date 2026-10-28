@@ -45,7 +45,9 @@ gate() {
 }
 
 gate ruff        "uv run ruff check ."
-gate pytest      "uv run pytest -q"
+# Quick mode never runs the real-browser/ffmpeg pytest tier either: it is not phase evidence.
+if [ "$quick" -eq 1 ]; then gate pytest "uv run pytest -q -m \"not slow\""
+else gate pytest "uv run pytest -q"; fi
 gate dash-tsc    "npm --prefix apps/dashboard run typecheck"
 gate dash-test   "npm --prefix apps/dashboard run test"
 gate schemas     "uv run python scripts/export_schemas.py --check"
