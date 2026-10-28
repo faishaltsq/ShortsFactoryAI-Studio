@@ -46,6 +46,11 @@
       "title": "Passed",
       "type": "boolean"
     },
+    "provenance": {
+      "additionalProperties": true,
+      "title": "Provenance",
+      "type": "object"
+    },
     "reason": {
       "default": "",
       "title": "Reason",

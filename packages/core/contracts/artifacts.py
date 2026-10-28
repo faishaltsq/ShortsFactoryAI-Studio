@@ -42,7 +42,8 @@ class ScriptArtifact(Artifact):
     segments: list[dict[str, Any]] = Field(min_length=1)
     cta: str = ""
     content_kind: ContentKind = "factual"
-    prompt_hash: str = ""
+    #: Provenance (prompt_sha256, producer, provider, model) lives on the Artifact base and is
+    #: attached by the code that made the call — never written by the model.
 
     @model_validator(mode="after")
     def _segments_have_ids(self) -> ScriptArtifact:

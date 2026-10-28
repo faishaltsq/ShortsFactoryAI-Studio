@@ -26,10 +26,10 @@
       "title": "Hook",
       "type": "string"
     },
-    "prompt_hash": {
-      "default": "",
-      "title": "Prompt Hash",
-      "type": "string"
+    "provenance": {
+      "additionalProperties": true,
+      "title": "Provenance",
+      "type": "object"
     },
     "schema_version": {
       "default": 1,

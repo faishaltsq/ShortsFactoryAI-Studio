@@ -114,7 +114,7 @@ class ScriptAgent(Agent):
     name = "ScriptAgent"
     system_prompt = (
         "You write short-form vertical video scripts. Return ONLY JSON with keys: "
-        "schema_version, hook, segments, cta, content_kind, prompt_hash. "
+        "schema_version, hook, segments, cta, content_kind. "
         "segments is a list of {id, text, purpose} where purpose is one of hook/build/turn/payoff. "
         "Each segment becomes one scene, so 3-6 segments. Total spoken length must fit 30-60 seconds."
     )

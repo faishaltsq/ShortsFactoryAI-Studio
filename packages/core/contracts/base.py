@@ -37,6 +37,11 @@ class Artifact(BaseModel):
 
     schema_version: int = 1
     created_at: str = Field(default_factory=_utc_now)
+    #: Locally attached provenance: ``prompt_sha256``, ``producer``, ``provider``, ``model``.
+    #: Declared on the base so *every* artifact may carry it, and attached by the code that ran
+    #: the call — never written by the model, whose claim about itself is not evidence.
+    #: ``inputs_sha256`` is added by the stages that bind an artifact to specific input bytes.
+    provenance: dict[str, Any] = Field(default_factory=dict)
 
     def canonical_json(self) -> str:
         """Deterministic JSON: sorted keys, no whitespace, no NaN.

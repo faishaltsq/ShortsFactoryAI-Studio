@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import sqlite3
+import time
 
 import pytest
 
+from packages.core.contracts.state import JobState
 from packages.core.providers.journal import (
     COMPLETED,
     UNCERTAIN,
@@ -12,6 +14,32 @@ from packages.core.providers.journal import (
     hash_inputs,
     request_key,
 )
+
+
+@pytest.fixture
+def state(tmp_path):
+    from apps.api.settings import Settings
+    from apps.api.state import AppState
+    from packages.core.contracts.state import JobState  # noqa: F401 - re-exported for tests
+    from packages.core.providers.usage import Budget
+
+    settings = Settings(
+        data_dir=tmp_path / "data",
+        db_path=tmp_path / "data" / "factory.db",
+        jobs_dir=tmp_path / "data" / "jobs",
+        secrets_dir=tmp_path / "data" / "secrets",
+        studio_config=tmp_path / "config" / "studio.json",
+    ).ensure()
+    return AppState.build(settings, budget=Budget())
+
+
+@pytest.fixture
+def client(state):
+    from fastapi.testclient import TestClient
+
+    from apps.api.main import create_app
+
+    return TestClient(create_app(state))
 
 
 @pytest.fixture
@@ -159,11 +187,11 @@ def test_statuses_project_no_payload_content(journal):
                     provider="p", model="m")
     journal.mark_sent(request_key=key, attempt=1, provider="p", model="m")
     journal.mark_completed(request_key=key, attempt=1, usage={"prompt_tokens": 1},
-                           result={"secret": "sk-live-should-never-appear"})
+                           result={"secret": "not-a-real-credential-value"})
     for row in journal.statuses("job1"):
         assert "result_json" not in row
         assert "usage_json" not in row
-        assert "should-never-appear" not in str(row)
+        assert "not-a-real-credential-value" not in str(row)
 
 
 def test_hash_inputs_is_stable_across_key_order_and_whitespace():
@@ -331,3 +359,55 @@ def test_an_uncertain_request_needs_an_operator_acknowledgement(tmp_path):
 def test_the_requests_view_404s_for_an_unknown_job(tmp_path):
     client, _state = _api(tmp_path)
     assert client.get("/api/jobs/nope/requests").status_code == 404
+
+
+# -- prompt provenance ----------------------------------------------------------------------
+def test_provenance_is_computed_locally_not_asserted_by_the_model():
+    """A model-written prompt hash is a claim; the locally computed one is a fact."""
+    from packages.core.prompts import SYSTEM_PROMPTS, effective, sha256
+
+    assert sha256(SYSTEM_PROMPTS["ScriptAgent"]) == sha256(SYSTEM_PROMPTS["ScriptAgent"])
+    assert sha256(SYSTEM_PROMPTS["ScriptAgent"]) != sha256(SYSTEM_PROMPTS["ResearchAgent"])
+    # An operator override changes the effective prompt, so the hash changes with it.
+    assert effective("ScriptAgent", "be brief") == "be brief"
+    assert sha256(effective("ScriptAgent", "be brief")) != sha256(SYSTEM_PROMPTS["ScriptAgent"])
+    # A missing registration is loud, not a silent empty prompt.
+    try:
+        effective("NotAnAgent")
+    except KeyError:
+        pass
+    else:  # pragma: no cover - the raise is the assertion
+        raise AssertionError("an unregistered agent must not produce a silent prompt")
+
+
+def test_a_script_artifact_carries_provenance_after_a_real_run(state, client):
+    """The artifact the pipeline writes records who produced it and which prompt was sent."""
+    from packages.core.prompts import SYSTEM_PROMPTS, sha256
+
+    job = client.post(
+        "/api/jobs", json={"title": "Uji", "topic": "sejarah", "provider_mode": "mock"}
+    ).json()
+    assert client.post(f"/api/jobs/{job['id']}/run").status_code == 202
+    script = None
+    deadline = time.time() + 120
+    while time.time() < deadline:
+        record = state.store.get(job["id"])
+        if record.state in {JobState.FAILED, JobState.BLOCKED, JobState.STORYBOARD_READY}:
+            try:
+                script = state.store.read_artifact(job["id"], "script.json")
+            except Exception:  # noqa: BLE001 - the artifact may simply not exist yet
+                script = None
+            if script is not None or record.state in {JobState.FAILED, JobState.BLOCKED}:
+                break
+        time.sleep(0.2)
+    assert script is not None, (
+        f"no script.json; job ended at {state.store.get(job['id']).state.value}"
+        f" ({state.store.get(job['id']).last_error})"
+    )
+    provenance = script.get("provenance")
+    assert isinstance(provenance, dict), "a model artifact must carry provenance"
+    assert provenance["producer"] == "ScriptAgent"
+    assert provenance["prompt_sha256"] == sha256(SYSTEM_PROMPTS["ScriptAgent"])
+    assert provenance["provider"] and provenance["model"]
+    # The old model-written field is gone: the contract no longer accepts it.
+    assert "prompt_hash" not in script

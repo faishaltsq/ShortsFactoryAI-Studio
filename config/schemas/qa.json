@@ -11,6 +11,11 @@
       "title": "Creative",
       "type": "object"
     },
+    "provenance": {
+      "additionalProperties": true,
+      "title": "Provenance",
+      "type": "object"
+    },
     "repairs": {
       "items": {
         "additionalProperties": true,

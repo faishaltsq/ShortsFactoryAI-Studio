@@ -46,6 +46,11 @@
       "title": "Narration",
       "type": "object"
     },
+    "provenance": {
+      "additionalProperties": true,
+      "title": "Provenance",
+      "type": "object"
+    },
     "scenes": {
       "items": {
         "additionalProperties": true,

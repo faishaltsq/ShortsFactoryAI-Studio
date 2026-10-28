@@ -87,7 +87,6 @@ def _job(store: JobStore, *, voice: str = "system-default") -> str:
             "cta": "",
             "estimated_duration_s": 8,
             "content_kind": "fictional",
-            "prompt_hash": "0" * 64,
         },
     )
     store.write_artifact(

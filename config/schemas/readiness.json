@@ -33,6 +33,11 @@
       "title": "Inputs Sha256",
       "type": "string"
     },
+    "provenance": {
+      "additionalProperties": true,
+      "title": "Provenance",
+      "type": "object"
+    },
     "ready": {
       "default": false,
       "title": "Ready",

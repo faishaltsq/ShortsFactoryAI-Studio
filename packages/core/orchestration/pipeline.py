@@ -65,6 +65,34 @@ def _emit(state: Any, job_id: str, stage: str, event_type: str, description: str
     )
 
 
+def _with_provenance(
+    payload: dict[str, Any], agent_name: str, ctxp: Any, state: Any
+) -> dict[str, Any]:
+    """Attach the locally computed provenance to a model artifact.
+
+    The model writes the content; the code writes who produced it. ``prompt_sha256`` is hashed
+    here, from the prompt this process actually sent, so the artifact's provenance is a fact about
+    the run rather than the model's opinion of itself.
+    """
+    from ..prompts import SYSTEM_PROMPTS, sha256
+
+    override = None
+    bindings = getattr(state, "bindings", {})
+    if isinstance(bindings, dict):
+        entry = bindings.get(agent_name)
+        if isinstance(entry, dict):
+            candidate = entry.get("system_prompt_override")
+            override = candidate if isinstance(candidate, str) else None
+    prompt = override or SYSTEM_PROMPTS[agent_name]
+    payload["provenance"] = {
+        "prompt_sha256": sha256(prompt),
+        "producer": agent_name,
+        "provider": ctxp.call.provider,
+        "model": ctxp.call.model,
+    }
+    return payload
+
+
 def _context(state: Any, job: JobRecord, agent_name: str) -> CallContext:
     """Resolve the agent's provider, honouring its binding and the job's mode."""
     from ..providers.registry import ProviderRegistry  # noqa: F401 - typing clarity
@@ -155,7 +183,8 @@ def _agent_stage(state: Any, *, agent_name: str, stage_state: JobState, produces
             _emit(state, job_id, stage_state.value, "failed", redact(exc.detail))
             raise StageError(exc.code, exc.detail, retryable=exc.retryable) from exc
 
-        ctx.write_artifact(produces, artifact.to_json())
+        payload = _with_provenance(artifact.to_json(), agent_name, ctxp, state)
+        ctx.write_artifact(produces, payload)
         _emit(
             state,
             job_id,
@@ -345,7 +374,7 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
             raise StageError(exc.code, exc.detail, retryable=exc.retryable) from exc
 
         if isinstance(artifact, _review_type()) and artifact.verdict == "revise":
-            ctx.write_artifact(produces, artifact.to_json())
+            ctx.write_artifact(produces, _with_provenance(artifact.to_json(), agent_name, ctxp, state))
             _emit(
                 state,
                 job_id,
@@ -368,7 +397,7 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
                 artifacts=[produces],
             )
 
-        ctx.write_artifact(produces, artifact.to_json())
+        ctx.write_artifact(produces, _with_provenance(artifact.to_json(), agent_name, ctxp, state))
         _emit(
             state,
             job_id,

@@ -48,6 +48,11 @@
       "title": "Pix Fmt",
       "type": "string"
     },
+    "provenance": {
+      "additionalProperties": true,
+      "title": "Provenance",
+      "type": "object"
+    },
     "renderer": {
       "default": "remotion",
       "enum": [

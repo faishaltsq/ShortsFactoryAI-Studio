@@ -345,6 +345,11 @@
       "title": "Height",
       "type": "integer"
     },
+    "provenance": {
+      "additionalProperties": true,
+      "title": "Provenance",
+      "type": "object"
+    },
     "scenes": {
       "items": {
         "$ref": "#/$defs/SceneSpec"
