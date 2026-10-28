@@ -74,10 +74,14 @@ def test_a_live_lease_keeps_the_character_working(state):
     state.events.emit(job_id=job.id, agent_id="ResearchAgent", event_type="stage_started")
     keeper = LeaseKeeper(state.store.db_path, ttl_s=120)
     keeper.acquire(job.id)
-
+    # The worker records the stage it is running; that row, not the job's state, is what the
+    # projection reads.
+    state.store.begin_active_stage(
+        job.id, stage="research", agent_id="ResearchAgent", token=keeper.token
+    )
     state.running[job.id] = threading.Thread(target=lambda: None, name="live")
     service = JobService(state)
-    assert service.live_agents() == {"ResearchAgent"}, "TOPIC_SELECTED is produced by ResearchAgent"
+    assert service.live_agents() == {"ResearchAgent"}, "the recorded stage's agent is working"
 
     views = project_agents(
         state.events, job_id=job.id, live_agents=service.live_agents()
@@ -202,3 +206,47 @@ def test_an_expired_lease_still_loses_to_a_live_holder(tmp_path):
             "UPDATE job_leases SET expires_at = ? WHERE job_id = ?", (_past(), job.id)
         )
     assert unexpired_jobs(store.db_path, [job.id]) == set()
+
+
+def test_live_agents_reads_the_persisted_active_stage_not_the_job_state(state):
+    """The agent shown working is the one running the stage, not the job's current state.
+
+    A job sitting in ``TOPIC_SELECTED`` is *waiting for* ResearchAgent; if the lease is live, the
+    agent that is actually working is the one the worker recorded when it began the stage. Guessing
+    from the state names the wrong character — the one whose work already finished.
+    """
+    job = state.store.create(title="active", payload={"title": "active"})
+    state.store.transition(job.id, JobState.TOPIC_SELECTED)
+    keeper = LeaseKeeper(state.store.db_path, ttl_s=120)
+    keeper.acquire(job.id)
+    state.store.begin_active_stage(
+        job.id, stage="research", agent_id="ResearchAgent", token=keeper.token
+    )
+    state.running[job.id] = threading.Thread(target=lambda: None, name="active")
+    service = JobService(state)
+    assert service.live_agents() == {"ResearchAgent"}
+    # The row expires with its lease, so a wedged worker stops being reported.
+    keeper.release()
+    assert service.live_agents() == set()
+
+
+def test_a_cleared_active_stage_stops_reporting_work(state):
+    """Clearing the row on a stage exit is what makes "finished" visible immediately."""
+    job = state.store.create(title="done", payload={"title": "done"})
+    keeper = LeaseKeeper(state.store.db_path, ttl_s=120)
+    keeper.acquire(job.id)
+    state.store.begin_active_stage(
+        job.id, stage="script", agent_id="ScriptAgent", token=keeper.token
+    )
+    state.running[job.id] = threading.Thread(target=lambda: None, name="done")
+    service = JobService(state)
+    assert service.live_agents() == {"ScriptAgent"}
+    state.store.end_active_stage(job.id, token=keeper.token)
+    assert service.live_agents() == set(), "a finished stage is not working"
+    # Another worker's token cannot clear this worker's row.
+    state.store.begin_active_stage(
+        job.id, stage="script", agent_id="ScriptAgent", token=keeper.token
+    )
+    state.store.end_active_stage(job.id, token="not-my-token")
+    assert service.live_agents() == {"ScriptAgent"}
+    keeper.release()

@@ -328,6 +328,50 @@ class JobStore:
             for tmp, _ in staged:
                 tmp.unlink(missing_ok=True)
 
+    # -- active stages ----------------------------------------------------------------------
+    def begin_active_stage(
+        self, job_id: str, *, stage: str, agent_id: str, token: str, ttl_s: int = 900
+    ) -> None:
+        """Record the stage a live worker is running, bound to its lease token.
+
+        ``end_active_stage`` clears it; the row also expires on its own so a crashed worker
+        cannot leave a job reading ``working`` forever.
+        """
+        now = _now_dt()
+        expires = now + dt.timedelta(seconds=ttl_s)
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "INSERT INTO job_active_stages(job_id, stage, agent_id, token, started_at, expires_at)"
+                " VALUES (?,?,?,?,?,?)"
+                " ON CONFLICT(job_id) DO UPDATE SET stage = excluded.stage,"
+                " agent_id = excluded.agent_id, token = excluded.token,"
+                " started_at = excluded.started_at, expires_at = excluded.expires_at",
+                (job_id, stage, agent_id, token, _utc_now(), expires.isoformat()),
+            )
+
+    def end_active_stage(self, job_id: str, *, token: str) -> None:
+        """Clear the active-stage row, but only for the worker that owns it."""
+        with self._lock, self._connect() as conn:
+            conn.execute(
+                "DELETE FROM job_active_stages WHERE job_id = ? AND token = ?", (job_id, token)
+            )
+
+    def active_stages(self, job_ids: builtins.list[str] | None = None) -> builtins.list[dict[str, Any]]:
+        """Rows for stages whose owning lease token is still live (unexpired)."""
+        query = (
+            "SELECT s.job_id, s.stage, s.agent_id, s.token, s.started_at"
+            " FROM job_active_stages s JOIN job_leases l ON l.job_id = s.job_id"
+            " WHERE l.token = s.token AND l.expires_at > ?"
+        )
+        params: builtins.list[Any] = [_utc_now()]
+        if job_ids:
+            placeholders = ",".join("?" for _ in job_ids)
+            query += f" AND s.job_id IN ({placeholders})"
+            params.extend(job_ids)
+        with self._connect() as conn:
+            rows = conn.execute(query, params).fetchall()
+        return [dict(row) for row in rows]
+
     def _approval_evidence_problem(self, job_id: str) -> str | None:
         """Return why ``approval.json`` does not authorise ``APPROVED``, or ``None`` when it does.
 
@@ -587,6 +631,24 @@ MIGRATIONS: list[tuple[int, list[str]]] = [
     ),
     (
         4,
+        [
+            # The active stage a live worker is executing. The studio projection joins this to the
+            # lease row, so "which agent is working" is a persisted fact rather than a guess from
+            # the job's current state (which names the stage that *finished*, not the one running).
+            """
+            CREATE TABLE IF NOT EXISTS job_active_stages (
+                job_id TEXT PRIMARY KEY REFERENCES jobs(id) ON DELETE CASCADE,
+                stage TEXT NOT NULL,
+                agent_id TEXT NOT NULL,
+                token TEXT NOT NULL,
+                started_at TEXT NOT NULL,
+                expires_at TEXT NOT NULL
+            )
+            """,
+        ],
+    ),
+    (
+        5,
         [
             # One global render slot: video, fragments, thumbnails and skill validation all go
             # through it, so two expensive ffmpeg/Remotion runs cannot starve each other on a

@@ -29,6 +29,7 @@ from typing import Any, Literal, Protocol
 
 from ..contracts.base import Artifact, ArtifactValidationError, validate_artifact
 from ..contracts.state import JobState, is_transition_allowed
+from ..observability.events import STAGE_AGENTS
 from .jobstore import JobStore, safe_artifact_name
 from .leases import LeaseKeeper, LeaseLost
 
@@ -86,6 +87,21 @@ class StageError(RuntimeError):
 EVIDENCE_CODES = frozenset(
     {"qa_blocked", "publication_uncertain", "publication_key_mismatch", "revision_required"}
 )
+
+
+def _end_stage(store: JobStore, job_id: str, keeper: LeaseKeeper | None) -> None:
+    """Clear the active-stage row for this worker, whatever happens next.
+
+    Every exit from a stage's attempt loop goes through here: a committed stage, a failure, a
+    control decision, a lost lease. A row left behind would read as "working" forever, which is
+    exactly the studio lie this whole mechanism exists to prevent.
+    """
+    if keeper is None:
+        return
+    try:
+        store.end_active_stage(job_id, token=keeper.token)
+    except Exception:  # noqa: BLE001 - clearing bookkeeping must never mask the real outcome
+        pass
 
 
 class StageContext:
@@ -159,6 +175,10 @@ class Stage:
     state: JobState
     produces: tuple[str, ...]
     run: Callable[[StageContext], StageOutcome]
+    #: The agent credited with this stage's work. Events use it, so a studio projection can never
+    #: attribute a stage to an agent that did not run it. Defaults to the stage's producer from
+    #: STAGE_AGENTS when empty.
+    agent_id: str = ""
     contract: type[Artifact] | None = None
     contract_artifact: str = ""
     #: Optional predicate ``(artifact, job_id) -> bool`` answering "does this artifact mean the
@@ -247,6 +267,14 @@ def run_stages(
                 continue
 
         attempts = 0
+        # The stage that is actually running, persisted with the worker's lease token. The studio
+        # projection joins this to the lease row; the job's state alone names the stage that
+        # *finished*, which is not the agent working right now.
+        stage_agent = stage.agent_id or STAGE_AGENTS.get(stage.state.value, "FactoryOrchestrator")
+        if keeper is not None:
+            store.begin_active_stage(
+                job_id, stage=stage.name, agent_id=stage_agent, token=keeper.token
+            )
         # A stage that runs longer than the TTL must not age its own lease out: heartbeat every
         # ttl/3 while it executes. A lost lease inside the stage still surfaces through the
         # stage's own LeaseLost, the post-failure renew, or the post-success renew below.
@@ -273,6 +301,7 @@ def run_stages(
                 if keeper is not None:
                     keeper.stop_heartbeat()
                 _discard_staging(staging)
+                _end_stage(store, job_id, keeper)
                 report["ok"] = False
                 report["stopped"] = "lease_lost"
                 report["detail"] = f"lease lost during {stage.name}"
@@ -315,6 +344,7 @@ def run_stages(
                         if keeper is not None:
                             keeper.stop_heartbeat()
                         return report
+                        _end_stage(store, job_id, keeper)
                 else:
                     outcome = StageOutcome(ok=False, detail=problem, error_code="missing_artifact")
             if outcome.ok:
@@ -329,6 +359,7 @@ def run_stages(
                         report["stopped"] = "lease_lost"
                         report["detail"] = f"lease lost at promotion of {stage.name}"
                         _discard_staging(staging)
+                        _end_stage(store, job_id, keeper)
                         return report
                     committed = promoted is None
                     problem = promoted
@@ -391,8 +422,10 @@ def run_stages(
             if keeper is not None:
                 keeper.stop_heartbeat()
             return report
+            _end_stage(store, job_id, keeper)
 
         _discard_staging(staging)
+        _end_stage(store, job_id, keeper)
         report["stages"].append(
             {"name": stage.name, "ok": True, "attempts": attempts, "detail": outcome.detail}
         )

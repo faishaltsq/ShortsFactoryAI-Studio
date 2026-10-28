@@ -22,10 +22,9 @@ from packages.core.contracts.artifacts import (
 from packages.core.contracts.base import ArtifactValidationError, validate_artifact
 from packages.core.contracts.state import JobState
 from packages.core.media.qc import sha256_file
-from packages.core.observability.events import STAGE_AGENTS
 from packages.core.orchestration.editorial import compute_inputs_hash
 from packages.core.orchestration.jobstore import JobRecord
-from packages.core.orchestration.leases import LeaseKeeper, LeaseLost, unexpired_jobs
+from packages.core.orchestration.leases import LeaseKeeper, LeaseLost
 from packages.core.orchestration.pipeline import _video_dir, build_stages, mock_pipeline_supported
 from packages.core.orchestration.runner import run_stages
 from packages.core.publish.stage import build_publish_stage
@@ -98,23 +97,22 @@ class JobService:
         return payload
 
     def live_agents(self) -> set[str]:
-        """Agents that hold a live lease, derived from the persisted lease rows.
+        """Agents that hold a live lease, derived from the persisted active-stage rows.
 
         A thread object in ``running`` only says a thread exists; it does not say the thread is
         alive, and a wedged worker would otherwise read ``working`` until the age fallback fired.
-        The lease row is the authority (ADR-008, FR-9.4): the worker renews it, so the absence of
-        a renewed lease means the worker stopped. Staleness is decided here, not in the browser.
+        The active-stage row — written with the worker's lease token, cleared on every exit — is
+        the authority (ADR-008, FR-9.4): it survives only while its lease does, so a dead worker
+        stops being reported as working. Staleness is decided here, not in the browser.
         """
         with self.state.lock:
             running = list(self.state.running)
         if not running:
             return set()
-        jobs = {job_id: self.state.store.get(job_id) for job_id in running}
-        unexpired = unexpired_jobs(self.state.store.db_path, list(jobs))
         live: set[str] = set()
-        for job_id in unexpired:
-            agent = STAGE_AGENTS.get(jobs[job_id].state.value)
-            if agent:
+        for row in self.state.store.active_stages(running):
+            agent = row.get("agent_id")
+            if isinstance(agent, str) and agent:
                 live.add(agent)
         return live
 
