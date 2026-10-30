@@ -303,6 +303,26 @@ def test_agent_capability_gaps_follow_its_selected_provider(tmp_path):
     assert listed["ScriptAgent"]["capability_gaps"] == ["json_schema"]
 
 
+def test_agent_capability_gaps_is_empty_when_provider_satisfies_all_requirements(tmp_path):
+    client = _client(tmp_path)
+    client.put(
+        "/api/providers",
+        json={
+            "id": "full-provider",
+            "base_url": "https://api.example.com/v1",
+            "model": "m",
+            "capabilities": ["chat", "json_schema"],
+        },
+    )
+    client.app.state.studio.bindings["ScriptAgent"] = {
+        "primary": "full-provider",
+        "fallback": [],
+    }
+    listed = {
+        agent["id"]: agent for agent in client.get("/api/agents").json()["agents"]
+    }
+    assert listed["ScriptAgent"]["capability_gaps"] == []
+
 def test_an_edit_without_a_credential_preserves_the_stored_reference(tmp_path):
     client = _client(tmp_path)
     client.put(

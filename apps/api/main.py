@@ -1043,8 +1043,9 @@ def _capability_gaps(app_state: Any, requires: list[Any], agent_id: str = "") ->
         if spec is None or not spec.enabled:
             continue
         missing = [cap for cap in requires if cap not in spec.capabilities]
-        if missing:
-            return [cap.value for cap in missing]
+        if not missing:
+            return []
+        return [cap.value for cap in missing]
     # Every configured candidate is unknown or disabled, so nothing can serve this agent. Saying
     # "no gap" here would be the one case where the banner is most needed and least honest.
     return [cap.value for cap in requires]
