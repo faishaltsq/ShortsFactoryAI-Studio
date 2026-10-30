@@ -12,6 +12,7 @@ from typing import Any
 
 from packages.core.observability.events import AGENT_IDS, StudioEventStore
 from packages.core.orchestration.jobstore import JobStore
+from packages.core.orchestration.resources import ResourcePolicy
 from packages.core.orchestration.scheduler import SchedulerConfig, SchedulerLoop
 from packages.core.providers.base import Capability, Provider
 from packages.core.providers.factory import build_transports, default_registry
@@ -50,6 +51,7 @@ class AppState:
     #: Off unless the operator set ``SHORTS_SCHEDULER_ENABLED``. ``None`` means "not built yet":
     #: the loop needs the service to hand jobs to, and the service needs this object.
     scheduler: SchedulerLoop | None = None
+    render_policy: ResourcePolicy = field(default_factory=ResourcePolicy)
 
     @classmethod
     def build(cls, settings: Settings, *, budget: Budget | None = None) -> AppState:
@@ -97,6 +99,11 @@ class AppState:
             config = store.load()
         except ConfigError:
             raise
+        self.render_policy = ResourcePolicy(
+            min_free_ram_mib=config.render.min_free_ram_mib,
+            min_free_vram_mib=config.render.min_free_vram_mib,
+            allow_unmeasured_gpu=config.render.allow_unmeasured_gpu,
+        )
         for entry in config.providers:
             try:
                 spec = ProviderSpec(
@@ -172,7 +179,29 @@ class AppState:
             if not isinstance(fallback, list) or not all(isinstance(f, str) for f in fallback):
                 self._note_skipped_binding(f"binding for {agent}: malformed fallback")
                 continue
-            self.bindings[agent] = {"primary": primary, "fallback": fallback}
+            binding: dict[str, Any] = {"primary": primary, "fallback": fallback}
+            # The overrides are the operator's, and they are what the call actually uses: a
+            # binding that survives a restart without them silently reverts to provider defaults
+            # while the UI still shows the saved values. A malformed *field* drops that field with
+            # a note; it never drops the whole binding, and it never stops startup.
+            for key, kinds in (
+                ("model", str),
+                ("temperature", (int, float)),
+                ("max_tokens", int),
+                ("system_prompt_override", str),
+            ):
+                if key not in entry:
+                    continue
+                value = entry[key]
+                if value is None:
+                    binding[key] = None
+                elif isinstance(value, kinds) and not isinstance(value, bool):
+                    binding[key] = value
+                else:
+                    self._note_skipped_binding(
+                        f"binding for {agent}: malformed {key} ignored"
+                    )
+            self.bindings[agent] = binding
 
     def _note_skipped_binding(self, detail: str) -> None:
         """Persist one bounded event about a skipped binding. Best effort: a failing event

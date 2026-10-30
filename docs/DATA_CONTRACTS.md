@@ -78,6 +78,41 @@ model fails the build.
 }
 ```
 
+A `revise` verdict is a decision, not a failure: the review evidence is committed and the chain
+stops. It is never reused as a completed review — the stage's `done_when` requires `accept`.
+
+## 4.1 Revision ledger — `revisions.json`
+
+```jsonc
+{
+  "schema_version": 1,
+  "attempts": [{
+    "attempt": 1,
+    "before_script": { "…": "ScriptArtifact before the revision" },
+    "review": { "…": "the ReviewArtifact that requested it" },
+    "candidate_script": null,          // null while phase is "prepared"
+    "phase": "prepared" | "generated" | "applied" | "unchanged",
+    "invalidated_artifacts": []        // downstream names removed when the revision is applied
+  }]
+}
+```
+
+Four rules make the ledger the authority on a revision:
+
+1. **Reserved before the call.** `prepared` records the attempt number and the exact input script
+   before any paid request, so a crash cannot invent a first attempt and cannot repeat one.
+2. **The decision is durable before invalidation.** `generated` carries the candidate script and
+   the list of downstream artifacts to remove. A crash after that commit finishes the same
+   decision on resume; it never asks the model again.
+3. **The marker is written last.** `applied` promotes the new `script.json` and removes the
+   recorded downstream artifacts in one lease-fenced commit, `revisions.json` last.
+4. **`unchanged` is a block, not a retry.** When the candidate's authored content hash equals the
+   before script's, the revision blocks and preserves the original script and every downstream
+   output. The contract refuses `unchanged` with a changed hash or a non-empty invalidation list.
+
+The ceiling is `MAX_REVISIONS = 2`, counted from the ledger, so it survives a restart. Reaching it
+blocks with the findings attached rather than looping.
+
 ## 5. Storyboard — `SceneSpec`
 
 This is the single most important contract: it is what the model writes and what the renderer
@@ -569,6 +604,24 @@ Proven by `tests/test_publish_stage.py` (20 tests), including
 across the whole reconcile sequence.
 
 ### 13.1 Usage summary
+
+**Render admission** (`packages/core/orchestration/resources.py`) guards the one global render
+slot with the operator's saved policy, before a renderer process exists:
+
+* `min_free_ram_mib` and `min_free_vram_mib` come from `studio.json` `render`, saved through
+  `PUT /api/settings`. The cap is fixed at one concurrent render and is not configurable.
+* RAM is read through Windows `GlobalMemoryStatusEx`; VRAM through `nvidia-smi`. A value that
+  cannot be measured is `None`, never `0`.
+* An unmeasured GPU refuses unless the operator opted in with `allow_unmeasured_gpu`. That opt-in
+  never raises the cap above 1.
+* A refusal returns `waiting_resources` with the measured reason, blocks the job, and writes no
+  render artifact and no success checkpoint. It is the operator-visible "this will start when the
+  machine can take it", not a silent queue.
+
+**Resuming a job at a render or QC state** reuses only stages whose artifacts exist and whose
+contract validates. If historical upstream evidence is missing, unreadable, or no longer valid,
+the run stops with `resume_evidence_missing` naming the stage and artifact before any paid call —
+resuming never regenerates earlier work and never fakes success.
 
 `GET /api/usage/summary` aggregates `usage_log` three ways plus a flag:
 

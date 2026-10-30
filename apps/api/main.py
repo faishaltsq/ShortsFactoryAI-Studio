@@ -8,6 +8,7 @@ someone opens the port beyond loopback the difference matters.
 from __future__ import annotations
 
 import json
+import sqlite3
 import tempfile
 import uuid
 from datetime import UTC
@@ -20,6 +21,7 @@ from fastapi.responses import JSONResponse, Response, StreamingResponse
 from packages.core.contracts.state import JobState
 from packages.core.observability.events import AGENT_IDS, snapshot
 from packages.core.orchestration.jobstore import ArtifactNotFound
+from packages.core.orchestration.resources import ResourcePolicy
 from packages.core.orchestration.scheduler import SCHEDULABLE_STATES
 from packages.core.orchestration.scheduler import _utc_now as _scheduler_now
 from packages.core.providers.base import (
@@ -29,6 +31,7 @@ from packages.core.providers.registry import ProviderSpec
 from packages.core.security.netguard import BlockedTarget
 from packages.core.security.redact import redact
 
+from .catalog import installed_catalog
 from .config import ConfigError
 from .jobs import JobService
 from .schemas import (
@@ -687,6 +690,8 @@ def create_app(state: AppState | None = None) -> FastAPI:
         an unknown outcome, and that every committed response is reused. The next attempt is a new
         attempt number for the same logical request, with the operator's name on the decision.
         """
+        if not body.confirm_possible_duplicate:
+            raise HTTPException(status_code=422, detail="confirm_possible_duplicate must be true")
         app_state.store.get(job_id)  # 404 on an unknown job
         journal = getattr(app_state, "requests", None)
         if journal is None:
@@ -698,9 +703,12 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 status_code=409,
                 detail="that request is not waiting for acknowledgement",
             )
-        journal.acknowledge(
-            request_key=request_key, attempt=row["attempt"], operator=body.operator
-        )
+        try:
+            journal.acknowledge(
+                request_key=request_key, attempt=row["attempt"], operator=body.operator
+            )
+        except (ValueError, sqlite3.IntegrityError) as exc:
+            raise HTTPException(status_code=409, detail="retry is already authorized") from exc
         return {
             "job_id": job_id,
             "request_key": request_key,
@@ -766,6 +774,16 @@ def create_app(state: AppState | None = None) -> FastAPI:
             "avoid": recorded.get("avoid", []),
         }
 
+    @app.get("/api/catalog")
+    def get_catalog() -> dict[str, Any]:
+        try:
+            return installed_catalog()
+        except (OSError, ValueError) as exc:
+            raise HTTPException(
+                status_code=503,
+                detail="Katalog lokal tidak dapat dibaca. Periksa manifest karakter instalasi.",
+            ) from exc
+
     # ---------------------------------------------------------------- settings and agents
     @app.get("/api/settings")
     def get_settings() -> dict[str, Any]:
@@ -816,6 +834,11 @@ def create_app(state: AppState | None = None) -> FastAPI:
             max_daily_cost_usd=config.budget.max_daily_cost_usd,
             unlimited=config.budget.unlimited,
         )
+        app_state.render_policy = ResourcePolicy(
+            min_free_ram_mib=config.render.min_free_ram_mib,
+            min_free_vram_mib=config.render.min_free_vram_mib,
+            allow_unmeasured_gpu=config.render.allow_unmeasured_gpu,
+        )
         return {"budget": config.budget.to_json(), "render": config.render.to_json()}
 
     @app.get("/api/agents")
@@ -829,9 +852,9 @@ def create_app(state: AppState | None = None) -> FastAPI:
         agents: list[dict[str, Any]] = []
         for agent_id in sorted(AGENT_IDS):
             agent = AGENTS.get(agent_id)
-            requires = sorted(getattr(agent, "requires", []) or []) if agent else ["chat"]
+            requires = sorted(getattr(agent, "requires", []) or []) if agent else []
             binding = configured.get(agent_id, {})
-            gaps = _capability_gaps(app_state, [Capability(c) for c in requires])
+            gaps = _capability_gaps(app_state, [Capability(c) for c in requires], agent_id)
             agents.append(
                 {
                     "id": agent_id,
@@ -870,6 +893,18 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 detail=f"{agent_id} is deterministic and has no model controls",
             )
         requires = frozenset(getattr(agent, "requires", []) or [])
+        candidates = [body.primary, *body.fallback] if body.primary else list(body.fallback)
+        # Static validation first, before anything is resolved or saved. ``resolve_call`` skips an
+        # unknown or disabled candidate with a recorded reason and carries on, so a binding that
+        # names a provider which does not exist would otherwise be persisted and only fail later,
+        # at the moment a job needs it. A duplicate candidate is refused for the same reason: it
+        # makes the declared order a lie.
+        if len(set(candidates)) != len(candidates):
+            raise HTTPException(status_code=422, detail="duplicate provider candidate in binding")
+        for candidate in candidates:
+            spec = app_state.registry.specs.get(candidate)
+            if spec is None:
+                raise HTTPException(status_code=422, detail=f"unknown provider {candidate!r}")
         binding = Binding(
             agent=agent_id,
             primary=body.primary,
@@ -900,27 +935,27 @@ def create_app(state: AppState | None = None) -> FastAPI:
             config = store.load()
         except ConfigError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # Every override is always present, so a caller can PUT the response body back verbatim:
+        # an absent key and an explicit null mean the same thing here, and a binding that cannot
+        # be cleared from the UI is a binding the operator cannot undo.
         entry: dict[str, Any] = {
             "agent": agent_id,
             "primary": body.primary,
             "fallback": list(body.fallback),
+            "model": body.model,
+            "temperature": body.temperature,
+            "max_tokens": body.max_tokens,
+            "system_prompt_override": body.system_prompt_override,
         }
-        for key, value in (
-            ("model", body.model),
-            ("temperature", body.temperature),
-            ("max_tokens", body.max_tokens),
-            ("system_prompt_override", body.system_prompt_override),
-        ):
-            if value is not None:
-                entry[key] = value
         config.bindings = [b for b in config.bindings if b.get("agent") != agent_id] + [entry]
         try:
             store.save(config)
         except ConfigError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
         with app_state.lock:
-            app_state.bindings[agent_id] = entry
-        return {"agent": agent_id, "binding": entry}
+            # ``agent`` is the file's key for this entry, not part of the binding the API speaks.
+            app_state.bindings[agent_id] = {k: v for k, v in entry.items() if k != "agent"}
+        return {"agent": agent_id, "binding": {k: v for k, v in entry.items() if k != "agent"}}
 
     return app
 
@@ -959,14 +994,33 @@ def _origin(base_url: str) -> dict[str, Any]:
     }
 
 
-def _capability_gaps(app_state: Any, requires: list[Any]) -> list[str]:
-    """Capabilities no enabled provider declares, for the binding that would be used."""
+def _capability_gaps(app_state: Any, requires: list[Any], agent_id: str = "") -> list[str]:
+    """Capabilities the agent's own binding cannot serve, in the order they are declared.
+
+    This must follow the binding, not the registry: a union over every enabled provider reports
+    "no gap" for an agent pinned to a chat-only provider, which is exactly the case the banner
+    exists for. When no binding pins a provider, the agent resolves dynamically to the first
+    enabled non-mock provider, so that provider is what gets diagnosed.
+    """
     if not requires:
         return []
-    available: set[Any] = set()
-    for spec in app_state.registry.enabled():
-        available.update(spec.capabilities)
-    return [cap.value for cap in requires if cap not in available]
+    from packages.core.orchestration.pipeline import _binding_for
+
+    candidates = _binding_for(app_state, agent_id).candidates()
+    if not candidates:
+        # Unbound: the agent resolves dynamically at call time, and ``resolve_call`` is the
+        # authority on whether that worked. Guessing here would only duplicate it.
+        return []
+    for provider_id in candidates:
+        spec = app_state.registry.specs.get(provider_id)
+        if spec is None or not spec.enabled:
+            continue
+        missing = [cap for cap in requires if cap not in spec.capabilities]
+        if missing:
+            return [cap.value for cap in missing]
+    # Every configured candidate is unknown or disabled, so nothing can serve this agent. Saying
+    # "no gap" here would be the one case where the banner is most needed and least honest.
+    return [cap.value for cap in requires]
 
 
 def _single_binding(spec: ProviderSpec):

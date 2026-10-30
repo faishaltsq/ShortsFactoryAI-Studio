@@ -38,6 +38,10 @@ class CallContext:
     call: ResolvedCall
     provider: Provider
     job_id: str | None = None
+    #: The operator's ``system_prompt_override`` for this agent, or ``None``. It travels with the
+    #: context so the prompt the agent sends and the prompt ``_with_provenance`` hashes are the
+    #: same string by construction.
+    system_prompt: str | None = None
 
 
 _JSON_BLOCK = re.compile(r"```(?:json)?\s*(.+?)```", re.DOTALL)
@@ -115,6 +119,12 @@ class Agent:
 
     def __init__(self, ctx: CallContext) -> None:
         self.ctx = ctx
+        # The operator's override, if one is bound to this agent. Set on the instance rather than
+        # the class: a class attribute is shared by every job in the process, and one operator's
+        # prompt must not become the prompt for the next job that runs the same agent.
+        override = getattr(ctx, "system_prompt", None)
+        if isinstance(override, str) and override:
+            self.system_prompt = override
 
     # -- to override ------------------------------------------------------------------------
     def build_user_prompt(self, **kwargs: Any) -> str:

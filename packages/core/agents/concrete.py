@@ -123,10 +123,21 @@ class ScriptAgent(Agent):
         topic = cast(dict[str, Any], kwargs.get("topic") or {})
         duration_s = cast(int, kwargs.get("duration_s") or 45)
         language = str(kwargs.get("language") or "en")
-        return (
+        prompt = (
             f"Topic and sources:\n{json.dumps(topic, ensure_ascii=False)[:3000]}\n"
             f"Target duration: {duration_s} seconds. Language: {language}."
         )
+        previous_script = kwargs.get("previous_script")
+        review = kwargs.get("review")
+        if previous_script is not None and review is not None:
+            prompt += (
+                f"\nRevision attempt {int(kwargs.get('revision_attempt') or 1)}."
+                "\nPrevious script:\n" + json.dumps(previous_script, ensure_ascii=False)
+                + "\nRecorded creative review:\n" + json.dumps(review, ensure_ascii=False)
+                + "\nRewrite the script to address every finding. Return the complete script, "
+                "not a patch; retain segment ids where those segments remain."
+            )
+        return prompt
 
     def contract(self) -> type[Artifact]:
         return ScriptArtifact
@@ -144,7 +155,7 @@ class CreativeDirectorAgent(Agent):
 
     def build_user_prompt(self, **kwargs: Any) -> str:
         script = cast(dict[str, Any], kwargs.get("script") or {})
-        attempt = int(kwargs.get("attempt") or 1)
+        attempt = int(kwargs.get("attempt") or 0)
         return (
             f"Attempt {attempt}. Review this script:\n"
             + json.dumps(script, ensure_ascii=False)[:4000]

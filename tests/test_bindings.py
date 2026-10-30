@@ -66,6 +66,87 @@ def test_bindings_load_from_studio_json(tmp_path):
     assert state.bindings == {"ResearchAgent": {"primary": "router-a", "fallback": []}}
 
 
+def test_binding_overrides_survive_restart_and_reach_resolution(tmp_path):
+    from packages.core.orchestration.pipeline import _binding_for
+
+    state = AppState.build(
+        _settings(
+            tmp_path,
+            {
+                "bindings": [
+                    {
+                        "agent": "ScriptAgent",
+                        "primary": "mock",
+                        "fallback": [],
+                        "model": "bound-model",
+                        "temperature": 0.25,
+                        "max_tokens": 2048,
+                        "system_prompt_override": "Use the operator prompt.",
+                    }
+                ]
+            },
+        ),
+        budget=Budget(),
+    )
+
+    binding = _binding_for(state, "ScriptAgent")
+    assert binding.model == "bound-model"
+    assert binding.temperature == 0.25
+    assert binding.max_tokens == 2048
+    assert state.bindings["ScriptAgent"]["system_prompt_override"] == "Use the operator prompt."
+
+
+def test_the_prompt_override_reaches_the_call_and_the_provenance_hash(tmp_path):
+    """The override is what the model is sent, not a string the provenance happens to hash.
+
+    ``_with_provenance`` hashes the prompt it believes was sent. If the call still sends the
+    class constant, the artifact records a hash of a prompt nobody used — provenance that is a
+    claim about a run rather than a fact about it.
+    """
+    from packages.core.providers.mock import MockProvider
+
+    sent: list[str] = []
+
+    class Recording(MockProvider):
+        def complete(self, call, *, system, user, task):  # type: ignore[override]
+            sent.append(system)
+            return super().complete(call, system=system, user=user, task=task)
+
+    state = AppState.build(
+        _settings(
+            tmp_path,
+            {
+                "bindings": [
+                    {
+                        "agent": "ScriptAgent",
+                        "primary": "mock",
+                        "system_prompt_override": "Use the operator prompt.",
+                    }
+                ]
+            },
+        ),
+        budget=Budget(),
+    )
+    state.transports["mock"] = Recording()
+    state.registry.specs["mock"].enabled = True
+
+    job = state.store.create(title="Uji", payload={"provider_mode": "mock"})
+    from packages.core.agents.registry import AGENTS
+    from packages.core.orchestration.pipeline import _context, _with_provenance
+
+    ctxp = _context(state, job, "ScriptAgent")
+    agent = AGENTS["ScriptAgent"](ctxp)
+    artifact = agent.produce(task="script", topic="sejarah", duration_s=45, language="id")
+
+    assert sent, "the agent never called the provider"
+    assert sent[0] == "Use the operator prompt."
+    # The provenance must hash the same string that was actually sent.
+    from packages.core.prompts import sha256
+
+    provenance = _with_provenance(artifact.to_json(), "ScriptAgent", ctxp, state)["provenance"]
+    assert provenance["prompt_sha256"] == sha256("Use the operator prompt.")
+
+
 def test_unknown_agent_in_config_raises_at_build(tmp_path):
     with pytest.raises(ValueError, match="unknown agent"):
         AppState.build(

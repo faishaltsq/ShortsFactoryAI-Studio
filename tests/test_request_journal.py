@@ -60,6 +60,17 @@ def _key(**overrides):
     return request_key(**fields)
 
 
+def test_duplicate_attempt_does_not_overwrite_sent_record(journal):
+    key = _key()
+    journal.prepare(request_key=key, job_id="job1", agent="ScriptAgent", attempt=1,
+                    provider="p", model="m")
+    journal.mark_sent(request_key=key, attempt=1, provider="p", model="m")
+    with pytest.raises(sqlite3.IntegrityError):
+        journal.prepare(request_key=key, job_id="job1", agent="ScriptAgent", attempt=1,
+                        provider="p", model="m")
+    assert journal.statuses("job1")[0]["status"] == "sent"
+
+
 def test_a_completed_result_replays_without_a_second_call(journal):
     key = _key()
     journal.prepare(request_key=key, job_id="job1", agent="ScriptAgent", attempt=1,
@@ -162,9 +173,13 @@ def test_an_uncertain_call_retains_its_reservation(journal):
     assert outstanding["tokens"] == 500.0
     assert outstanding["cost_usd"] == 0.05
     journal.acknowledge(request_key=key, attempt=1, operator="faishal")
-    # Acknowledgement records the decision but does not pretend the outcome is known.
-    row = journal.uncertain("job1")[0]
-    assert "faishal" in row["error"]
+    # The uncertain outcome and original error remain intact.
+    assert journal.uncertain("job1")[0]["error"] == "connection reset"
+    with sqlite3.connect(journal.db_path) as conn:
+        operator = conn.execute(
+            "SELECT operator FROM provider_retry_authorizations WHERE request_key = ?", (key,)
+        ).fetchone()[0]
+    assert operator == "faishal"
 
 
 def test_an_operator_acknowledged_retry_gets_a_new_attempt_number(journal):
@@ -273,10 +288,23 @@ def test_a_completed_call_is_journalled_and_replays_locally(tmp_path):
     assert inner.calls == 1, "a completed request must not hit the transport again"
 
 
+def test_completed_call_replays_when_budget_is_exhausted(tmp_path):
+    from packages.core.providers.usage import BudgetExceeded
+
+    journal = RequestJournal(tmp_path / "r.db")
+    inner, recorder, call = _recorder(tmp_path, journal=journal)
+    recorder.complete(call, system="s", user="u", task="script")
+    recorder.tracker.set_limits(max_daily_tokens=10, max_daily_cost_usd=None, unlimited=False)
+    assert recorder.complete(call, system="s", user="u", task="script").content == "hello"
+    assert inner.calls == 1
+    with pytest.raises(BudgetExceeded):
+        recorder.complete(call, system="s", user="different", task="script")
+
+
 def test_a_failed_send_becomes_uncertain_and_is_not_retried_blindly(tmp_path):
     journal = RequestJournal(tmp_path / "r.db")
     inner, recorder, call = _recorder(tmp_path, journal=journal, fail_first=True)
-    from packages.core.providers.base import ProviderError  # noqa: F401 - import sanity
+    from packages.core.providers.base import ProviderError
 
     raised = False
     try:
@@ -293,6 +321,39 @@ def test_a_failed_send_becomes_uncertain_and_is_not_retried_blindly(tmp_path):
     # The recorded attempt count means an operator-acknowledged retry is a new attempt, not a
     # silent duplicate.
     assert journal.next_attempt(uncertain[0]["request_key"]) == 2
+    with pytest.raises(ProviderError) as exc:
+        recorder.complete(call, system="s", user="u", task="script")
+    assert exc.value.code == "provider_outcome_unknown"
+    assert inner.calls == 1
+    journal.acknowledge(request_key=uncertain[0]["request_key"], attempt=1, operator="operator")
+    assert recorder.complete(call, system="s", user="u", task="script").content == "hello"
+    assert inner.calls == 2
+    assert recorder.complete(call, system="s", user="u", task="script").content == "hello"
+    assert inner.calls == 2
+
+
+def test_retry_authorization_can_only_be_claimed_once(journal):
+    from concurrent.futures import ThreadPoolExecutor
+
+    key = _key()
+    journal.prepare(request_key=key, job_id="job1", agent="ScriptAgent", attempt=1,
+                    provider="p", model="m")
+    journal.mark_sent(request_key=key, attempt=1, provider="p", model="m")
+    journal.mark_uncertain(request_key=key, attempt=1, error="unknown")
+    journal.acknowledge(request_key=key, attempt=1, operator="operator")
+
+    def claim():
+        separate = RequestJournal(journal.db_path)
+        try:
+            return separate.claim_attempt(
+                request_key=key, job_id="job1", agent="ScriptAgent", provider="p", model="m"
+            )
+        except ValueError:
+            return None
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: claim(), range(2)))
+    assert sorted(results, key=lambda value: value or 0) == [None, 2]
 
 
 # -- the HTTP surface -----------------------------------------------------------------------
@@ -341,8 +402,16 @@ def test_an_uncertain_request_needs_an_operator_acknowledgement(tmp_path):
     state.requests.mark_uncertain(request_key=key, attempt=1, error="reset")
     body = client.get(f"/api/jobs/{job.id}/requests").json()
     assert len(body["uncertain"]) == 1
+    missing = client.post(
+        f"/api/jobs/{job.id}/requests/{key}/retry", json={"operator": "op"}
+    )
+    assert missing.status_code == 422
+    assert state.requests.uncertain(job.id)[0]["error"] == "reset"
     # The retry route refuses anything that is not waiting for acknowledgement.
-    other = client.post(f"/api/jobs/{job.id}/requests/{'0' * 64}/retry", json={"operator": "op"})
+    other = client.post(
+        f"/api/jobs/{job.id}/requests/{'0' * 64}/retry",
+        json={"operator": "op", "confirm_possible_duplicate": True},
+    )
     assert other.status_code == 409
     # The acknowledgement records the operator and hands back the next attempt number.
     ack = client.post(
@@ -362,6 +431,22 @@ def test_the_requests_view_404s_for_an_unknown_job(tmp_path):
 
 
 # -- prompt provenance ----------------------------------------------------------------------
+def test_the_registered_prompt_is_the_prompt_the_agent_sends():
+    """One source of truth for the system prompt.
+
+    ``SYSTEM_PROMPTS`` used to restate the agent classes' text, and the two drifted: the
+    ``ScriptAgent`` constant said "the requested duration" while the class said "30-60 seconds".
+    ``prompt_sha256`` therefore hashed a prompt nobody had sent. Deriving the table from the
+    classes makes that impossible, and this test is what keeps it derived.
+    """
+    from packages.core.agents.registry import AGENTS
+    from packages.core.prompts import SYSTEM_PROMPTS
+
+    assert set(SYSTEM_PROMPTS) == set(AGENTS), "every agent must register exactly its own prompt"
+    for agent_id, agent in AGENTS.items():
+        assert SYSTEM_PROMPTS[agent_id] == agent.system_prompt, agent_id
+
+
 def test_provenance_is_computed_locally_not_asserted_by_the_model():
     """A model-written prompt hash is a claim; the locally computed one is a fact."""
     from packages.core.prompts import SYSTEM_PROMPTS, effective, sha256

@@ -13,10 +13,13 @@ end to end in mock mode with no credential.
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from typing import Any
 
 from ..agents import CallContext, ModelOutputError
 from ..agents.registry import AGENTS
+from ..contracts.artifacts import ReviewArtifact, RevisionArtifact, RevisionAttempt, ScriptArtifact
+from ..contracts.base import ArtifactValidationError, validate_artifact
 from ..contracts.state import JobState
 from ..observability.events import STAGE_AGENTS
 from ..providers.base import Capability, CapabilityMismatch, NoProviderAvailable
@@ -74,16 +77,17 @@ def _with_provenance(
     here, from the prompt this process actually sent, so the artifact's provenance is a fact about
     the run rather than the model's opinion of itself.
     """
-    from ..prompts import SYSTEM_PROMPTS, sha256
+    from ..agents.registry import AGENTS
+    from ..prompts import sha256
 
-    override = None
-    bindings = getattr(state, "bindings", {})
-    if isinstance(bindings, dict):
-        entry = bindings.get(agent_name)
-        if isinstance(entry, dict):
-            candidate = entry.get("system_prompt_override")
-            override = candidate if isinstance(candidate, str) else None
-    prompt = override or SYSTEM_PROMPTS[agent_name]
+    # The prompt that was sent is the agent's own effective prompt: the operator's override when
+    # one is bound, otherwise the agent's constant. Reading it back off the context rather than
+    # re-deriving it here is what keeps the hash and the call in agreement.
+    override = getattr(ctxp, "system_prompt", None)
+    if isinstance(override, str) and override:
+        prompt = override
+    else:
+        prompt = AGENTS[agent_name].system_prompt
     payload["provenance"] = {
         "prompt_sha256": sha256(prompt),
         "producer": agent_name,
@@ -97,13 +101,7 @@ def _context(state: Any, job: JobRecord, agent_name: str) -> CallContext:
     """Resolve the agent's provider, honouring its binding and the job's mode."""
     from ..providers.registry import ProviderRegistry  # noqa: F401 - typing clarity
 
-    requires = AGENTS[agent_name].requires
-    binding = Binding(
-        agent=agent_name,
-        primary=_primary_for(state, agent_name),
-        fallback=tuple(_fallback_for(state, agent_name)),
-        requires=frozenset(requires),
-    )
+    binding = _binding_for(state, agent_name)
     allow_mock = job.is_mock
     if allow_mock:
         state.registry.specs["mock"].enabled = True
@@ -134,7 +132,52 @@ def _context(state: Any, job: JobRecord, agent_name: str) -> CallContext:
             "call_config_sha256": "",
         },
     )
-    return CallContext(call=call, provider=recorder, job_id=job.id)
+    return CallContext(
+        call=call,
+        provider=recorder,
+        job_id=job.id,
+        system_prompt=_prompt_override_for(state, agent_name),
+    )
+
+
+def _prompt_override_for(state: Any, agent: str) -> str | None:
+    """The operator's system-prompt override for one agent, or ``None``.
+
+    Read from the same binding the provider comes from, so the prompt sent and the prompt hashed
+    into provenance cannot disagree.
+    """
+    override = getattr(state, "bindings", {}).get(agent) if hasattr(state, "bindings") else None
+    if isinstance(override, dict):
+        candidate = override.get("system_prompt_override")
+        if isinstance(candidate, str) and candidate:
+            return candidate
+    return None
+
+
+def _binding_for(state: Any, agent: str) -> Binding:
+    """The operator's binding for one agent, with the overrides that reach the call.
+
+    ``_primary_for``/``_fallback_for`` answer "which provider"; this answers "with what
+    configuration". They are one question, so they are one function: a binding that resolves a
+    provider but drops ``model``/``temperature``/``max_tokens`` silently runs on provider defaults
+    while the UI shows the operator's saved values.
+    """
+    override = getattr(state, "bindings", {}).get(agent) if hasattr(state, "bindings") else None
+    override = override if isinstance(override, dict) else None
+    primary = override.get("primary") if override else None
+    fallback = override.get("fallback") if override else None
+    model = override.get("model") if override else None
+    temperature = override.get("temperature") if override else None
+    max_tokens = override.get("max_tokens") if override else None
+    return Binding(
+        agent=agent,
+        primary=primary if isinstance(primary, str) else None,
+        fallback=tuple(f for f in fallback if isinstance(f, str)) if isinstance(fallback, list) else (),
+        requires=frozenset(AGENTS[agent].requires),
+        model=model if isinstance(model, str) else None,
+        temperature=temperature if isinstance(temperature, (int, float)) and not isinstance(temperature, bool) else None,
+        max_tokens=max_tokens if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) else None,
+    )
 
 
 def _primary_for(state: Any, agent: str) -> str | None:
@@ -228,7 +271,8 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
         }
 
     def review_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
-        return {"script": store.read_artifact(job_id, "script.json"), "attempt": 0}
+        revisions = _load_revisions(store, job_id)
+        return {"script": store.read_artifact(job_id, "script.json"), "attempt": len(revisions.attempts)}
 
     def storyboard_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
         return {"script": store.read_artifact(job_id, "script.json"), "fps": 30}
@@ -331,6 +375,7 @@ def _render_stages(state: Any, *, renderer: str = "remotion") -> list[Stage]:
         build_readiness_stage,
         build_technical_qc_stage,
     )
+    from .resources import admit_render_stage
 
     video_dir = _video_dir()
     # The renderer is the job's choice and the stage refuses anything it does not know, so a typo
@@ -338,11 +383,70 @@ def _render_stages(state: Any, *, renderer: str = "remotion") -> list[Stage]:
     return [
         build_asset_stage(state, video_dir=video_dir),
         build_audio_stage(state),
-        build_render_stage(state, video_dir=video_dir, renderer=renderer),
-        build_technical_qc_stage(state),
-        build_editorial_qc_stage(state),
-        build_readiness_stage(state),
+        admit_render_stage(state, build_render_stage(state, video_dir=video_dir, renderer=renderer)),
+        _qa_decision_stage(
+            build_technical_qc_stage(state),
+            lambda artifact, _job_id: artifact.get("passed") is True,
+        ),
+        _qa_decision_stage(
+            build_editorial_qc_stage(state),
+            lambda artifact, _job_id: (
+                (artifact.get("technical") or {}).get("passed") is True
+                and (artifact.get("creative") or {}).get("passed") is True
+                and (artifact.get("visual") or {}).get("status") != "failed"
+            ),
+        ),
+        replace(
+            build_readiness_stage(state),
+            done_when=lambda artifact, job_id: _readiness_current(state.store, job_id, artifact),
+        ),
     ]
+
+
+def _qa_decision_stage(
+    stage: Stage, succeeded: Callable[[dict[str, Any], str], bool],
+) -> Stage:
+    """Reuse passing QA, but preserve an already recorded refusal without another vision call."""
+    def run(ctx: StageContext) -> StageOutcome:
+        if ctx.store.has_artifact(ctx.job_id, stage.contract_artifact) and stage.contract is not None:
+            recorded: dict[str, Any] | None
+            try:
+                recorded = ctx.store.read_artifact(ctx.job_id, stage.contract_artifact)
+                validate_artifact(stage.contract, recorded)
+            except (ArtifactValidationError, ValueError, OSError):
+                recorded = None
+            if recorded is not None and not succeeded(recorded, ctx.job_id):
+                reason = recorded.get("reason") or recorded.get("failed") or "recorded QA verdict did not pass"
+                raise StageError(
+                    "qa_blocked",
+                    f"{stage.contract_artifact}: {redact(str(reason))}. "
+                    "Explicit rework must invalidate this verdict before another assessment.",
+                    retryable=False,
+                )
+        return stage.run(ctx)
+
+    return replace(stage, run=run, done_when=succeeded)
+
+
+def _readiness_current(store: JobStore, job_id: str, artifact: dict[str, Any]) -> bool:
+    from ..media.qc import sha256_file
+    from .editorial import compute_inputs_hash
+
+    if artifact.get("ready") is not True:
+        return False
+    render = store.read_artifact(job_id, "render.json")
+    audio = store.read_artifact(job_id, "audio.json")
+    storyboard = store.read_artifact(job_id, "storyboard.json")
+    technical = store.read_artifact(job_id, "technical-qc.json")
+    expected = compute_inputs_hash(
+        render_sha256=str(render.get("sha256") or ""),
+        narration_ms=float((audio.get("narration") or {}).get("durationMs") or 0),
+        storyboard=storyboard,
+    )
+    return (
+        artifact.get("inputs_sha256") == technical.get("inputs_sha256") == expected
+        and sha256_file(store.job_dir(job_id) / "output.mp4") == render.get("sha256")
+    )
 
 
 def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produces: str,
@@ -354,6 +458,20 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
     def run(ctx: StageContext) -> StageOutcome:
         store, job_id = ctx.store, ctx.job_id
         job = store.get(job_id)
+        # A recorded revise decision is not permission to buy the same review again. The
+        # controller consumes its findings; changed scripts explicitly invalidate this file.
+        if agent_name == "CreativeDirectorAgent" and store.has_artifact(job_id, produces):
+            recorded: ReviewArtifact | None
+            try:
+                recorded = ReviewArtifact.model_validate(store.read_artifact(job_id, produces))
+            except (ValueError, OSError):
+                recorded = None
+            if recorded is not None and recorded.verdict == "revise":
+                ctx.write_artifact(produces, recorded.to_json())
+                return StageOutcome(
+                    ok=True, control="revision_required", artifacts=[produces],
+                    detail="creative review requested a revision",
+                )
         _emit(state, job_id, stage_state.value, "stage_started", f"{agent_name} mulai", agent=agent_name)
         try:
             ctxp = _context(state, job, agent_name)
@@ -417,6 +535,10 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
         run=run,
         contract=contract,
         contract_artifact=produces,
+        done_when=(
+            (lambda artifact, _job_id: artifact.get("verdict") == "accept")
+            if agent_name == "CreativeDirectorAgent" else None
+        ),
     )
 
 
@@ -453,33 +575,155 @@ def run_job(
     keeper: LeaseKeeper,
     cancel: CancelToken | None = None,
 ) -> dict[str, Any]:
-    """The bounded controller around ``run_stages`` for one job.
-
-    Why this exists instead of ``apps/api`` calling ``run_stages`` directly: the revision loop is
-    a controller concern, and a controller that lives in the web layer is a controller the
-    scheduler and the rework path cannot reuse. It owns exactly one bound — ``MAX_REVISIONS`` —
-    and stops the chain otherwise. It does not open a second runner, does not retry a paid call
-    whose outcome is unknown, and does not write state its lease does not cover.
-    """
+    """Run the chain and at most ``MAX_REVISIONS`` durable, evidence-backed script revisions."""
     cancel = cancel or NullCancel()
-    revisions = 0
-    while True:
-        stages = build_stages(state, job_id)
-        report = run_stages(
-            store=state.store, job_id=job_id, stages=stages, keeper=keeper, cancel=cancel
+    try:
+        revisions = _load_revisions(state.store, job_id)
+    except (ValueError, OSError):
+        return _revision_block(
+            state, job_id, keeper, "revision_evidence_invalid",
+            "Cannot resume: revisions.json is unreadable or violates the revision contract. "
+            "Restore the recorded revision evidence before retrying.",
         )
-        stopped = report.get("stopped")
-        if stopped != "revision_required":
+    while True:
+        if revisions.attempts and revisions.attempts[-1].phase != "applied":
+            stopped = _resume_revision(state, job_id, revisions, keeper=keeper, cancel=cancel)
+            if stopped is not None:
+                return stopped
+        report = run_stages(
+            store=state.store, job_id=job_id, stages=build_stages(state, job_id),
+            keeper=keeper, cancel=cancel,
+        )
+        if report.get("stopped") != "revision_required":
+            if report["ok"]:
+                if not keeper.renew():
+                    return {"job_id": job_id, "ok": False, "stopped": "lease_lost", "stages": []}
+                state.store.set_error(job_id, "")
             return report
-        # The review asked for a revision. The revision controller (step 6) persists attempts and
-        # compares authored content; until it lands, the honest bound here is the ceiling: two
-        # revisions, then the job stays blocked with the findings attached rather than looping
-        # until the budget runs out.
-        revisions += 1
-        if revisions > MAX_REVISIONS:
-            state.store.set_error(job_id, f"revision ceiling reached after {revisions - 1} revisions")
+        if len(revisions.attempts) >= MAX_REVISIONS:
+            return _revision_block(
+                state, job_id, keeper, "revision_limit",
+                f"Creative review still requests changes after {MAX_REVISIONS} recorded revisions. "
+                "Review the persisted findings before explicit rework.",
+            )
+        before = ScriptArtifact.model_validate(state.store.read_artifact(job_id, "script.json"))
+        review = ReviewArtifact.model_validate(state.store.read_artifact(job_id, "review.json"))
+        revisions.attempts.append(RevisionAttempt(
+            attempt=len(revisions.attempts) + 1, before_script=before, review=review,
+        ))
+        # Reserve the attempt and its exact inputs before any paid request. Its identity and the
+        # ceiling survive process restarts, including a crash immediately after this commit.
+        state.store.commit_stage(
+            job_id, token=keeper.token,
+            json_artifacts=[("revisions.json", revisions.to_json())],
+        )
+
+
+def _load_revisions(store: JobStore, job_id: str) -> RevisionArtifact:
+    if not store.has_artifact(job_id, "revisions.json"):
+        return RevisionArtifact()
+    return RevisionArtifact.model_validate(store.read_artifact(job_id, "revisions.json"))
+
+
+def _revision_block(
+    state: Any, job_id: str, keeper: LeaseKeeper, code: str, detail: str,
+) -> dict[str, Any]:
+    if not keeper.renew():
+        return {"job_id": job_id, "ok": False, "stopped": "lease_lost", "stages": []}
+    current = state.store.get(job_id).state
+    state.store.commit_stage(
+        job_id, token=keeper.token,
+        target=JobState.BLOCKED if current != JobState.BLOCKED else None, detail=detail,
+    )
+    state.store.set_error(job_id, detail)
+    return {
+        "job_id": job_id, "ok": False, "stopped": code, "detail": detail,
+        "stages": [{"name": "ScriptAgent", "ok": False, "detail": detail}],
+    }
+
+
+def _resume_revision(
+    state: Any, job_id: str, revisions: RevisionArtifact, *,
+    keeper: LeaseKeeper, cancel: CancelToken,
+) -> dict[str, Any] | None:
+    store = state.store
+    attempt = revisions.attempts[-1]
+    if attempt.phase == "unchanged":
+        return _revision_block(
+            state, job_id, keeper, "revision_unchanged",
+            f"ScriptAgent revision {attempt.attempt} did not change authored script content. "
+            "The original script and downstream outputs were preserved; review the recorded findings.",
+        )
+    if not keeper.renew():
+        return {"job_id": job_id, "ok": False, "stopped": "lease_lost", "stages": []}
+    if cancel.is_cancelled():
+        store.commit_stage(job_id, token=keeper.token, target=JobState.CANCELLED,
+                           detail="cancelled before applying a revision")
+        return {"job_id": job_id, "ok": False, "stopped": "cancelled", "stages": []}
+    if attempt.phase == "prepared":
+        job = store.get(job_id)
+        kwargs = {
+            "topic": store.read_artifact(job_id, "topic.json"),
+            "duration_s": int(job.payload.get("target_duration_s", 45)),
+            "language": job.payload.get("language", "id"),
+            "previous_script": attempt.before_script.to_json(),
+            "review": attempt.review.to_json(),
+            "revision_attempt": attempt.attempt,
+        }
+        candidate_name = f"revision-{attempt.attempt}-script.json"
+        if job.state != JobState.SCRIPT_GENERATED:
+            store.commit_stage(job_id, token=keeper.token, target=JobState.SCRIPT_GENERATED,
+                               detail=f"ScriptAgent revision {attempt.attempt} resumed")
+        stage = _dynamic_stage(
+            state, agent_name="ScriptAgent", stage_state=JobState.SCRIPT_GENERATED,
+            produces=candidate_name, task="script", kwargs_fn=lambda _store, _job_id: kwargs,
+        )
+        report = run_stages(
+            store=store, job_id=job_id, stages=[stage], keeper=keeper, cancel=cancel,
+        )
+        if not report["ok"]:
             return report
-        # A revise verdict lands at CREATIVE_REVIEW -> BLOCKED; reopening into SCRIPT_GENERATED
-        # is the revising stage's own edge, and the script stage re-runs with the findings. The
-        # loop above rebuilds the chain, so the next iteration starts from wherever the job is.
-        state.store.transition(job_id, JobState.SCRIPT_GENERATED, detail="revision requested")
+        candidate = ScriptArtifact.model_validate(store.read_artifact(job_id, candidate_name))
+        attempt.candidate_script = candidate
+        if candidate.authored_content_hash() == attempt.before_script.authored_content_hash():
+            attempt.phase = "unchanged"
+        else:
+            attempt.phase = "generated"
+            downstream = False
+            names = {"qa-contact-sheet.jpg", "render-props.json"}
+            for stage in build_stages(state, job_id):
+                if downstream:
+                    names.update(stage.produces)
+                if stage.name == "ScriptAgent":
+                    downstream = True
+            attempt.invalidated_artifacts = sorted(
+                name for name in names if store.has_artifact(job_id, name)
+            )
+        # Candidate content and the invalidation decision are durable before canonical outputs
+        # change. A crash from here must finish this same decision, not ask the model again.
+        validate_artifact(RevisionArtifact, revisions.to_json())
+        store.commit_stage(
+            job_id, token=keeper.token,
+            json_artifacts=[("revisions.json", revisions.to_json())],
+        )
+        if attempt.phase == "unchanged":
+            return _resume_revision(state, job_id, revisions, keeper=keeper, cancel=cancel)
+    if not keeper.renew():
+        return {"job_id": job_id, "ok": False, "stopped": "lease_lost", "stages": []}
+    if cancel.is_cancelled():
+        store.commit_stage(job_id, token=keeper.token, target=JobState.CANCELLED,
+                           detail="cancelled before applying a revision")
+        return {"job_id": job_id, "ok": False, "stopped": "cancelled", "stages": []}
+    if attempt.candidate_script is None:
+        raise ArtifactValidationError("revisions", ["generated revision is missing its candidate script"])
+    attempt.phase = "applied"
+    validate_artifact(RevisionArtifact, revisions.to_json())
+    store.commit_stage(
+        job_id, token=keeper.token, remove_artifacts=attempt.invalidated_artifacts,
+        json_artifacts=[
+            ("script.json", attempt.candidate_script.to_json()),
+            ("revisions.json", revisions.to_json()),
+        ],
+        detail=f"ScriptAgent revision {attempt.attempt} applied",
+    )
+    return None

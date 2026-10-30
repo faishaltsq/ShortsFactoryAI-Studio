@@ -206,6 +206,10 @@ def test_agents_list_names_every_agent_with_its_kind(tmp_path):
         binding = agent["binding"]
         assert set(binding) >= {"primary", "fallback", "model"}
 
+    deterministic = next(agent for agent in agents if agent["id"] == "AudioAgent")
+    assert deterministic["requires"] == []
+    assert deterministic["capability_gaps"] == []
+
 
 def test_an_agent_binding_saves_and_is_refused_for_an_unknown_agent(tmp_path):
     client = _client(tmp_path)
@@ -226,6 +230,77 @@ def test_an_agent_binding_saves_and_is_refused_for_an_unknown_agent(tmp_path):
     unknown = client.put("/api/agents/NotAnAgent/binding", json={"primary": "mock"})
     assert unknown.status_code == 422
     assert "unknown agent" in unknown.json()["detail"]
+
+
+def test_agent_binding_response_can_be_saved_again_and_overrides_can_be_cleared(tmp_path):
+    client = _client(tmp_path)
+    first = client.put(
+        "/api/agents/ScriptAgent/binding",
+        json={"primary": "mock", "model": "custom", "temperature": 0.4, "max_tokens": 2048},
+    )
+    assert first.status_code == 200, first.text
+    binding = first.json()["binding"]
+    assert "agent" not in binding
+
+    binding.update({"model": None, "temperature": None, "max_tokens": None})
+    second = client.put("/api/agents/ScriptAgent/binding", json=binding)
+    assert second.status_code == 200, second.text
+    assert second.json()["binding"] == {
+        "primary": "mock",
+        "fallback": [],
+        "model": None,
+        "temperature": None,
+        "max_tokens": None,
+        "system_prompt_override": None,
+    }
+
+
+def test_agent_binding_refuses_unknown_and_duplicate_providers(tmp_path):
+    client = _client(tmp_path)
+    unknown = client.put(
+        "/api/agents/ScriptAgent/binding", json={"primary": "not-configured"}
+    )
+    assert unknown.status_code == 422
+    assert "unknown provider" in unknown.json()["detail"]
+
+    duplicate = client.put(
+        "/api/agents/ScriptAgent/binding",
+        json={"primary": "mock", "fallback": ["mock"]},
+    )
+    assert duplicate.status_code == 422
+    assert "duplicate" in duplicate.json()["detail"]
+
+    # A disabled provider is a legal binding target: a mock-mode job needs it, and enabling it is
+    # the job's own action. What must not happen is the page claiming the agent is fine, so the
+    # gap banner has to carry the truth instead of a route refusal.
+    disabled = client.put("/api/agents/ScriptAgent/binding", json={"primary": "mock"})
+    assert disabled.status_code == 200, disabled.text
+    listed = {
+        agent["id"]: agent for agent in client.get("/api/agents").json()["agents"]
+    }
+    assert listed["ScriptAgent"]["capability_gaps"] == ["chat", "json_schema"]
+
+
+def test_agent_capability_gaps_follow_its_selected_provider(tmp_path):
+    client = _client(tmp_path)
+    client.put(
+        "/api/providers",
+        json={
+            "id": "chat-only",
+            "base_url": "https://api.example.com/v1",
+            "model": "m",
+            "capabilities": ["chat"],
+        },
+    )
+    # Seed a hand-edited binding: the listing must diagnose it even though the save route refuses it.
+    client.app.state.studio.bindings["ScriptAgent"] = {
+        "primary": "chat-only",
+        "fallback": [],
+    }
+    listed = {
+        agent["id"]: agent for agent in client.get("/api/agents").json()["agents"]
+    }
+    assert listed["ScriptAgent"]["capability_gaps"] == ["json_schema"]
 
 
 def test_an_edit_without_a_credential_preserves_the_stored_reference(tmp_path):

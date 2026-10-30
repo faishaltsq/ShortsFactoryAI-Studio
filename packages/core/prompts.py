@@ -10,6 +10,7 @@ journal key and the artifact provenance agree by construction.
 from __future__ import annotations
 
 import hashlib
+from typing import Any
 
 #: ResearchAgent: propose candidates and claims. The "never invent a URL" clause is the important
 #: one — a model that fabricates a source produces a factual video built on nothing.
@@ -71,16 +72,27 @@ REPAIR = (
     "JSON object that satisfies it. Do not change values you were not asked to change."
 )
 
-#: Every prompt, by the agent that sends it. The keys are the agent ids from the registry, so a
-#: lookup that misses is a programming error rather than a silent empty prompt.
+def _agent_classes() -> dict[str, Any]:
+    """The agent classes, imported here so this module never depends on them at import time.
+
+    ``packages.core.agents`` reaches for prompts, so a module-level import would be a cycle. This
+    is called once, at the bottom of this module, to build ``SYSTEM_PROMPTS``.
+    """
+    from .agents.registry import AGENTS
+
+    return dict(AGENTS)
+
+
+#: Every prompt, by the agent that sends it.
+#:
+#: Derived from the agent classes rather than restated here. The class attribute is what the agent
+#: actually sends, so a second copy of the text is a second thing that can drift — and it did: the
+#: ``ScriptAgent`` constant above said "the requested duration" while the class said "30-60
+#: seconds", which meant ``prompt_sha256`` hashed a prompt nobody had sent. Provenance that
+#: disagrees with the call is worse than no provenance.
 SYSTEM_PROMPTS: dict[str, str] = {
-    "ResearchAgent": RESEARCH,
-    "TopicSelectionAgent": TOPIC_SELECTION,
-    "ScriptAgent": SCRIPT,
-    "CreativeDirectorAgent": CREATIVE_REVIEW,
-    "StoryboardAgent": STORYBOARD,
-    "MetadataAgent": METADATA,
-    "AnimationAgent": ANIMATION,
+    agent_id: agent.system_prompt
+    for agent_id, agent in _agent_classes().items()
 }
 
 
