@@ -54,10 +54,10 @@ export const Stage: React.FC<{
         progress={progress}
       />
     </div>
-    {data.props.map((prop, i) => (
+    {(data.props ?? []).map((prop, i) => (
       <Prop key={`prop-${i}`} prop={prop} palette={palette} frame={frame} index={i} />
     ))}
-    {data.actors.map((declared, i) => {
+    {(data.actors ?? []).map((declared, i) => {
       const performance = performances?.[i];
       const actor = performance?.actor ?? declared;
       // A resolved character renders through the rig. Anything else — no cue, or an

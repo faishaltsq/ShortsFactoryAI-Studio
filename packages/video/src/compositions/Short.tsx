@@ -15,6 +15,9 @@ const renderScene = (scene: SceneSpec, theme: StoryboardSpec['theme'], watermark
   // A declared camera wraps every template, not only `IllustratedStory`: the transform is a pure
   // function of the declared camera, the frame and the named text anchor, none of which is
   // template-specific. A scene with no declared camera renders byte-identically.
+  if (scene.template === 'IllustratedStory') {
+    return <Component scene={scene} theme={theme} watermark={watermark} />;
+  }
   return (
     <DeclaredCameraScope scene={scene}>
       <Component scene={scene} theme={theme} watermark={watermark} />

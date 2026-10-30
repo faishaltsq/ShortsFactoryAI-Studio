@@ -209,7 +209,20 @@ def _vision_call(state: Any, job: Any) -> tuple[ResolvedCall, Provider] | None:
     from ..providers.usage import RecordingProvider
 
     requires = frozenset({Capability.CHAT, Capability.VISION})
-    binding = Binding(agent=QC_AGENT, primary=_primary_for(state), fallback=(), requires=requires)
+    override = getattr(state, "bindings", {}).get(QC_AGENT) if hasattr(state, "bindings") else None
+    override = override if isinstance(override, dict) else None
+    model = override.get("model") if override else None
+    temperature = override.get("temperature") if override else None
+    max_tokens = override.get("max_tokens") if override else None
+    binding = Binding(
+        agent=QC_AGENT,
+        primary=_primary_for(state),
+        fallback=(),
+        requires=requires,
+        model=model if isinstance(model, str) else None,
+        temperature=temperature if isinstance(temperature, (int, float)) and not isinstance(temperature, bool) else None,
+        max_tokens=max_tokens if isinstance(max_tokens, int) and not isinstance(max_tokens, bool) else None,
+    )
     try:
         call, transport = resolve_call(
             binding=binding,

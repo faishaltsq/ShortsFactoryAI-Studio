@@ -51,7 +51,7 @@ Rules:
 - frames_inspected must equal the number of tiles in the sheet. You will be told that number; an
   answer that reports a different count is discarded.
 - Aesthetics are not findings. This pass exists to catch what is broken, not what is plain.
-
+- status must be "passed" unless there is a blocker or major defect. If there are only minor observations or no defects, status MUST be "passed".
 Return ONLY JSON:
 {"status": "passed" | "failed", "frames_inspected": <int>, "findings": [
   {"atMs": <int>, "issue": "<what is visibly wrong>", "severity": "blocker" | "major" | "minor"}
@@ -288,9 +288,11 @@ BOUNDARY_OFFSET_S = 0.5
 
 def _keyframe_frames(storyboard: dict[str, Any]) -> list[int]:
     """The frames the contact sheet will hold: scene midpoints plus one still after each cut."""
-    body = storyboard.get("storyboard") if isinstance(storyboard, dict) else None
+    body = storyboard
+    while isinstance(body, dict) and "storyboard" in body and "scenes" not in body:
+        body = body["storyboard"]
     if not isinstance(body, dict):
-        body = storyboard if isinstance(storyboard, dict) else {}
+        body = {}
     scenes = body.get("scenes")
     if not isinstance(scenes, list):
         return []
@@ -320,9 +322,11 @@ def _frame_count(storyboard: dict[str, Any]) -> int:
 
 
 def _user_prompt(*, storyboard: dict[str, Any], frames: int, sheets: int) -> str:
-    body = storyboard.get("storyboard") if isinstance(storyboard, dict) else None
+    body = storyboard
+    while isinstance(body, dict) and "storyboard" in body and "scenes" not in body:
+        body = body["storyboard"]
     if not isinstance(body, dict):
-        body = storyboard if isinstance(storyboard, dict) else {}
+        body = {}
     raw_scenes = body.get("scenes")
     scenes = raw_scenes if isinstance(raw_scenes, list) else []
     summary = [

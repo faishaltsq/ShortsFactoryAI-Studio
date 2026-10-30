@@ -165,6 +165,19 @@ class CreativeDirectorAgent(Agent):
     def contract(self) -> type[Artifact]:
         return ReviewArtifact
 
+    def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        scores = payload.get("scores")
+        if isinstance(scores, dict):
+            hook = scores.get("hook")
+            if hook is None or not isinstance(hook, (int, float)):
+                scores["hook"] = 8.0
+            coherence = scores.get("coherence")
+            if coherence is None or not isinstance(coherence, (int, float)):
+                scores["coherence"] = float(scores.get("clarity") or 8.0)
+            pacing = scores.get("pacing")
+            if pacing is None or not isinstance(pacing, (int, float)):
+                scores["pacing"] = 8.0
+        return payload
 
 class StoryboardAgent(Agent):
     name = "StoryboardAgent"
@@ -202,9 +215,54 @@ class StoryboardAgent(Agent):
                     continue
                 # Normalize template if data is missing for data-driven templates
                 tmpl = sc.get("template")
-                if tmpl in DATA_DRIVEN_TEMPLATES and not sc.get("data"):
-                    sc["template"] = "EducationalExplainer"
+                if tmpl == "IllustratedStory" or tmpl not in TEMPLATES:
+                    tmpl = "IllustratedStory"
+                    sc["template"] = tmpl
 
+                if tmpl == "IllustratedStory":
+                    data = sc.get("data")
+                    if not isinstance(data, dict):
+                        data = {}
+                        sc["data"] = data
+                    settings = ["interior", "city", "space", "abstract"]
+                    times = ["night", "day", "dawn", "dusk"]
+                    framings = ["wide", "medium", "close", "extreme_wide"]
+                    cam_moves = ["push", "pan", "tilt", "pull"]
+                    setting = data.get("setting")
+                    if setting not in {"space", "desert", "city", "ocean", "forest", "interior", "abstract"}:
+                        data["setting"] = settings[sc_idx % len(settings)]
+                    time_of_day = data.get("timeOfDay")
+                    if time_of_day not in {"night", "day", "dawn", "dusk"}:
+                        data["timeOfDay"] = times[sc_idx % len(times)]
+                    actors = data.get("actors")
+                    if not isinstance(actors, list) or not actors:
+                        data["actors"] = [
+                            {
+                                "character": "maya",
+                                "expression": "neutral",
+                                "scale": 0.82,
+                                "ground": 0.88,
+                                "x": 0.5,
+                            }
+                        ]
+                    else:
+                        for act in actors:
+                            if isinstance(act, dict):
+                                if not act.get("character"):
+                                    act["character"] = "maya"
+                                act.setdefault("scale", 0.82)
+                                act.setdefault("ground", 0.88)
+                                act.setdefault("x", 0.5)
+                    shots = data.get("shots")
+                    if not isinstance(shots, list) or not shots:
+                        data["shots"] = [
+                            {
+                                "framing": framings[sc_idx % len(framings)],
+                                "camera": cam_moves[sc_idx % len(cam_moves)],
+                            }
+                        ]
+                elif tmpl in DATA_DRIVEN_TEMPLATES and not sc.get("data"):
+                    sc["template"] = "EducationalExplainer"
                 duration = int(sc.get("durationInFrames") or 300)
                 duration = max(30, min(3000, duration))
                 sc["startFrame"] = current_frame

@@ -6,8 +6,8 @@ import {rand} from './rng';
 const W = 1080;
 const H = 1920;
 
-export const Effects: React.FC<{list: Effect[]; palette: ArtPalette; frame: number; progress: number}> = ({
-  list,
+export const Effects: React.FC<{list?: Effect[]; palette: ArtPalette; frame: number; progress: number}> = ({
+  list = [],
   palette,
   frame,
   progress,
