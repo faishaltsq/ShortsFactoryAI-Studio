@@ -32,6 +32,13 @@ Every task below names its verification. Nothing is marked done on the strength 
 - [ ] Capability validation before call; `CapabilityMismatch` names agent/provider/capability.
 - [ ] Credential store: env reference + DPAPI; origin binding; `has_credential` only in responses.
 - [ ] Usage log with pre-call budget check.
+- Uncertain text requests require explicit duplicate-risk confirmation. The journal records the
+  operator's authorization and consumes it when one worker atomically claims the next attempt;
+  the original uncertain attempt remains in the journal. Reservation enforcement and crash
+  recovery across the full provider boundary still require the proofs in the completion plan.
+  Completed text responses replay before the pre-call budget check, so an exhausted budget cannot
+  block recovery of work already paid for; new calls remain subject to the budget.
+  `tests/test_request_journal.py::test_completed_call_replays_when_budget_is_exhausted` covers both.
 - **Verify:** transport tests against a local stub HTTP server (no real keys); credential never
   appears in any response, log line, or artifact (sentinel-string test); capability matrix test.
 
@@ -67,20 +74,38 @@ Every task below names its verification. Nothing is marked done on the strength 
   `Content-Range`.
 
 ### 1.8 Dashboard shell
-- [ ] Next.js app, dark default, sidebar, the eleven required routes (some as "coming in phase N"
-      placeholders that are honest about their state).
-      **Recorded blocker, not a skipped test.** Three route files exist out of the eleven the sidebar
-      advertises — `/` (`Studio`), `/jobs` (`Produksi`), `/providers` (`Provider`) — and the other
-      eight have no `page.tsx`: `/create`, `/storyboard`, `/assets`, `/agents`, `/skills`,
-      `/calendar`, `/settings`, plus no page for any route a zone might gain later. Two of the three
-      are zone targets (`/`, `/jobs`); `/providers` is reached from the sidebar only, because no
-      production zone owns model configuration. Seven distinct `href`s are declared across the ten
-      zones, and five of them point at no page: `/agents`, `/assets`, `/calendar`, `/create`,
-      `/storyboard`. Zones now render a disabled span (`data-zone-link-disabled`) for those instead
-      of a dead anchor.
-      `apps/dashboard/e2e/fallback-routes.spec.ts` navigates the zone-linked routes that render and
-      asserts that exact five-name placeholder set, so creating a page — or adding a zone `href`
-      without a page — fails the suite instead of passing silently.
+- [x] Next.js app, dark default, sidebar, the eleven required routes — all linked and rendered.
+      The sidebar links to `/`, `/jobs`, `/create`, `/storyboard`, `/assets`, `/providers`,
+      `/usage`, `/agents`, `/skills`, `/calendar`, and `/settings`. Studio production zones link
+      to `/storyboard`, `/assets`, `/agents`, or `/jobs` where their operator controls exist, and
+      carry the current `job_id` so a zone's module opens on the job the operator is watching.
+      `apps/dashboard/e2e/fallback-routes.spec.ts` walks every zone link in the 2D fallback and
+      asserts the page it names renders.
+      After creating a job, `/create` links directly to its selected detail in `/jobs`, where the
+      operator can start it; creation alone does not start production.
+      `/create` offers an explicit local video render using the Windows system-default voice.
+      Without that choice, the job stops at storyboard; mock output remains unpublishable.
+      `/agents` lists all fourteen workflow agents. LLM agents show and edit provider/model
+      bindings; deterministic agents are labelled as local code and expose no fake model control.
+      A binding is the whole configuration of a call, not just its provider: `model`,
+      `temperature`, `max_tokens` and `system_prompt_override` are persisted, restored on restart,
+      and reach the call itself — `build_call` applies the first three and the agent sends the
+      fourth, so `prompt_sha256` hashes the prompt that was actually sent. The save response is
+      the binding verbatim, so a client can PUT it straight back; an explicit `null` clears an
+      override. An unknown or duplicated provider candidate is a 422 before anything is written.
+      `capability_gaps` diagnoses the agent's own selected provider, not a union over every
+      enabled one, so the banner is honest in exactly the case it exists for.
+      `/storyboard` and `/assets` are read-only artifact workspaces: they select a persisted job
+      (deep-link `?job_id=`, history-safe) and render the actual `storyboard.json` /
+      `render-props.json`, `assets.json` and `audio.json` contents. They never invent a frame
+      preview or an asset file; an artifact that has not been produced says so.
+      `/skills` presents the built-in capability catalog from `GET /api/catalog` (seven template
+      ids, the secondary renderer's motion vocabulary, and the installed character manifest). It
+      is explicitly not a MotionSkillRegistry: no plugin versions, install paths, or validation
+      badges are claimed, because none is read at runtime.
+      `/settings` edits the durable budget and render-admission policy through `GET`/`PUT
+      /api/settings`. The render thresholds it saves are enforced: the render stage reads the
+      saved policy before a renderer process exists.
 - [ ] Provider Manager page: add/edit/remove, test connection, fetch models, capability editor,
       per-agent binding, fallback.
 - [ ] Job list + detail with live progress and artifacts.
@@ -110,10 +135,23 @@ exits non-zero on any violation and removes its temporary data directory unless 
 ## PHASE 2 — PRODUCTION ENGINE
 
 ### 2.1 Agents
-- [ ] Research (with source retrieval + claim verification), TopicSelection, Script, CreativeDirector,
+- [x] Research (with source retrieval + claim verification), TopicSelection, Script, CreativeDirector,
       Storyboard, Asset, Animation, Audio, Editor, Quality, Metadata.
+      **Contract behaviour is proven per agent, not per pipeline.**
+      `tests/test_agent_contracts.py` drives each of the eight LLM agents with a scripted fake
+      provider and asserts four things for every one: a recorded fixture payload validates into
+      its artifact with exactly one provider call; malformed prose gets **exactly one** repair and
+      then raises `ModelOutputError("schema_violation")` (the stage maps that to a non-retryable
+      `StageError` and the job to `BLOCKED`); a valid second answer is accepted, so the repair is a
+      real chance rather than a formality; and a `ProviderError` is **not** re-spent as a repair —
+      the original error code survives. The repair bound is mutation-proven: replacing the single
+      repair with a retry loop fails the test. `test_every_llm_agent_has_a_fixture` fails when an
+      agent is added without a fixture, so "each agent" stays true as the set grows.
+      The deterministic agents (Asset, Audio, Editor, Publisher, Director, FactoryOrchestrator)
+      make no model call and are covered by their own stage tests.
 - **Verify:** each agent has a contract test with a recorded fixture response and a negative test
-  (malformed JSON → bounded repair → `BLOCKED`).
+  (malformed JSON → bounded repair → `BLOCKED`). **Done** — see above; the negative test is
+  parametrized over all eight LLM agents.
 
 ### 2.2 Video package (port + extend)
 - [x] Port the seven working compositions. `still-smoke` renders 7/7 at 1080×1920 and asserts the
@@ -277,6 +315,12 @@ claimed Bang Motion had neither; that was true when written and is no longer.
       active `RENDERING` event pauses the scene and shows a banner. **GPU-memory pressure from
       ADR-008 is not implemented** — the browser cannot read it, and the banner says so rather than
       pretending.
+- [x] Read-only per-job monitor with URL scope and production-page round-trip navigation.
+      The room, inspector, and workflow use the selected job's persisted events; all-job mode
+      remains explicit. Generation and ordering guards reject stale reads and callbacks.
+      The global projection still pauses 3D for another job's live render. Covered by
+      `useStudio.test.ts`, `StudioProductionMonitor.test.tsx`, and browser smoke scenarios
+      using a completed storyboard job beside a never-started job.
 - **Verify:** Playwright asserts `data-state` per character equals the persisted event status — on
       both the 2D list and the 3D mirror (`data-scene-mirror`, a clipped test seam, because a canvas
       exposes no DOM). Reconnect restores state and does not duplicate events. Snapshot p95 measured
@@ -313,8 +357,12 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
       discovery id. **No job is auto-created** — proposals are metadata; the scheduler still
       only claims existing jobs (`tests/test_discovery.py` proves discover leaves job rows
       untouched).
-- [ ] Persistent queue, production calendar. **Not started.** `jobs` is a persistent store with no
-      queue semantics: no claim-next, no priority, no worker loop.
+- [x] Persistent queue, production calendar. `jobs` is a persistent store with claim-next
+      (`priority, created_at` ordering), an additive `scheduled_for` column honored by the
+      scheduler, and `/api/jobs?upcoming=1` + `/api/jobs/upcoming` for the calendar page. The
+      scheduler loop itself stays off by default and is an operator action (see above). Proven in
+      `tests/test_scheduler.py` (priority ordering, a future `scheduled_for` is never claimed, an
+      approval-waiting job is never claimed).
 - [x] Metadata stage: `MetadataAgent` is in `build_stages` and writes `metadata.json`.
       `GET`/`POST /api/jobs/{job_id}/metadata` edit it. Proven by
       `tests/test_publish_stage.py::test_the_metadata_stage_writes_metadata_json` and
@@ -353,7 +401,10 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
       model, and `PUT /api/providers` now accepts `price_in_per_mtok`/`price_out_per_mtok` so
       `est_cost_usd` can be a real number. `price_configured` distinguishes an unpriced zero from a
       free run.
-- [ ] Usage and cost **dashboard**: no page. The API shape exists; the UI does not.
+- [x] Usage and cost **dashboard**: `/usage` renders the three summary tables (per day, per agent,
+      per provider+model) from `GET /api/usage/summary`. `CostCell` reports "belum dikonfigurasi"
+      when `price_configured` is false, so an unpriced zero is never presented as a free run.
+      Covered by `apps/dashboard/src/app/usage/page.test.tsx`.
 - **Verify:** topic → approved private upload across a process restart with no duplicate render and
   no duplicate upload; an `uncertain` publication record blocks retry until reconciled; a scheduled
   task cannot bypass approval.
@@ -377,12 +428,12 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
 | Gate | Command | Pass |
 | --- | --- | --- |
 | Lint | `uv run ruff check .` | 0 findings |
-| Types (py) | `uv run mypy packages/core --strict` | exit 0, 48 files strict-clean |
+| Types (py) | `uv run mypy packages/core --strict` | exit 0, 52 files strict-clean |
 | Types (ts) | `npm --prefix apps/dashboard run typecheck` | 0 errors |
 | Unit | `uv run pytest -q` | all pass |
 | UI unit | `npm --prefix apps/dashboard run test` | all pass |
 | E2E | `npm --prefix apps/dashboard run test:e2e` | all pass |
-| Schema | `uv run python scripts/export_schemas.py --check` | exit 0, 14 schemas current |
+| Schema | `uv run python scripts/export_schemas.py --check` | exit 0, 15 schemas current |
 | Secrets | `uv run python scripts/scan_secrets.py` | exit 0, 0 findings |
 | Render | `npm --prefix packages/video run still-smoke` | exit 0, count matches |
 | Media | `uv run python scripts/verify_video.py <job>` | all checks pass |
