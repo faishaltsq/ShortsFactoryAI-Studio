@@ -127,6 +127,7 @@ class OpenAICompatProvider:
             )
         body: dict[str, Any] = {
             "model": call.model,
+            "stream": False,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": parts},
@@ -187,6 +188,7 @@ class OpenAICompatProvider:
     ) -> ProviderResult:
         body: dict[str, Any] = {
             "model": call.model,
+            "stream": False,
             "messages": [
                 {"role": "system", "content": system},
                 {"role": "user", "content": user},
