@@ -8,30 +8,30 @@ Every task below names its verification. Nothing is marked done on the strength 
 ## PHASE 1 — FOUNDATION
 
 ### 1.1 Repository and toolchain
-- [ ] `pyproject.toml` (uv), `package.json` workspaces, `.gitignore`, `.editorconfig`, `ruff` config.
-- [ ] `scripts/check.ps1` / `check.sh`: ruff + pytest + tsc + vitest + schema export diff.
+- [x] `pyproject.toml` (uv), `package.json` workspaces, `.gitignore`, `.editorconfig`, `ruff` config.
+- [x] `scripts/check.ps1` / `check.sh`: ruff + pytest + tsc + vitest + schema export diff.
 - **Verify:** `uv run ruff check .` clean; `uv run pytest` green on an empty suite (exit 5 handled).
 
 ### 1.2 Contracts package
-- [ ] `packages/core/contracts/`: Job, Research, Script, Review, SceneSpec (with `camera`/`motion`),
+- [x] `packages/core/contracts/`: Job, Research, Script, Review, SceneSpec (with `camera`/`motion`),
       MotionPlan, Assets, Audio, Render, QA, Approval, Metadata, Publication, Event.
-- [ ] JSON Schema export to `config/schemas/*.json`, generated not hand-written.
-- [ ] Validator rejects: non-static camera without target; duration out of range; missing licence.
+- [x] JSON Schema export to `config/schemas/*.json`, generated not hand-written.
+- [x] Validator rejects: non-static camera without target; duration out of range; missing licence.
 - **Verify:** contract tests, 1 per rejection rule; schema export diff is empty in CI.
 
 ### 1.3 Netguard
-- [ ] `packages/core/security/netguard.py`: CIDR deny list, resolve-then-pin, redirect refusal.
+- [x] `packages/core/security/netguard.py`: CIDR deny list, resolve-then-pin, redirect refusal.
 - **Verify:** tests for each denied range, DNS-rebinding simulation (host resolves to public then
   private — second resolution never happens because the IP is pinned), `allow_private_hosts` opt-in.
 
 ### 1.4 Providers
-- [ ] `Provider` protocol, `ResolvedCall` frozen dataclass, `Capability` enum.
-- [ ] Transports: `openai_compat`, `anthropic`, `ollama`, `cli`, `mock`.
-- [ ] Immutable resolution: two agents on one provider get two independent calls (regression test
+- [x] `Provider` protocol, `ResolvedCall` frozen dataclass, `Capability` enum.
+- [x] Transports: `openai_compat`, `anthropic`, `ollama`, `cli`, `mock`.
+- [x] Immutable resolution: two agents on one provider get two independent calls (regression test
       for the donor's shared-mutation bug).
-- [ ] Capability validation before call; `CapabilityMismatch` names agent/provider/capability.
-- [ ] Credential store: env reference + DPAPI; origin binding; `has_credential` only in responses.
-- [ ] Usage log with pre-call budget check.
+- [x] Capability validation before call; `CapabilityMismatch` names agent/provider/capability.
+- [x] Credential store: env reference + DPAPI; origin binding; `has_credential` only in responses.
+- [x] Usage log with pre-call budget check.
 - Uncertain text requests require explicit duplicate-risk confirmation. The journal records the
   operator's authorization and consumes it when one worker atomically claims the next attempt;
   the original uncertain attempt remains in the journal. Reservation enforcement and crash
@@ -43,12 +43,12 @@ Every task below names its verification. Nothing is marked done on the strength 
   appears in any response, log line, or artifact (sentinel-string test); capability matrix test.
 
 ### 1.5 Orchestration
-- [ ] `JobState` enum + explicit allow-list transitions; illegal transition raises.
-- [ ] `JobStore` on `sqlite3`: WAL, busy_timeout, migrations table, atomic artifact writes.
-- [ ] Token-owned leases with heartbeat; expired lease → `waiting`, never `working`.
-- [ ] Idempotent stage execution; completion marker written last.
-- [ ] Bounded retries; exhaustion → `BLOCKED`.
-- [ ] Cooperative cancellation at stage boundaries.
+- [x] `JobState` enum + explicit allow-list transitions; illegal transition raises.
+- [x] `JobStore` on `sqlite3`: WAL, busy_timeout, migrations table, atomic artifact writes.
+- [x] Token-owned leases with heartbeat; expired lease → `waiting`, never `working`.
+- [x] Idempotent stage execution; completion marker written last.
+- [x] Bounded retries; exhaustion → `BLOCKED`.
+- [x] Cooperative cancellation at stage boundaries.
 - [x] Crash recovery on startup. `create_app(None)` runs `_recover_interrupted`: every job in a
       running stage whose lease has expired **and** that this process does not already hold is
       re-Started through `JobService.start`, so the runner reuses completed stages from artifacts
@@ -60,19 +60,18 @@ Every task below names its verification. Nothing is marked done on the strength 
   asserts zero duplicate provider calls; two-`JobStore` lease theft test.
 
 ### 1.6 Observability
-- [ ] `studio_events` table, monotonic cursor, ordered replay, snapshot consistency.
-- [ ] Redaction: sentinel secret never appears in an event row.
-- [ ] SSE stream with `Last-Event-ID` resume.
+- [x] `studio_events` table, monotonic cursor, ordered replay, snapshot consistency.
+- [x] Redaction: sentinel secret never appears in an event row.
+- [x] SSE stream with `Last-Event-ID` resume.
 - **Verify:** replay-after-reconnect test (no gaps, no duplicates); redaction test; snapshot p95
   measured under a simulated event flood.
 
 ### 1.7 API
-- [ ] FastAPI app: jobs CRUD, run, cancel, approve, reject, artifacts, video (Range), providers,
+- [x] FastAPI app: jobs CRUD, run, cancel, approve, reject, artifacts, video (Range), providers,
       studio snapshot, studio stream, usage.
-- [ ] Same-origin dashboard proxy; no token in the browser for local use.
+- [x] Same-origin dashboard proxy; no token in the browser for local use.
 - **Verify:** route tests; 409 on illegal approval; Range request returns 206 with correct
   `Content-Range`.
-
 ### 1.8 Dashboard shell
 - [x] Next.js app, dark default, sidebar, the eleven required routes — all linked and rendered.
       The sidebar links to `/`, `/jobs`, `/create`, `/storyboard`, `/assets`, `/providers`,
@@ -174,9 +173,12 @@ exits non-zero on any violation and removes its temporary data directory unless 
       that template has a rig. Text/prop templates have no subject for a beat to act on, and
       inventing one would be decoration, not direction.
       `CharacterReel` reads a `camera` field of its own, not the product one.
-- [ ] Art kit (`Stage`, `Figure`, `Prop`, `Camera`, `Effects`, `palette`, `rng`) with `fit="box"` in
-      panels (frame coordinates in a small container delete the element silently).
-- [ ] Character engine: rig, poses, expressions, motion presets, mouth sync.
+- [x] Art kit (`Stage`, `Figure`, `Prop`, `Camera`, `Effects`, `palette`, `rng`) with `fit="box"` in
+      panels. All components in `packages/video/src/art/`; `Figure` and `Prop` accept
+      `fit: 'frame' | 'box'` and scale accordingly.
+- [x] Character engine: rig, poses, expressions, motion presets, mouth sync.
+      `packages/video/src/character/`: `rig.ts`, `poses.ts`, `expressions.ts`, `motion.ts`,
+      `gestures.ts`; `CharacterFigure` and `Face` render; `speech.ts` envelope drives mouth sync.
 - **Verify:** `still-smoke` renders every template at 1080×1920; each still inspected visually (a
   green `tsc` and a passing luma check cannot see a missing character).
 
