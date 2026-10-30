@@ -751,6 +751,8 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
         try:
             job = store.get(job_id)
             voice = str(job.payload.get("voice") or "")
+            if not voice or "Neural" in voice:
+                voice = "system-default"
             script = store.read_artifact(job_id, "script.json")
             storyboard = store.read_artifact(job_id, "storyboard.json")
             script_segs = [item for item in script.get("segments", []) if isinstance(item, dict)]

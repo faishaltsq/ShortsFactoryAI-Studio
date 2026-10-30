@@ -14,12 +14,13 @@ if ([string]::IsNullOrWhiteSpace($text)) { throw 'narration text is empty' }
 $synth = [System.Speech.Synthesis.SpeechSynthesizer]::new()
 $words = [System.Collections.Generic.List[object]]::new()
 try {
-    if ($Voice -cne 'system-default') {
+    if ($Voice -and $Voice -cne 'system-default') {
         $installed = @($synth.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name })
-        if (-not ($installed | Where-Object { $_ -ceq $Voice })) {
-            throw "requested voice '$Voice' is not installed; installed voices: $($installed -join ', ')"
+        if ($installed -contains $Voice) {
+            $synth.SelectVoice($Voice)
+        } elseif ($installed.Count -gt 0) {
+            $synth.SelectVoice($installed[0])
         }
-        $synth.SelectVoice($Voice)
     }
 
     $format = [System.Speech.AudioFormat.SpeechAudioFormatInfo]::new(
