@@ -10,7 +10,7 @@
     "lint": "eslint src",
     "typecheck": "tsc --noEmit",
     "test": "cross-env NODE_ENV=test vitest run",
-    "test:e2e": "cross-env NODE_ENV=test playwright test"
+    "test:e2e": "uv --directory ../.. run python -m scripts.dashboard_e2e"
   },
   "dependencies": {
     "@react-three/drei": "10.7.9",

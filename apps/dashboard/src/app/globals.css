@@ -66,6 +66,22 @@ body {
   border-radius: var(--radius-sm);
 }
 
+.skip-link {
+  position: fixed;
+  left: 1rem;
+  top: 0.5rem;
+  z-index: 100;
+  transform: translateY(-200%);
+  padding: 0.75rem 1rem;
+  background: var(--panel);
+  color: var(--text);
+  border: 2px solid var(--color-teal-400);
+  border-radius: var(--radius-sm);
+}
+.skip-link:focus {
+  transform: translateY(0);
+}
+
 .panel {
   background: color-mix(in srgb, var(--panel) 92%, transparent);
   border: 1px solid var(--edge);
@@ -196,8 +212,114 @@ body {
   outline-offset: 2px;
 }
 
-.zone-anchor-off {
-  color: var(--color-ink-500);
-  border-style: dashed;
-  cursor: not-allowed;
+/* Studio composition: the room leads; the workflow and crew explain what is happening in it. */
+.studio-workbench { --studio-control-edge: #788496; }
+.studio-workbench .studio-heading {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.25rem;
+  margin-bottom: 1.5rem;
+}
+.studio-workbench .studio-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  align-items: baseline;
+  padding: 0.9rem 0;
+  margin-bottom: 1.25rem;
+  border-block: 1px solid var(--edge);
+  color: var(--color-ink-300);
+  font-size: 0.875rem;
+}
+.studio-summary strong { color: var(--text); font-size: 1.1rem; font-weight: 600; }
+.studio-workflow {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
+}
+.studio-stage {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  height: 100%;
+  min-height: 4.5rem;
+  width: 100%;
+  padding: 0.8rem;
+  text-align: left;
+  overflow-wrap: anywhere;
+  border: 1px solid var(--studio-control-edge);
+  border-radius: var(--radius-md);
+  background: var(--panel);
+  color: var(--text);
+  transition: background 120ms ease, border-color 120ms ease;
+}
+.studio-stage:hover { background: var(--panel-raised); }
+.studio-stage[aria-pressed="true"] {
+  background: #203c3c;
+  border-color: #8fd3cb;
+}
+.studio-stage-number { color: var(--color-ink-300); font-size: 0.75rem; padding-top: 0.1rem; }
+.studio-room, .studio-crew {
+  background: var(--panel);
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-lg);
+}
+.studio-room-viewport {
+  height: 30rem;
+  min-width: 0;
+  overflow: auto;
+  background: var(--surface);
+}
+.studio-crew-list {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  max-height: 40rem;
+  overflow-y: auto;
+}
+.studio-crew-button {
+  display: block;
+  width: 100%;
+  min-height: 4.5rem;
+  padding: 0.8rem;
+  border: 1px solid var(--studio-control-edge);
+  border-radius: var(--radius-md);
+  background: var(--panel-raised);
+  text-align: left;
+  overflow-wrap: anywhere;
+}
+.studio-crew-button:hover { border-color: #8fd3cb; }
+.studio-notice {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1rem;
+  border: 1px solid var(--studio-control-edge);
+  border-radius: var(--radius-md);
+  background: var(--panel-raised);
+}
+.studio-workbench .badge-idle {
+  color: var(--color-ink-200);
+  background: var(--color-ink-700);
+}
+.studio-workbench .badge { flex-shrink: 0; }
+.studio-workbench .btn, .studio-workbench .field { border-color: var(--studio-control-edge); }
+.studio-workbench .btn-primary { border-color: var(--color-teal-400); }
+@media (min-width: 640px) {
+  .studio-workflow { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+  .studio-room-viewport { height: 35rem; }
+  .studio-crew-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (min-width: 1100px) {
+  .studio-workflow { grid-template-columns: repeat(5, minmax(0, 1fr)); }
+}
+@media (min-width: 1280px) {
+  .studio-room-viewport { height: 42rem; }
+  .studio-crew-list { grid-template-columns: minmax(0, 1fr); max-height: 46rem; }
 }

@@ -1,12 +1,16 @@
 import React from 'react';
 import {useVideoConfig} from 'remotion';
 import type {IllustrationActor} from '../../scene-data';
+import {mouthShapeFor} from '../ids';
+import {speechAt} from '../../speech';
 import type {ArtPalette} from '../../art/palette';
 import {alpha, mix, tint} from '../../art/palette';
 import {characterFrameAt} from '../motion';
 import {applyMatrix, indexRig, matrixToSvg, multiply, solveRig} from '../rig';
+import type {ClothingVariant} from '../ids';
 import type {CharacterFrame, CharacterManifest, CharacterPaint, LayerSpec, ShapeSpec} from '../types';
 import type {SpeechWindow} from '../../speech';
+import type {MouthShape} from '../ids';
 import {Face} from './Face';
 import {Hand} from './Hand';
 
@@ -18,25 +22,46 @@ import {Hand} from './Hand';
  * design instead of fighting it — which is also what stops a character library from
  * looking like stickers imported from different projects.
  */
-const paintFor = (manifest: CharacterManifest, palette: ArtPalette): CharacterPaint => {
-  const {palette: p} = manifest;
+/**
+ * Character paint. Identity comes from the manifest's own palette, full stop.
+ *
+ * The theme colors the environment, the text and the props — never the character's clothing.
+ * Recolouring identity clothing per scene made the same character a different character in every
+ * shot, which broke per-scene identity hashing and any QC that compared them. ``figureAccent``
+ * remains available to the *scene* (props, UI accents), not to the body.
+ */
+const paintFor = (manifest: CharacterManifest, _palette: ArtPalette): CharacterPaint => {
+  const p = manifest.palette;
   return {
     skin: p.skin,
     skinShade: p.skinShade,
     hair: p.hair,
     hairShade: p.hairShade,
-    jacket: mix(p.jacket, palette.figure, 0.14),
-    jacketShade: mix(p.jacketShade, palette.ink, 0.16),
-    jacketLight: mix(p.jacketLight, palette.figure, 0.2),
-    shirt: mix(p.shirt, palette.figure, 0.06),
-    shirtShade: mix(p.shirtShade, palette.ink, 0.1),
+    jacket: p.jacket,
+    jacketShade: p.jacketShade,
+    jacketLight: p.jacketLight,
+    shirt: p.shirt,
+    shirtShade: p.shirtShade,
     trousers: p.trousers,
     trousersShade: p.trousersShade,
     shoe: p.shoe,
     shoeSole: p.shoeSole,
     ink: p.ink,
-    accent: palette.figureAccent,
+    accent: p.accent,
   };
+};
+
+/**
+ * The layer tree for a clothing variant. `default` is the manifest's own tree; any other declared
+ * variant must resolve to real art, and a variant the manifest does not declare falls back to
+ * `default` rather than rendering a half-dressed character.
+ */
+const variantLayers = (manifest: CharacterManifest, variant: ClothingVariant): LayerSpec[] => {
+  if (!manifest.clothingVariants.includes(variant)) return manifest.layers;
+  if (variant === 'default') return manifest.layers;
+  const override = manifest.variantLayers;
+  const layers = override?.[variant];
+  return layers && layers.length > 0 ? layers : manifest.layers;
 };
 
 const renderShape = (shape: ShapeSpec, paint: CharacterPaint, key: string): React.ReactNode => {
@@ -84,6 +109,14 @@ export const CharacterFigure: React.FC<{
 }> = ({actor, palette, frame, index, manifest, sceneFrame, fit = 'frame', opacity = 1, speech}) => {
   const {fps} = useVideoConfig();
   const rig = React.useMemo(() => indexRig(manifest.rig), [manifest]);
+  // The selected clothing variant is part of identity: it picks which art tree renders, so a
+  // `shirt` Maya is a different garment on the same rig rather than a recoloured `default`.
+  const layers = React.useMemo(
+    () => (actor.clothing_variant && actor.clothing_variant !== 'default'
+      ? variantLayers(manifest, actor.clothing_variant)
+      : manifest.layers),
+    [manifest, actor.clothing_variant],
+  );
   const paint = React.useMemo(() => paintFor(manifest, palette), [manifest, palette]);
   const clipId = `cf-${manifest.id}-${index}`.replace(/[^a-zA-Z0-9_-]/g, '-');
 
@@ -106,12 +139,17 @@ export const CharacterFigure: React.FC<{
             height={manifest.face.height}
             turn={manifest.face.turn ?? 0}
             palette={{ink: paint.ink, skinShade: paint.skinShade, blush: tint(paint.accent, 0.15), sclera: '#fbf6ef'}}
+            mouthShape={mouthShape}
           />
         ) : null}
       </g>
     );
   };
 
+  // The mouth shape is a rendering of the measured envelope: the same amplitude that opens the
+  // mouth also selects its band. Outside speech the shape is `closed`, which is the only honest
+  // answer when there is no measurement to render.
+  const mouthShape: MouthShape = mouthShapeFor(speechAt(speech ?? [], sceneFrame ?? frame, fps).weight);
   const characterFrame: CharacterFrame = characterFrameAt({
     input: {
       pose: actor.pose,
@@ -187,7 +225,7 @@ export const CharacterFigure: React.FC<{
   // Layers and hands share one z-sorted draw list, so the near hand can paint over
   // the sleeve while the far hand still sits behind the torso.
   const drawables: {z: number; node: React.ReactNode; key: string}[] = [
-    ...manifest.layers.map((layer) => ({z: layer.z, key: layer.id, node: renderLayer(layer)})),
+    ...layers.map((layer) => ({z: layer.z, key: layer.id, node: renderLayer(layer)})),
     ...(manifest.hands
       ? [
           {z: manifest.hands.zFar, key: 'hand-far', node: handArt('handFar')},

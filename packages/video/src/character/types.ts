@@ -1,4 +1,14 @@
-import type {BoneId, ExpressionId, GestureId, HandPose, MotionPreset, PaintRole, PoseId} from './ids';
+import type {
+  BoneId,
+  ClothingVariant,
+  ExpressionId,
+  GestureId,
+  HandPose,
+  MotionPreset,
+  MouthShape,
+  PaintRole,
+  PoseId,
+} from './ids';
 
 export interface Point {
   x: number;
@@ -135,6 +145,16 @@ export interface CharacterManifest {
   poses: PoseId[];
   expressions: ExpressionId[];
   gestures: GestureId[];
+  /** Declared clothing variants. Both entries must have real art and a working renderer. */
+  clothingVariants: ClothingVariant[];
+  /**
+   * Per-variant layer trees. Keyed by variant id; `default` is implicit (the manifest's own
+   * ``layers``). A declared variant with no entry here renders as `default` rather than as a
+   * half-dressed character.
+   */
+  variantLayers?: Partial<Record<ClothingVariant, LayerSpec[]>>;
+  /** Declared mouth shapes. Amplitude bands, not measured phonemes. */
+  mouthShapes: MouthShape[];
   layers: LayerSpec[];
   rig: RigSpec;
   /** Optional parametric face drawn over the head art. */

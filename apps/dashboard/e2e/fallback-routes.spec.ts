@@ -1,40 +1,23 @@
 import { expect, test } from "@playwright/test";
 import { ZONES } from "../src/three/zones";
 
-/**
- * The 2D fallback is a route map, not decoration: every zone's "buka" link must reach a real page.
- *
- * Only three of the eleven declared routes exist today (`/`, `/jobs`, `/providers`). The rest are
- * Phase 1.8 placeholders recorded in `docs/IMPLEMENTATION_ROADMAP.md`; this spec covers the ones
- * that render and names the gap rather than silently skipping it.
- */
-
-//: Every route the fallback can navigate to, with the heading that page renders. A route listed
-//: here must exist AND be linked from a zone; a route outside it must be a recorded placeholder.
+/** Every module linked by a studio zone must be reachable with WebGL disabled. */
 const IMPLEMENTED = new Map<string, string>([
   ["/", "Studio"],
   ["/jobs", "Produksi"],
+  ["/agents", "Agent"],
+  ["/storyboard", "Storyboard"],
+  ["/assets", "Aset produksi"],
 ]);
 
 /** The fallback headings are the zone labels, not the 3D overlay's short ones. */
-const ZONE_HEADING: Record<string, string> = {"/": "Ruang Direktur", "/jobs": "Suite Editing"};
+const ZONE_HEADING: Record<string, string> = {
+  "/": "Ruang Direktur", "/jobs": "Suite Editing", "/agents": "Meja Riset",
+  "/storyboard": "Meja Storyboard", "/assets": "Bay Animasi",
+};
 
-const DECLARED = [
-  ...new Set(ZONES.map((zone) => zone.href).filter((href): href is string => href !== null)),
-];
-const COVERED = DECLARED.filter((href) => IMPLEMENTED.has(href));
+const COVERED = [...new Set(ZONES.map((zone) => zone.href))];
 
-test("the fallback covers every implemented route and declares the rest", () => {
-  for (const href of IMPLEMENTED.keys()) {
-    expect(DECLARED, `${href} is implemented but no zone links to it`).toContain(href);
-  }
-  // Recorded, not skipped. The zone table now sets `href: null` for every zone whose module has
-  // no page, so those zones render a disabled span rather than a dead anchor and the declared
-  // set contains only real routes. The Phase 1.8 placeholders therefore live in `ZONES` as
-  // `null`, not as dead hrefs — asserted here so re-adding a href without a page fails.
-  expect(DECLARED.every((href) => IMPLEMENTED.has(href))).toBe(true);
-  expect(DECLARED.filter((href) => !IMPLEMENTED.has(href))).toEqual([]);
-});
 
 for (const href of COVERED) {
   const heading = IMPLEMENTED.get(href) ?? "";
@@ -67,4 +50,12 @@ test("the usage page renders its tables from the sidebar route", async ({ page }
   await page.goto("/usage");
   await expect(page.getByRole("heading", { level: 1, name: "Pemakaian" })).toBeVisible();
   await expect(page.getByRole("table")).toHaveCount(3);
+});
+
+test("the agent page lists every configured workflow agent", async ({ page }) => {
+  await page.goto("/agents");
+  await expect(page.getByRole("heading", { level: 1, name: "Agent" })).toBeVisible();
+  await expect(page.getByRole("article")).toHaveCount(14);
+  await expect(page.getByRole("article", { name: "ResearchAgent" })).toContainText("Model");
+  await expect(page.getByRole("article", { name: "AudioAgent" })).toContainText("Kode lokal");
 });

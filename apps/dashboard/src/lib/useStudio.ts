@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, type StudioSnapshot } from "./api";
 import { COMPLETED_VISIBLE_MS, withResolvedStates } from "./studioState";
+import { renderingActive } from "../three/sceneState";
 
 /** 250 ms: fine enough that a 2 s reaction never reads a whole tick stale, cheap enough to ignore. */
 const DECAY_TICK_MS = 250;
@@ -25,92 +26,149 @@ const SILENT_MS = 25_000;
  * seconds. That clock lives here and only here, and it ticks only while a decay could still happen,
  * so an idle studio costs no renders and the snapshot itself never changes on a timer.
  */
-export function useStudio(pollMs = 2000) {
-  const [snapshot, setSnapshot] = useState<StudioSnapshot | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [connected, setConnected] = useState(false);
+export function useStudio({ jobId, pollMs = 2000 }: { jobId?: string; pollMs?: number } = {}) {
+  const scope = useMemo(() => ({ jobId }), [jobId]);
+  const [view, setView] = useState<{
+    scope: typeof scope;
+    snapshot: StudioSnapshot | null;
+    error: string | null;
+    connected: boolean;
+    rendering: boolean;
+  }>({ scope, snapshot: null, error: null, connected: false, rendering: false });
   const [nowMs, setNowMs] = useState(() => Date.now());
-  // The resume point, monotonic. The snapshot seeds it and the stream raises it; neither may
-  // lower it, because a snapshot read that started before an event arrived would rewind the
-  // resume point and replay that event.
+  // The stream and snapshot cursors are global, even when the snapshot is job-scoped.
   const cursor = useRef(0);
-  // Zero until the first snapshot lands. Connecting at `after=0` before it arrives replays the
-  // whole log, which is exactly the duplicate the resume cursor exists to prevent.
-  const synced = useRef(false);
+  const session = useRef<{ scope: typeof scope; refresh: () => Promise<void> } | null>(null);
+  const snapshot = view.scope === scope ? view.snapshot : null;
+  const error = view.scope === scope ? view.error : null;
+  const connected = view.scope === scope && view.connected;
+  const rendering = view.scope === scope && view.rendering;
 
   const refresh = useCallback(async () => {
-    try {
-      const next = await api.snapshot();
-      if (next.cursor > cursor.current) cursor.current = next.cursor;
-      synced.current = true;
-      setSnapshot(next);
-      setError(null);
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "gagal memuat studio");
-    }
-  }, []);
+    const current = session.current;
+    if (current?.scope === scope) await current.refresh();
+  }, [scope]);
 
   useEffect(() => {
-    void refresh();
-  }, [refresh]);
-
-  useEffect(() => {
-    let source: EventSource | null = null;
     let cancelled = false;
-    let waiting: number | null = null;
-    // A dead socket does not always call `onerror`: behind the Next proxy the SSE response stays
-    // open, so a transport drop is silent and the stream never resumes. The watchdog reopens on
-    // silence, which is the only signal the browser gives. The server emits a keepalive every
-    // 10 s (20 idle ticks at POLL_S=0.5), so twice that is silence, not slowness.
+    let source: EventSource | null = null;
+    let reconnect: number | null = null;
     let lastByteAt = Date.now();
-    let watchdog: number | null = null;
+    let synced = false;
+    let requested = 0;
+    let applied = 0;
+    let snapshot: StudioSnapshot | null = null;
+    let error: string | null = null;
+    let connected = false;
+    let globalSnapshot: StudioSnapshot | null = null;
+    let rendering = false;
+    const isCurrent = (): boolean => !cancelled && session.current === current;
+    const publish = () => setView({ scope, snapshot, error, connected, rendering });
+    const current = {
+      scope,
+      refresh: async () => {
+        if (!isCurrent()) return;
+        const request = ++requested;
+        try {
+          const scopedRead = api.snapshot(jobId);
+          const [next, global] = await Promise.all([
+            scopedRead,
+            jobId === undefined ? scopedRead : api.snapshot(),
+          ]);
+          if (!isCurrent()) return;
+          // Neither half of a slower read may rewind the displayed scope or render safety.
+          if (snapshot && globalSnapshot && (
+            next.cursor < snapshot.cursor ||
+            global.cursor < globalSnapshot.cursor ||
+            (next.cursor === snapshot.cursor && global.cursor === globalSnapshot.cursor && request < applied)
+          )) return;
+          cursor.current = Math.max(cursor.current, next.cursor, global.cursor);
+          synced = true;
+          applied = Math.max(applied, request);
+          snapshot = next;
+          globalSnapshot = global;
+          rendering = renderingActive(global.agents);
+          error = null;
+          publish();
+        } catch (err) {
+          if (!isCurrent() || request < applied) return;
+          applied = request;
+          error = err instanceof Error ? err.message : "gagal memuat studio";
+          publish();
+        }
+      },
+    };
+    session.current = current;
+    publish();
+    void current.refresh();
 
+    const closeSource = () => {
+      if (!source) return;
+      source.onopen = null;
+      source.onerror = null;
+      source.onmessage = null;
+      source.close();
+      source = null;
+    };
+    const schedule = (delay: number) => {
+      if (reconnect !== null) window.clearTimeout(reconnect);
+      reconnect = window.setTimeout(() => {
+        reconnect = null;
+        connect();
+      }, delay);
+    };
     const connect = () => {
-      if (cancelled) return;
-      if (!synced.current) {
-        // Wait for the snapshot rather than opening a stream that would replay from zero.
-        waiting = window.setTimeout(connect, 50);
+      if (!isCurrent()) return;
+      if (!synced) {
+        // A scope must establish its own snapshot before the global stream can resume.
+        schedule(50);
         return;
       }
-      source = new EventSource(`/api/studio/stream?after=${cursor.current}`);
+      const opened = new EventSource(`/api/studio/stream?after=${cursor.current}`);
+      source = opened;
       lastByteAt = Date.now();
-      source.onopen = () => {
+      opened.onopen = () => {
+        if (!isCurrent() || source !== opened) return;
         lastByteAt = Date.now();
-        setConnected(true);
+        connected = true;
+        publish();
       };
-      source.onerror = () => {
-        setConnected(false);
-        source?.close();
-        // Reconnect from the last cursor rather than from zero: no gaps, no duplicates.
-        window.setTimeout(connect, 1500);
+      opened.onerror = () => {
+        if (!isCurrent() || source !== opened) return;
+        connected = false;
+        closeSource();
+        publish();
+        schedule(1500);
       };
-      source.onmessage = (event: MessageEvent) => {
+      opened.onmessage = (event: MessageEvent) => {
+        if (!isCurrent() || source !== opened) return;
         lastByteAt = Date.now();
-        // The resume point is the server's event id (the SSE `id:` field), never a message count.
-        // A counter drifts the moment an event is filtered out or a keepalive arrives, and then a
-        // reconnect either replays events or skips them.
+        // SSE ids are server event ids, not message counts; keepalives have no id.
         const lastSeen = Number(event.lastEventId);
         if (Number.isInteger(lastSeen) && lastSeen > cursor.current) cursor.current = lastSeen;
-        void refresh();
+        void current.refresh();
       };
     };
 
     connect();
-    const interval = window.setInterval(() => void refresh(), pollMs);
-    watchdog = window.setInterval(() => {
-      if (cancelled || Date.now() - lastByteAt < SILENT_MS) return;
-      setConnected(false);
-      source?.close();
+    const interval = window.setInterval(() => void current.refresh(), pollMs);
+    // Two missed server keepalives indicate a silently dead socket behind the proxy.
+    const watchdog = window.setInterval(() => {
+      if (!isCurrent() || !source || Date.now() - lastByteAt < SILENT_MS) return;
+      connected = false;
+      closeSource();
+      publish();
       connect();
     }, STREAM_WATCHDOG_MS);
     return () => {
       cancelled = true;
-      source?.close();
-      if (waiting !== null) window.clearTimeout(waiting);
-      if (watchdog !== null) window.clearInterval(watchdog);
+      if (session.current === current) session.current = null;
+      closeSource();
+      if (reconnect !== null) window.clearTimeout(reconnect);
+      window.clearInterval(watchdog);
       window.clearInterval(interval);
     };
-  }, [refresh, pollMs]);
+  }, [scope, jobId, pollMs]);
 
   // Tick at the completed window's resolution, and stop once nothing can still decay.
   const pendingDecay = useMemo(
@@ -135,5 +193,5 @@ export function useStudio(pollMs = 2000) {
     [snapshot, nowMs],
   );
 
-  return { snapshot, agents, nowMs, error, connected, refresh };
+  return { snapshot, agents, nowMs, error, connected, rendering, refresh };
 }

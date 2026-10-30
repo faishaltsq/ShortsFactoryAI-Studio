@@ -265,6 +265,7 @@ class JobStore:
         token: str | None = None,
         json_artifacts: builtins.list[tuple[str, dict[str, Any]]] | None = None,
         files: builtins.list[tuple[str, Path]] | None = None,
+        remove_artifacts: builtins.list[str] | None = None,
         target: JobState | None = None,
         detail: str = "",
     ) -> JobRecord:
@@ -281,6 +282,7 @@ class JobStore:
         (state + event) is the commit point, and a crash between promotion and marker resumes
         through the existing reuse path.
         """
+        removals = [safe_artifact_name(name) for name in (remove_artifacts or [])]
         from .leases import LeaseLost
 
         json_artifacts = list(json_artifacts or [])
@@ -309,6 +311,10 @@ class JobStore:
                             raise LeaseLost(job_id, "not owned by this worker", token=token)
                         if dt.datetime.fromisoformat(row["expires_at"]) <= _now_dt():
                             raise LeaseLost(job_id, "lease expired", token=token)
+                    # A durable revision intent must precede this call. Deletion is idempotent;
+                    # promote its applied marker last so a crash can finish the same decision.
+                    for name in removals:
+                        (self.job_dir(job_id) / name).unlink(missing_ok=True)
                     for tmp, final in staged:
                         os.replace(tmp, final)
                     for final_name, tmp in files:

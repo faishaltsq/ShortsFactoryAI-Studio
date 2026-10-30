@@ -49,25 +49,39 @@ const maya = loadModule('src/character/assets/maya/manifest.ts', {
   './art': loadModule('src/character/assets/maya/art.ts', {'../../ids': ids}),
 });
 
-const manifest = maya.MAYA;
-validate.validateCharacter(manifest);
-
+// Enumerate the registry, not one hardcoded character: a second character must appear in the
+// index without this script being edited, or the Python side would keep rejecting it as unknown.
+const registry = loadModule('src/character/registry.ts', {
+  './assets/maya/manifest': maya,
+  './ids': ids,
+  './types': {},
+  './validate': validate,
+});
+const characters = registry.CHARACTERS.map((manifest) => {
+  const problems = registry.validateManifest(manifest);
+  if (problems.length > 0) {
+    throw new Error(`${manifest.id} is not renderable: ${problems.join('; ')}`);
+  }
+  return {
+    id: manifest.id,
+    version: manifest.version,
+    displayName: manifest.displayName,
+    artStyle: manifest.artStyle,
+    poses: manifest.poses,
+    expressions: manifest.expressions,
+    gestures: manifest.gestures,
+    // Real declared capability, so the API can refuse an unsupported request instead of the
+    // renderer silently ignoring it.
+    clothingVariants: manifest.clothingVariants,
+    mouthShapes: manifest.mouthShapes,
+    license: manifest.license.id,
+    provenance: manifest.provenance.source,
+  };
+});
 const index = {
   version: 1,
   generatedFrom: 'packages/video/src/character/assets',
-  characters: [
-    {
-      id: manifest.id,
-      version: manifest.version,
-      displayName: manifest.displayName,
-      artStyle: manifest.artStyle,
-      poses: manifest.poses,
-      expressions: manifest.expressions,
-      gestures: manifest.gestures,
-      license: manifest.license.id,
-      provenance: manifest.provenance.source,
-    },
-  ],
+  characters,
 };
 
 const text = JSON.stringify(index, null, 2) + '\n';

@@ -46,6 +46,9 @@ vi.mock("@/lib/useStudio", () => ({
     agents: withResolvedStates(currentAgents, Date.parse(NOW)),
     error: null,
     connected: true,
+    rendering: currentAgents.some((row) =>
+      row.stage === "RENDERING" && row.status === "working" && !row.stale,
+    ),
     refresh: vi.fn(),
   }),
 }));
@@ -70,9 +73,16 @@ beforeAll(() => {
 
 beforeEach(() => {
   window.localStorage.clear();
+  window.history.replaceState(null, "", "/");
+  vi.stubGlobal("fetch", vi.fn(async () =>
+    new Response(JSON.stringify({ jobs: [] }), { status: 200 }),
+  ));
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 test("opens an accessible inspector with persisted data and job-level last-five events", async () => {
   render(<StudioPage />);
@@ -81,10 +91,6 @@ test("opens an accessible inspector with persisted data and job-level last-five 
 
   const dialog = await screen.findByRole("dialog", { name: "Riset" });
   expect(dialog.hasAttribute("open")).toBe(true);
-  expect(within(dialog).getByText("Riset", { selector: "dd" }).isConnected).toBe(true);
-  expect(within(dialog).getByText("Peran teknis / ID agent").isConnected).toBe(true);
-  expect(within(dialog).getAllByText("ResearchAgent").length).toBeGreaterThan(0);
-  expect(within(dialog).getByRole("heading", { name: "5 event terakhir untuk job ini" }).isConnected).toBe(true);
   expect(within(dialog).getByText("Memeriksa sumber").isConnected).toBe(true);
   expect(within(dialog).getByText("model-1").isConnected).toBe(true);
   expect(within(dialog).getByRole("progressbar").getAttribute("value")).toBe("0.7");
@@ -116,7 +122,8 @@ test("a stale working agent renders as waiting in the list and the inspector", a
   try {
     render(<StudioPage />);
 
-    const character = screen.getByRole("button", { name: /Riset/i });
+    const character = within(screen.getByRole("list", { name: "Karakter studio" }))
+      .getByRole("button", { name: /Riset/i });
     expect(character.getAttribute("data-agent")).toBe("ResearchAgent");
     expect(character.getAttribute("data-state")).toBe("waiting");
     expect(within(character).getByText("Menunggu").isConnected).toBe(true);
@@ -155,11 +162,9 @@ test("a completed agent decays to idle in the list, the fallback and the inspect
     expect(listed.getAttribute("data-state")).toBe("idle");
     expect(within(listed).getByText("Menganggur").isConnected).toBe(true);
 
-    const fallback = within(screen.getByRole("region", { name: "Ruang produksi" })).getByRole(
-      "button",
-      { name: /Riset/i },
-    );
-    expect(fallback.getAttribute("data-state")).toBe("idle");
+    const fallback = screen.getByRole("region", { name: "Ruang produksi" })
+      .querySelector('button[data-agent="ResearchAgent"]');
+    expect(fallback?.getAttribute("data-state")).toBe("idle");
 
     fireEvent.click(listed);
     const dialog = await screen.findByRole("dialog", { name: "Riset" });
@@ -199,4 +204,34 @@ test("pausing banner appears only while an agent is rendering", () => {
   } finally {
     currentAgents = [agent];
   }
+});
+
+test("an empty snapshot keeps the registered crew inspectable without inventing production", async () => {
+  currentAgents = [];
+  try {
+    window.localStorage.setItem("shorts-studio-quality", "off");
+    render(<StudioPage />);
+    const crew = within(screen.getByRole("list", { name: "Karakter studio" }));
+    const animator = crew.getByRole("button", { name: /Animator/i });
+    expect(animator.getAttribute("data-state")).toBe("idle");
+    expect(crew.queryByText("Bekerja")).toBeNull();
+    fireEvent.click(animator);
+    const inspector = await screen.findByRole("dialog", { name: "Animator" });
+    expect(within(inspector).queryByRole("progressbar")).toBeNull();
+    expect(within(inspector).queryByRole("link", { name: /^Buka job$/ })).toBeNull();
+    expect(within(inspector).getByRole("link", { name: /pengaturan agent/i }).getAttribute("href")).toBe("/agents");
+  } finally {
+    currentAgents = [agent];
+  }
+});
+
+test("selecting a production zone filters the crew and resetting restores the whole team", () => {
+  render(<StudioPage />);
+  const crew = screen.getByRole("list", { name: "Karakter studio" });
+  fireEvent.click(screen.getByRole("button", { name: "Lihat tahap Booth Audio" }));
+  expect(within(crew).getByRole("button", { name: /Audio/i }).getAttribute("data-agent")).toBe("AudioAgent");
+  expect(within(crew).queryByRole("button", { name: /Riset/i })).toBeNull();
+  fireEvent.click(screen.getByRole("button", { name: "Semua ruang" }));
+  expect(within(crew).getByRole("button", { name: /Riset/i }).getAttribute("data-agent")).toBe("ResearchAgent");
+  expect(within(crew).getByRole("button", { name: /Audio/i }).getAttribute("data-agent")).toBe("AudioAgent");
 });

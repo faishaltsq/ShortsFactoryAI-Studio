@@ -169,6 +169,38 @@ const foreArm = (x: number, tone: 'near' | 'far'): ShapeSpec[] => [
   },
 ];
 
+/**
+ * Torso art for the `shirt` variant: the same silhouette with the jacket's outer shell replaced
+ * by shirt fabric. The shirt V and the core shadow survive; the jacket body, its hem line and its
+ * sleeve shells do not. This is a *different garment on the same rig*, not a recolour.
+ */
+const torsoShirt = (): LayerSpec => ({
+  id: 'torso',
+  bone: 'chest',
+  z: 10,
+  shapes: [
+    {
+      kind: 'path',
+      // Shirt body: follows the jacket silhouette at the shoulder (so the sleeve still meets a
+      // garment edge) and tucks at the waist without the jacket's hem flare.
+      d: 'M190 154 C176 155 164 158 156 164 C148 168 138 173 130 180 C124 185 121 192 122 200 C124 220 133 242 146 258 C149 263 151 268 151 276 L150 320 L146 392 L254 392 L250 320 L249 276 C249 268 251 263 256 258 C272 240 284 216 284 196 C284 188 280 182 272 178 C264 172 252 168 244 164 C236 158 224 155 210 154 C206 172 194 172 190 154 Z',
+      fill: 'shirt',
+    },
+    {
+      kind: 'path',
+      // Placket: the shirt's centre seam, where the jacket had an open V.
+      d: 'M197 160 L203 160 L203 392 L197 392 Z',
+      fill: 'shirtShade',
+      opacity: 0.55,
+    },
+    {
+      kind: 'path',
+      d: 'M244 164 C252 168 262 173 270 180 C276 185 279 192 278 200 C276 220 267 242 254 258 C251 263 249 268 249 276 L250 320 L254 392 L247 392 L244 320 L244 276 C244 268 246 263 251 258 C267 240 279 216 279 196 C279 190 276 185 270 181 C262 175 250 171 242 167 Z',
+      fill: 'shirtShade',
+    },
+  ],
+});
+
 export const MAYA_LAYERS: LayerSpec[] = [
   // --- far side: behind everything, one shade darker -------------------------------
   {id: 'far-upper-arm', bone: 'armUpperFar', z: 1, far: true, shapes: upperArm(272, 'far')},
@@ -428,3 +460,9 @@ export const MAYA_LAYERS: LayerSpec[] = [
   {id: 'near-upper-arm', bone: 'armUpperNear', z: 34, shapes: upperArm(134, 'near')},
   {id: 'near-forearm', bone: 'armForeNear', z: 35, shapes: foreArm(134, 'near')},
 ];
+
+
+/** Per-variant layer overrides. `default` uses MAYA_LAYERS unchanged. */
+export const MAYA_VARIANT_LAYERS: Record<string, LayerSpec[]> = {
+  shirt: MAYA_LAYERS.map((layer) => (layer.id === 'torso' ? torsoShirt() : layer)),
+};

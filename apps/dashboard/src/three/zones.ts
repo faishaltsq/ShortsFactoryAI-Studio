@@ -18,8 +18,8 @@ export type Zone = {
   /** Isometric grid position, in room units. */
   position: [number, number];
   agents: string[];
-  /** Route that exists in this app; `null` means the module is not built yet. */
-  href: string | null;
+  /** Existing operator surface for this production zone. */
+  href: string;
   accent: string;
   /** Low-poly workstation prop, per `docs/STUDIO_3D.md` §2. */
   prop: WorkstationProp;
@@ -39,16 +39,21 @@ export type WorkstationProp =
 
 export const ZONES: Zone[] = [
   { id: "director", label: "Ruang Direktur", position: [-4.5, -3], agents: ["DirectorAgent", "FactoryOrchestrator"], href: "/", accent: "#f4bc68", prop: "desk-storyboard" },
-  { id: "research", label: "Meja Riset", position: [-1.5, -3], agents: ["ResearchAgent", "TopicSelectionAgent"], href: null, accent: "#4a938c", prop: "terminal" },
-  { id: "writing", label: "Ruang Tulis", position: [1.5, -3], agents: ["ScriptAgent"], href: null, accent: "#f4bc68", prop: "typewriter" },
-  { id: "review", label: "Sudut Review", position: [4.5, -3], agents: ["CreativeDirectorAgent"], href: null, accent: "#d99a3f", prop: "armchair" },
-  { id: "storyboard", label: "Meja Storyboard", position: [-4.5, 0], agents: ["StoryboardAgent"], href: null, accent: "#4a938c", prop: "drafting" },
-  { id: "animation", label: "Bay Animasi", position: [-1.5, 0], agents: ["AnimationAgent", "AssetAgent"], href: null, accent: "#2f6f6a", prop: "dual-monitor" },
-  { id: "audio", label: "Booth Audio", position: [1.5, 0], agents: ["AudioAgent"], href: null, accent: "#4a938c", prop: "mic" },
+  { id: "research", label: "Meja Riset", position: [-1.5, -3], agents: ["ResearchAgent", "TopicSelectionAgent"], href: "/agents", accent: "#4a938c", prop: "terminal" },
+  { id: "writing", label: "Ruang Tulis", position: [1.5, -3], agents: ["ScriptAgent"], href: "/agents", accent: "#f4bc68", prop: "typewriter" },
+  { id: "review", label: "Sudut Review", position: [4.5, -3], agents: ["CreativeDirectorAgent"], href: "/agents", accent: "#d99a3f", prop: "armchair" },
+  { id: "storyboard", label: "Meja Storyboard", position: [-4.5, 0], agents: ["StoryboardAgent"], href: "/storyboard", accent: "#4a938c", prop: "drafting" },
+  { id: "animation", label: "Bay Animasi", position: [-1.5, 0], agents: ["AnimationAgent", "AssetAgent"], href: "/assets", accent: "#2f6f6a", prop: "dual-monitor" },
+  { id: "audio", label: "Booth Audio", position: [1.5, 0], agents: ["AudioAgent"], href: "/assets", accent: "#4a938c", prop: "mic" },
   { id: "edit", label: "Suite Editing", position: [4.5, 0], agents: ["EditorAgent"], href: "/jobs", accent: "#2f6f6a", prop: "timeline" },
   { id: "qc", label: "Ruang QC", position: [-3, 3], agents: ["QualityAgent"], href: "/jobs", accent: "#d9a03f", prop: "preview-wall" },
-  { id: "publishing", label: "Dermaga Publikasi", position: [3, 3], agents: ["MetadataAgent", "PublisherAgent"], href: null, accent: "#f4bc68", prop: "chute" },
+  { id: "publishing", label: "Dermaga Publikasi", position: [3, 3], agents: ["MetadataAgent", "PublisherAgent"], href: "/agents", accent: "#f4bc68", prop: "chute" },
 ];
+
+export function zoneHref(zone: Zone, jobId?: string): string {
+  const scoped = ["/storyboard", "/assets", "/jobs"].includes(zone.href);
+  return scoped && jobId ? `${zone.href}?job_id=${encodeURIComponent(jobId)}` : zone.href;
+}
 
 export const AGENT_ZONE: Record<string, ZoneId> = ZONES.reduce(
   (acc, zone) => {

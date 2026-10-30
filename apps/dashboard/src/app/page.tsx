@@ -2,15 +2,16 @@
 
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Empty, ErrorState, Loading } from "@/components/states";
-import type { StudioEvent, StudioStatus } from "@/lib/api";
+import { ErrorState, Loading } from "@/components/states";
+import { StudioProductionMonitor } from "@/components/StudioProductionMonitor";
+import type { StudioEvent } from "@/lib/api";
 import type { ResolvedAgent } from "@/lib/studioState";
 import { characterState, type CharacterState } from "@/lib/studioState";
 import { useStudio } from "@/lib/useStudio";
 import { StudioFallback } from "@/three/StudioFallback";
 import { StudioScene } from "@/three/StudioScene";
-import { renderingActive } from "@/three/sceneState";
-import { AGENT_LABEL } from "@/three/zones";
+import { StudioViewport } from "@/three/StudioViewport";
+import { AGENT_LABEL, AGENT_ZONE, ZONES, type ZoneId } from "@/three/zones";
 
 type StudioQuality = "high" | "medium" | "low" | "off";
 
@@ -30,6 +31,23 @@ const STATUS_LABEL: Record<CharacterState, string> = {
   blocked: "Diblokir",
   failed: "Gagal",
   completed: "Selesai",
+};
+
+const AGENT_ROLE: Record<string, string> = {
+  DirectorAgent: "Mengarahkan ide dan brief produksi.",
+  FactoryOrchestrator: "Mengatur urutan tahap dan eksekusi job.",
+  ResearchAgent: "Menelusuri sumber dan memeriksa klaim konten.",
+  TopicSelectionAgent: "Memilih topik dan sudut cerita.",
+  ScriptAgent: "Menulis hook, alur cerita, dan penutup.",
+  CreativeDirectorAgent: "Menilai naskah dan memberi arahan revisi.",
+  StoryboardAgent: "Menyusun adegan dan komposisi visual.",
+  AssetAgent: "Menyiapkan aset karakter, latar, dan audio.",
+  AnimationAgent: "Merencanakan gerak karakter dan kamera.",
+  AudioAgent: "Menyiapkan narasi dan waktu subtitle.",
+  EditorAgent: "Merangkai adegan dan merender video.",
+  QualityAgent: "Memeriksa kualitas teknis dan kreatif.",
+  MetadataAgent: "Menyiapkan judul, deskripsi, dan metadata.",
+  PublisherAgent: "Menangani publikasi setelah persetujuan operator.",
 };
 
 function isStudioQuality(value: string | null): value is StudioQuality {
@@ -54,20 +72,61 @@ function Status({ status }: { status: CharacterState }) {
 }
 
 export default function StudioPage() {
-  const { snapshot, agents, error, connected, refresh } = useStudio();
+  const [jobId, setJobId] = useState<string | undefined>();
+  const [scopeReady, setScopeReady] = useState(false);
+  const { snapshot, agents: persistedAgents, error, connected, refresh, rendering: paused } = useStudio({ jobId });
   const [quality, setQuality] = useState<StudioQuality>("medium");
   const [qualityReady, setQualityReady] = useState(false);
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
+  const [focusZoneId, setFocusZoneId] = useState<ZoneId | null>(null);
+  const [rendererUnavailable, setRendererUnavailable] = useState(false);
   const inspectorRef = useRef<HTMLDialogElement>(null);
   const openerRef = useRef<HTMLElement | null>(null);
 
-  const selectedAgent = useMemo(
-    () => agents.find((agent) => agent.agent_id === selectedAgentId) ?? null,
-    [selectedAgentId, agents],
-  );
+  // A known workstation occupant without an event is a resting character, not a worker.
+  const agents = useMemo<ResolvedAgent[]>(() => {
+    const known = new Map(persistedAgents.map((agent) => [agent.agent_id, agent]));
+    const roster = ZONES.flatMap((zone) => zone.agents).map((agentId) => {
+      const recorded = known.get(agentId);
+      known.delete(agentId);
+      return recorded ?? {
+        agent_id: agentId, status: "waiting", state: "idle", stale: false,
+        task: "", progress: null, model: null, stage: null, job_id: null,
+        updated_at: null, recent: [],
+      } satisfies ResolvedAgent;
+    });
+    return [...roster, ...known.values()];
+  }, [persistedAgents]);
 
-  // Before the fallback branches: a `RENDERING` event pauses the room whether it is 3D or 2D.
-  const paused = renderingActive(agents);
+  const selectedAgent = agents.find((agent) => agent.agent_id === selectedAgentId) ?? null;
+  const focusZone = ZONES.find((zone) => zone.id === focusZoneId);
+  const visibleAgents = focusZoneId
+    ? agents.filter((agent) => AGENT_ZONE[agent.agent_id] === focusZoneId)
+    : agents;
+  const workingCount = agents.filter((agent) => characterState(agent) === "working").length;
+  const attentionCount = agents.filter((agent) =>
+    ["blocked", "failed"].includes(characterState(agent)),
+  ).length;
+
+  useEffect(() => {
+    const readScope = () => {
+      setJobId(new URLSearchParams(window.location.search).get("job_id") || undefined);
+      setSelectedAgentId(null);
+      setScopeReady(true);
+    };
+    readScope();
+    window.addEventListener("popstate", readScope);
+    return () => window.removeEventListener("popstate", readScope);
+  }, []);
+
+  const selectJob = (nextJobId: string | undefined) => {
+    setSelectedAgentId(null);
+    setJobId(nextJobId);
+    const url = new URL(window.location.href);
+    if (nextJobId) url.searchParams.set("job_id", nextJobId);
+    else url.searchParams.delete("job_id");
+    window.history.replaceState(window.history.state, "", url);
+  };
 
   useEffect(() => {
     const saved = window.localStorage.getItem(QUALITY_KEY);
@@ -94,135 +153,197 @@ export default function StudioPage() {
 
   const changeQuality = (next: StudioQuality) => {
     setQuality(next);
+    setRendererUnavailable(false);
     window.localStorage.setItem(QUALITY_KEY, next);
   };
 
-  if (!snapshot && error) {
-    return <ErrorState message={error} onRetry={() => void refresh()} />;
-  }
 
-  if (!snapshot) {
-    return <Loading label="Memuat proyeksi studio dari event tersimpan…" />;
-  }
-
-  if (agents.length === 0) {
-    return (
-      <Empty
-        title="Belum ada karakter studio"
-        hint="Snapshot studio tidak memuat agent. Coba muat ulang setelah API siap."
-      />
-    );
-  }
+  const flatRoom = (
+    <StudioFallback
+      agents={agents}
+      jobId={jobId}
+      onSelectAgent={openInspector}
+      focusZoneId={focusZoneId}
+      onFocusZone={setFocusZoneId}
+    />
+  );
 
   return (
-    <div className="min-h-dvh p-3 sm:p-5 lg:p-6">
-      <header className="mb-4 flex flex-col gap-4 border-b border-ink-700 pb-4 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-ink-100">Studio</h1>
-          <p className="mt-1 max-w-2xl text-sm text-ink-300">
-            Proyeksi baca-saja dari event produksi yang tersimpan.
+    <div className="studio-workbench min-h-dvh p-3 sm:p-5 lg:p-6">
+      <header className="studio-heading">
+        <div className="min-w-0">
+          <h1 className="text-2xl font-semibold tracking-tight text-ink-100 sm:text-3xl">
+            Studio produksi Shorts
+          </h1>
+          <p className="mt-2 max-w-2xl text-sm text-ink-300">
+            Dari ide sampai video, kenali tim dan ikuti pekerjaan di setiap ruang.
           </p>
           <p className="mt-2 text-xs text-ink-400" role="status" aria-live="polite">
             {connected ? "Pembaruan langsung aktif." : "Menghubungkan pembaruan langsung."}
+            {" "}Status diambil dari event tersimpan, bukan simulasi.
           </p>
         </div>
-
-        <div className="w-full sm:w-44">
-          <label className="label" htmlFor="studio-quality">
-            Tampilan studio
-          </label>
-          <select
-            id="studio-quality"
-            className="field min-h-11"
-            value={quality}
-            onChange={(event) => changeQuality(event.target.value as StudioQuality)}
-          >
-            {QUALITY_OPTIONS.map((option) => (
-              <option key={option.value} value={option.value}>
-                {option.label}
-              </option>
-            ))}
-          </select>
+        <div className="flex flex-wrap gap-2">
+          <Link href="/agents" className="btn min-h-11">Atur model agent</Link>
+          <Link href="/create" className="btn btn-primary min-h-11">Buat video</Link>
         </div>
       </header>
 
-      {error ? (
-        <div className="mb-4">
-          <ErrorState message={error} onRetry={() => void refresh()} />
-        </div>
-      ) : null}
+      {scopeReady ? <StudioProductionMonitor jobId={jobId} onSelectJob={selectJob} /> : null}
 
-      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_20rem]">
-        <section className="panel min-w-0 overflow-hidden" aria-labelledby="room-heading">
-          <div className="flex items-center justify-between gap-3 border-b border-ink-700 px-4 py-3">
+      {!scopeReady || !snapshot ? (
+        scopeReady && error
+          ? <ErrorState message={error} onRetry={() => void refresh()} />
+          : <Loading label="Memuat proyeksi studio dari event tersimpan…" />
+      ) : (
+      <>
+
+      {error ? <div className="mb-4"><ErrorState message={error} onRetry={() => void refresh()} /></div> : null}
+
+      <div className="studio-summary" aria-label="Ringkasan tim studio">
+        <span><strong>{agents.length}</strong> agent di studio</span>
+        <span><strong>{workingCount}</strong> sedang bekerja</span>
+        <span className={attentionCount ? "text-amber-500" : ""}>
+          <strong>{attentionCount}</strong> perlu perhatian
+        </span>
+        <span className="text-xs text-ink-400">{jobId ? "Aktivitas job terpilih" : "Aktivitas seluruh job"}</span>
+      </div>
+
+      <section aria-labelledby="workflow-heading" className="mb-5">
+        <div className="mb-3 flex flex-wrap items-baseline justify-between gap-2">
+          <h2 id="workflow-heading" className="text-sm font-semibold">Alur produksi</h2>
+          <p className="text-xs text-ink-400">Pilih tahap untuk memfokuskan ruang dan timnya.</p>
+        </div>
+        <ol className="studio-workflow">
+          {ZONES.map((zone, index) => {
+            const crew = agents.filter((agent) => AGENT_ZONE[agent.agent_id] === zone.id);
+            const active = crew.filter((agent) => characterState(agent) === "working").length;
+            const needsAttention = crew.some((agent) => ["blocked", "failed"].includes(characterState(agent)));
+            return (
+              <li key={zone.id}>
+                <button
+                  type="button"
+                  className="studio-stage"
+                  aria-pressed={focusZoneId === zone.id}
+                  aria-label={`Lihat tahap ${zone.label}`}
+                  onClick={() => setFocusZoneId((current) => current === zone.id ? null : zone.id)}
+                >
+                  <span className="studio-stage-number">{String(index + 1).padStart(2, "0")}</span>
+                  <span className="min-w-0">
+                    <span className="block text-sm font-medium">{zone.label}</span>
+                    <span className={`mt-1 block text-xs ${needsAttention ? "text-amber-500" : "text-ink-300"}`}>
+                      {needsAttention ? "Perlu perhatian" : active ? `${active} sedang bekerja` : `${crew.length} agent`}
+                    </span>
+                  </span>
+                </button>
+              </li>
+            );
+          })}
+        </ol>
+      </section>
+
+      <div className="grid min-w-0 gap-4 xl:grid-cols-[minmax(0,1fr)_19rem]">
+        <section className="studio-room min-w-0" aria-labelledby="room-heading">
+          <div className="flex flex-wrap items-center justify-between gap-3 border-b border-ink-700 p-4">
             <div>
-              <h2 id="room-heading" className="text-sm font-semibold text-ink-100">
-                Ruang produksi
-              </h2>
-              <p className="text-xs text-ink-400">
-                Pilih karakter untuk membaca status dan event terakhirnya.
+              <h2 id="room-heading" className="text-base font-semibold text-ink-100">Ruang produksi</h2>
+              <p className="mt-1 text-xs text-ink-300">
+                {focusZone ? `Fokus: ${focusZone.label}` : "Seluruh ruang"}.
+                {" "}Pilih karakter untuk melihat tugasnya.
               </p>
             </div>
-            <span className="text-xs text-ink-400">{agents.length} agent</span>
+            <div className="flex items-end gap-2">
+              {focusZoneId ? (
+                <button type="button" className="btn min-h-11" onClick={() => setFocusZoneId(null)}>
+                  Semua ruang
+                </button>
+              ) : null}
+              <div>
+                <label className="mb-1 block text-xs text-ink-300" htmlFor="studio-quality">Tampilan studio</label>
+                <select
+                  id="studio-quality"
+                  className="field min-h-11"
+                  value={quality}
+                  onChange={(event) => changeQuality(event.target.value as StudioQuality)}
+                >
+                  {QUALITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+                </select>
+              </div>
+            </div>
           </div>
-
-          <div className="h-[28rem] min-h-0 overflow-auto sm:h-[34rem] xl:h-[calc(100dvh-12rem)] xl:min-h-[36rem]">
-            {paused ? (
-              // ADR-008 gates the pause on free GPU memory, and the browser cannot read it. The
-              // banner says what is true and what is not known instead of inventing a measurement.
-              <p
-                role="status"
-                aria-label="Studio dijeda: render sedang berjalan"
-                title="Memori GPU tidak tersedia di browser, jadi jeda ini dipicu oleh event RENDERING yang aktif saja."
-                className="m-3 rounded border border-ink-700 bg-ink-900/80 px-3 py-2 text-xs text-ink-200"
-              >
-                Render sedang berjalan — studio dijeda selama event <code>RENDERING</code> aktif.
-              </p>
-            ) : null}
-            {!qualityReady ? (
-              <Loading label="Memuat preferensi tampilan…" />
-            ) : quality === "off" ? (
-              <StudioFallback agents={agents} onSelectAgent={openInspector} />
+          {paused ? (
+            <p
+              role="status"
+              aria-label="Studio dijeda: render sedang berjalan"
+              title="Memori GPU tidak tersedia di browser, jadi jeda ini dipicu oleh event RENDERING yang aktif saja."
+              className="studio-notice m-3 text-xs"
+            >
+              Render sedang berjalan. Studio dijeda selama event <code>RENDERING</code> aktif.
+            </p>
+          ) : null}
+          {rendererUnavailable ? (
+            <div role="status" className="studio-notice m-3 text-sm">
+              <span>
+                Tampilan 3D tidak tersedia atau koneksi GPU terputus.
+                Tim tetap dapat dipilih di tampilan 2D.
+              </span>
+              <button type="button" className="btn min-h-11" onClick={() => setRendererUnavailable(false)}>
+                Coba 3D lagi
+              </button>
+            </div>
+          ) : null}
+          <div className="studio-room-viewport">
+            {!qualityReady ? <Loading label="Memuat preferensi tampilan…" /> : quality === "off" || rendererUnavailable ? (
+              flatRoom
             ) : (
-              <StudioScene
-                agents={agents}
-                quality={quality}
-                paused={paused}
-                onSelectAgent={openInspector}
-              />
+              <StudioViewport fallback={flatRoom} onUnavailable={() => setRendererUnavailable(true)}>
+                <StudioScene
+                  agents={agents}
+                  jobId={jobId}
+                  quality={quality}
+                  paused={paused}
+                  onSelectAgent={openInspector}
+                  focusZoneId={focusZoneId}
+                  onFocusZone={setFocusZoneId}
+                  onUnavailable={() => setRendererUnavailable(true)}
+                />
+              </StudioViewport>
             )}
+          </div>
+          <div className="flex flex-wrap justify-between gap-2 border-t border-ink-700 px-4 py-3 text-xs text-ink-300">
+            <span>{quality === "off" || rendererUnavailable ? "Pilih agent atau zona pada denah." : "Geser untuk memutar, scroll untuk zoom. Pilih tahap untuk memperjelas nama kru."}</span>
+            <span>Animasi kerja hanya saat tugas aktif.</span>
           </div>
         </section>
 
-        <section className="panel min-w-0 p-3" aria-labelledby="characters-heading">
-          <div className="px-1 pb-3">
-            <h2 id="characters-heading" className="text-sm font-semibold text-ink-100">
-              Karakter
+        <section className="studio-crew min-w-0" aria-labelledby="characters-heading">
+          <div className="border-b border-ink-700 p-4">
+            <h2 id="characters-heading" className="text-base font-semibold text-ink-100">
+              {focusZone ? `Tim ${focusZone.label}` : "Karakter"}
             </h2>
-            <p className="mt-1 text-xs text-ink-400">
-              Daftar ini menyediakan akses keyboard ke inspector.
-            </p>
+            <p className="mt-1 text-xs text-ink-300">Pilih agent untuk membuka inspector.</p>
           </div>
-          <ul className="scroll-area space-y-2" aria-label="Karakter studio">
-            {agents.map((agent) => (
+          <ul className="studio-crew-list" aria-label="Karakter studio">
+            {visibleAgents.map((agent) => (
               <li key={agent.agent_id}>
                 <button
                   type="button"
-                  className="panel-raised min-h-11 w-full px-3 py-2 text-left transition-colors hover:border-teal-500 hover:bg-ink-700"
+                  className="studio-crew-button"
                   onClick={() => openInspector(agent.agent_id)}
                   aria-haspopup="dialog"
                   aria-controls="agent-inspector"
                   data-agent={agent.agent_id}
                   data-state={characterState(agent)}
                 >
-                  <span className="flex items-center justify-between gap-2">
-                    <span className="min-w-0 truncate text-sm font-medium text-ink-100">
-                      {agentName(agent.agent_id)}
-                    </span>
+                  <span className="flex items-start justify-between gap-2">
+                    <span className="min-w-0 text-sm font-medium text-ink-100">{agentName(agent.agent_id)}</span>
                     <Status status={characterState(agent)} />
                   </span>
-                  <span className="mt-1 block truncate text-xs text-ink-400">
-                    {agent.task || agentName(agent.agent_id)}
+                  <span className="mt-2 block text-xs text-ink-300">
+                    {agent.task || "Belum bertugas"}
+                  </span>
+                  <span className="mt-1 block text-xs text-ink-400">
+                    {agent.model ? `Model tercatat: ${agent.model}` : "Belum ada model tercatat"}
                   </span>
                 </button>
               </li>
@@ -230,12 +351,9 @@ export default function StudioPage() {
           </ul>
         </section>
       </div>
-
-      <AgentInspector
-        dialogRef={inspectorRef}
-        agent={selectedAgent}
-        onClose={closeInspector}
-      />
+      <AgentInspector dialogRef={inspectorRef} agent={selectedAgent} onClose={closeInspector} />
+      </>
+      )}
     </div>
   );
 }
@@ -293,6 +411,11 @@ function AgentInspector({
 
               <dt className="text-ink-400">Peran teknis / ID agent</dt>
               <dd className="min-w-0 break-words text-ink-200">{agent.agent_id}</dd>
+
+              <dt className="text-ink-400">Peran produksi</dt>
+              <dd className="min-w-0 text-ink-200">
+                {AGENT_ROLE[agent.agent_id] ?? "Agent pada alur produksi."}
+              </dd>
 
               <dt className="text-ink-400">Status</dt>
               <dd className="flex flex-wrap items-center gap-2">
@@ -364,6 +487,9 @@ function AgentInspector({
           </div>
 
           <footer className="border-t border-ink-700 p-4 sm:p-5">
+            <Link className="btn mb-2 min-h-11 w-full justify-center" href="/agents">
+              Buka pengaturan agent
+            </Link>
             {agent.job_id ? (
               <Link
                 className="btn btn-primary min-h-11 w-full justify-center"

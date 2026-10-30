@@ -15,6 +15,7 @@ from .artifacts import (
     RenderArtifact,
     ResearchArtifact,
     ReviewArtifact,
+    RevisionArtifact,
     ScriptArtifact,
     StoryboardArtifact,
 )
@@ -38,6 +39,7 @@ __all__ = [
     "RenderArtifact",
     "ResearchArtifact",
     "ReviewArtifact",
+    "RevisionArtifact",
     "SceneSpec",
     "ScriptArtifact",
     "StoryboardArtifact",

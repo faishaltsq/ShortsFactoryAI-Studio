@@ -3,6 +3,35 @@ import {EXPRESSIONS, GESTURES, POSES, type ExpressionId, type GestureId, type Po
 import type {CharacterManifest} from './types';
 import {validateCharacter} from './validate';
 
+/**
+ * Manifest-level validation. A declared capability without real art behind it is a lie the studio
+ * would display, so a declared variant or mouth shape must resolve to something renderable.
+ */
+export const validateManifest = (manifest: CharacterManifest): string[] => {
+  const issues: string[] = [];
+  if (manifest.clothingVariants.length === 0) {
+    issues.push(`${manifest.id} declares no clothing variants`);
+  }
+  for (const variant of manifest.clothingVariants) {
+    if (variant === 'default') continue;
+    const layers = manifest.variantLayers?.[variant];
+    if (!layers || layers.length === 0) {
+      issues.push(`${manifest.id} declares clothing variant ${variant} with no art`);
+    }
+  }
+  if (manifest.mouthShapes.length === 0) {
+    issues.push(`${manifest.id} declares no mouth shapes`);
+  }
+  // A rig cycle or an unresolved parent would animate silently wrong.
+  const known = new Set(manifest.rig.bones.map((bone) => bone.id));
+  for (const bone of manifest.rig.bones) {
+    if (bone.parent !== null && !known.has(bone.parent)) {
+      issues.push(`${manifest.id}: bone ${bone.id} has unresolved parent ${bone.parent}`);
+    }
+  }
+  return issues;
+};
+
 const ALL: readonly CharacterManifest[] = [MAYA];
 
 const byId = new Map<string, CharacterManifest>();
@@ -14,10 +43,17 @@ const byId = new Map<string, CharacterManifest>();
  */
 for (const character of ALL) {
   validateCharacter(character);
+  for (const problem of validateManifest(character)) {
+    throw new Error(`${character.id} manifest: ${problem}`);
+  }
   if (byId.has(character.id)) throw new Error(`duplicate character id ${character.id}`);
   byId.set(character.id, character);
 }
 
+/** Every registered character, in a stable order. The index exporter enumerates this. */
+export const CHARACTERS: readonly CharacterManifest[] = [...byId.values()].sort((a, b) =>
+  a.id.localeCompare(b.id),
+);
 export const CHARACTER_IDS = [...byId.keys()].sort();
 
 export const getCharacter = (id: string): CharacterManifest | undefined => byId.get(id);

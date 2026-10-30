@@ -143,3 +143,64 @@ def test_verdict_detail_projects_numbers_and_reasons_only():
         "free_vram_mib": None,
     }
     assert all(not isinstance(value, dt.datetime) for value in detail.values())
+
+def _pipeline_render_boundary(tmp_path, monkeypatch, policy):
+    from types import SimpleNamespace
+
+    from packages.core.contracts.state import JobState
+    from packages.core.media import render
+    from packages.core.observability.events import StudioEventStore
+    from packages.core.orchestration.pipeline import _render_stages
+    from packages.core.orchestration.runner import Stage, StageOutcome
+
+    store = JobStore(tmp_path / "pipeline.db", tmp_path / "jobs")
+    job = store.create(title="Admission boundary", payload={"provider_mode": "mock"})
+    for target in (
+        JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
+        JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
+        JobState.AUDIO_READY,
+    ):
+        store.transition(job.id, target)
+    state = SimpleNamespace(store=store, events=StudioEventStore(store.db_path), render_policy=policy)
+    calls = []
+
+    def render_body(ctx):
+        calls.append(ctx.job_id)
+        ctx.write_artifact("render.json", {"render_invoked": True})
+        return StageOutcome(ok=True)
+
+    stage = Stage(name="RenderAgent", state=JobState.RENDERING, produces=("render.json",), run=render_body)
+    monkeypatch.setattr(render, "build_render_stage", lambda *args, **kwargs: stage)
+    monkeypatch.setattr(resources, "probe_telemetry", lambda **kwargs: Telemetry(8192, 8192))
+    boundary = next(candidate for candidate in _render_stages(state) if candidate.name == "RenderAgent")
+    return state, job, boundary, calls
+
+
+def test_pipeline_refuses_render_before_calling_renderer_when_saved_ram_floor_is_unmet(tmp_path, monkeypatch):
+    from packages.core.contracts.state import JobState
+    from packages.core.orchestration.runner import run_stages
+
+    state, job, stage, calls = _pipeline_render_boundary(
+        tmp_path, monkeypatch, ResourcePolicy(min_free_ram_mib=16384)
+    )
+    report = run_stages(store=state.store, job_id=job.id, stages=[stage])
+    assert report["stopped"] == "waiting_resources"
+    assert calls == []
+    assert state.store.get(job.id).state is JobState.BLOCKED
+    assert "8192 MiB" in state.store.get(job.id).last_error
+    assert not state.store.has_artifact(job.id, "render.json")
+
+
+def test_pipeline_does_not_start_a_second_renderer_while_another_slot_is_live(tmp_path, monkeypatch):
+    from packages.core.orchestration.runner import run_stages
+
+    state, job, stage, calls = _pipeline_render_boundary(tmp_path, monkeypatch, ResourcePolicy())
+    holder = RenderAdmission(state.store.db_path)
+    assert holder.acquire()
+    try:
+        report = run_stages(store=state.store, job_id=job.id, stages=[stage])
+        assert report["stopped"] == "waiting_resources"
+        assert calls == []
+        assert not state.store.has_artifact(job.id, "render.json")
+    finally:
+        holder.release()

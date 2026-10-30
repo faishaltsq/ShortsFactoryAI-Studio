@@ -15,6 +15,7 @@ Two things it deliberately refuses to do:
 """
 from __future__ import annotations
 
+import ctypes
 import datetime as dt
 import os
 import shutil
@@ -23,9 +24,12 @@ import subprocess
 import threading
 import uuid
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from .runner import Stage
 
 #: Seconds a slot is held without a renewal before another worker may take it. A render that
 #: takes longer than this renews; a crashed render's row expires.
@@ -69,9 +73,9 @@ class AdmissionVerdict:
 def probe_telemetry(*, timeout_s: float = 3.0) -> Telemetry:
     """Read free RAM and free VRAM. ``None`` fields are unmeasured, never zero.
 
-    RAM comes from ``wmic OS`` (no psutil dependency on a project that already shells out to
-    ffmpeg). VRAM comes from ``nvidia-smi``; a machine with no NVIDIA GPU, a driver that refuses
-    the query, or a missing binary reports ``None`` — which is a different fact from 0 MiB.
+    RAM comes from Windows' native ``GlobalMemoryStatusEx`` API, without the removed WMIC utility
+    or a slow PowerShell subprocess. VRAM comes from ``nvidia-smi``; a missing driver, unsupported
+    OS, missing binary or failed query remains unmeasured.
     """
     return Telemetry(
         free_ram_mib=_probe_ram(timeout_s=timeout_s),
@@ -79,29 +83,29 @@ def probe_telemetry(*, timeout_s: float = 3.0) -> Telemetry:
     )
 
 
+class _MemoryStatusEx(ctypes.Structure):
+    _fields_ = [
+        ("dwLength", ctypes.c_uint32), ("dwMemoryLoad", ctypes.c_uint32),
+        ("ullTotalPhys", ctypes.c_uint64), ("ullAvailPhys", ctypes.c_uint64),
+        ("ullTotalPageFile", ctypes.c_uint64), ("ullAvailPageFile", ctypes.c_uint64),
+        ("ullTotalVirtual", ctypes.c_uint64), ("ullAvailVirtual", ctypes.c_uint64),
+        ("ullAvailExtendedVirtual", ctypes.c_uint64),
+    ]
+    dwLength: int
+    ullAvailPhys: int
+
+
 def _probe_ram(*, timeout_s: float) -> int | None:
-    command = ["wmic", "OS", "get", "FreePhysicalMemory", "/value"]
-    try:
-        raw = subprocess.run(  # noqa: S603 - fixed argv, no shell
-            command,
-            capture_output=True,
-            text=True,
-            timeout=timeout_s,
-            check=False,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        ).stdout
-    except (OSError, subprocess.TimeoutExpired):
+    if os.name != "nt":
         return None
-    for line in raw.splitlines():
-        key, _, value = line.partition("=")
-        if key.strip().lower() != "freephysicalmemory":
-            continue
-        try:
-            kib = int(value.strip())
-        except ValueError:
+    status = _MemoryStatusEx()
+    status.dwLength = ctypes.sizeof(status)
+    try:
+        if not ctypes.windll.kernel32.GlobalMemoryStatusEx(ctypes.byref(status)):
             return None
-        return kib // 1024  # wmic reports KiB
-    return None
+    except (AttributeError, OSError):
+        return None
+    return int(status.ullAvailPhys) // (1024 * 1024)
 
 
 def _probe_vram(*, timeout_s: float) -> int | None:
@@ -318,3 +322,56 @@ def verdict_detail(verdict: AdmissionVerdict) -> dict[str, Any]:
         "free_ram_mib": telemetry.free_ram_mib if telemetry else None,
         "free_vram_mib": telemetry.free_vram_mib if telemetry else None,
     }
+
+
+def admit_render_stage(state: Any, stage: Stage) -> Stage:
+    """Apply current operator policy and hold one renewable slot around the entire renderer."""
+    from .runner import StageContext, StageError, StageOutcome
+
+    def run(ctx: StageContext) -> StageOutcome:
+        ctx.assert_active()
+        admission = RenderAdmission(
+            ctx.store.db_path,
+            policy=getattr(state, "render_policy", ResourcePolicy()),
+            owner=f"{stage.name}:{ctx.job_id}",
+        )
+        verdict = admission.check()
+        if not verdict.ok or not admission.acquire():
+            reason = verdict.reason or "another renderer claimed the global slot"
+            state.events.emit(
+                job_id=ctx.job_id,
+                agent_id="FactoryOrchestrator",
+                event_type="blocked",
+                description=f"{stage.name} menunggu sumber daya: {reason}",
+                stage=stage.state.value,
+            )
+            return StageOutcome(ok=True, control="waiting_resources", detail=reason)
+
+        stopped = threading.Event()
+        lost = threading.Event()
+
+        def renew() -> None:
+            while not stopped.wait(max(1.0, admission.ttl_s / 3)):
+                try:
+                    if admission.renew():
+                        continue
+                except sqlite3.Error:
+                    pass
+                lost.set()
+                return
+
+        heartbeat = threading.Thread(target=renew, name=f"render-slot-{ctx.job_id}", daemon=True)
+        try:
+            heartbeat.start()
+            outcome = stage.run(ctx)
+            ctx.assert_active()
+            if lost.is_set() or not admission.renew():
+                raise StageError("render_slot_lost", "global render slot ownership was lost", retryable=False)
+            return outcome
+        finally:
+            stopped.set()
+            if heartbeat.ident is not None:
+                heartbeat.join()
+            admission.release()
+
+    return replace(stage, run=run)

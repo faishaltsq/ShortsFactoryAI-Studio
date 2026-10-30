@@ -1,0 +1,42 @@
+.page { width: 100%; max-width: 78rem; min-width: 0; margin: 0 auto; padding: clamp(1rem, 3vw, 2rem); padding-bottom: 3rem; container-type: inline-size; overflow-wrap: anywhere; }
+.header { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: flex-start; gap: 1rem; margin-bottom: 1rem; }
+.header > div { min-width: 0; }
+.header h1 { font-size: clamp(1.4rem, 2vw, 1.85rem); font-weight: 650; }
+.header p { margin-top: 0.4rem; color: var(--color-ink-300); font-size: 0.875rem; line-height: 1.65; }
+.links { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+.button { min-height: 2.75rem; justify-content: center; border-color: var(--color-ink-400); }
+.boundary { max-width: 66rem; margin-bottom: 1.5rem; font-size: 0.875rem; line-height: 1.65; color: var(--color-ink-300); }
+.filters { display: grid; align-items: end; gap: 0.75rem; padding: 1rem; background: var(--panel); border: 1px solid var(--edge); border-radius: var(--radius-md); }
+.fieldLabel { display: flex; min-width: 0; flex-direction: column; gap: 0.5rem; font-size: 0.875rem; }
+.input { min-height: 2.75rem; min-width: 0; border-color: var(--color-ink-400); font-size: 1rem; }
+.result { margin: 0.75rem 0 1.5rem; color: var(--color-ink-300); font-size: 0.8rem; }
+.section { min-width: 0; padding: clamp(1rem, 2.5vw, 1.5rem); margin-bottom: 1rem; background: var(--panel); border: 1px solid var(--edge); border-radius: var(--radius-lg); }
+.section h2 { font-size: 1.1rem; font-weight: 650; }
+.section h3 { font-size: 0.9rem; font-weight: 600; }
+.hint { color: var(--color-ink-300); font-size: 0.875rem; line-height: 1.65; margin-top: 0.5rem; }
+.values { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.75rem; padding: 0; list-style: none; }
+.values li { max-width: 100%; padding: 0.3rem 0.55rem; background: var(--panel-raised); color: var(--color-ink-200); border-radius: var(--radius-sm); font-size: 0.825rem; overflow-wrap: anywhere; }
+.renderers { display: grid; gap: 1.25rem; margin-top: 1.5rem; }
+.renderers dt { font-size: 1rem; font-weight: 600; overflow-wrap: anywhere; }
+.renderers dd { margin-top: 0.5rem; font-size: 0.875rem; color: var(--color-ink-300); line-height: 1.65; overflow-wrap: anywhere; }
+.identifier { display: block; margin-top: 0.25rem; font-size: 0.8rem; color: var(--color-ink-300); font-weight: 400; }
+.motion { display: grid; gap: 1.5rem; margin-top: 1.5rem; }
+.motion > div { min-width: 0; }
+.characterSelect { margin-top: 1rem; max-width: 28rem; }
+.section .characterName { font-size: 1.1rem; margin-top: 1.5rem; }
+.metadata { display: grid; gap: 0.4rem; margin-top: 1rem; font-size: 0.875rem; line-height: 1.65; }
+.metadata dt { color: var(--color-ink-300); }
+.metadata dd { min-width: 0; overflow-wrap: anywhere; margin-bottom: 0.65rem; }
+
+@container (min-width: 40rem) {
+  .filters { grid-template-columns: minmax(0, 1fr) minmax(10rem, 0.5fr); }
+  .filters .button { justify-self: start; }
+  .motion, .renderers { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .metadata { grid-template-columns: 8rem minmax(0, 1fr); gap: 0.65rem 1rem; }
+  .metadata dd { margin: 0; }
+}
+
+@container (min-width: 58rem) {
+  .filters { grid-template-columns: minmax(0, 1fr) minmax(12rem, 0.4fr) auto; }
+  .motion { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+}

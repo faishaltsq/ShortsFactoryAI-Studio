@@ -110,7 +110,7 @@ Invoke-Gate -Name 'e2e' -Command 'npm --prefix apps/dashboard run test:e2e' -Ski
     npm --prefix apps/dashboard run test:e2e
 }
 
-Invoke-Gate -Name 'mypy' -Command 'uv run mypy packages/core --strict'
+Invoke-Gate -Name 'mypy' -Command 'uv run mypy packages/core --strict' -Action { uv run mypy packages/core --strict }
 
 $failed = @($results | Where-Object { $_.Status -eq 'FAIL' })
 $skipped = @($results | Where-Object { $_.Status -eq 'SKIPPED' })

@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
 import { ErrorState, Loading } from "@/components/states";
 import { api } from "@/lib/api";
 
@@ -23,9 +24,11 @@ export default function CreatePage() {
   const [title, setTitle] = useState("");
   const [topic, setTopic] = useState("");
   const [providerMode, setProviderMode] = useState<"mock" | "live">("mock");
+  const [renderVideo, setRenderVideo] = useState(false);
   const [priority, setPriority] = useState(5);
   const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [createdId, setCreatedId] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
 
   const discover = useCallback(async () => {
@@ -49,15 +52,19 @@ export default function CreatePage() {
     event.preventDefault();
     setCreating(true);
     setMessage(null);
+    setCreatedId(null);
     try {
       const job = await api.createJob({
         title,
         topic,
         provider_mode: providerMode,
         priority,
+        render_video: renderVideo,
+        ...(renderVideo ? { voice: "system-default" } : {}),
       });
+      setCreatedId(job.id);
       setIsError(false);
-      setMessage(`Job dibuat: ${job.id}. Buka halaman Produksi untuk menjalankannya.`);
+      setMessage(`Job dibuat: ${job.id}.`);
       setTitle("");
       setTopic("");
     } catch (error) {
@@ -172,6 +179,20 @@ export default function CreatePage() {
             />
           </div>
         </div>
+        <label className="flex items-start gap-3 text-sm text-ink-200">
+          <input
+            type="checkbox"
+            checked={renderVideo}
+            onChange={(event) => setRenderVideo(event.target.checked)}
+          />
+          <span>
+            Render video dengan suara sistem lokal
+            <span className="block text-xs text-ink-400">
+              Memerlukan renderer dan suara Windows yang tersedia; proses dapat memakan beberapa menit.
+              Tanpa pilihan ini, produksi berhenti setelah storyboard.
+            </span>
+          </span>
+        </label>
         <button
           type="submit"
           className="btn btn-primary min-h-11 w-full justify-center"
@@ -189,6 +210,9 @@ export default function CreatePage() {
           role={isError ? "alert" : "status"}
         >
           {message}
+          {createdId ? (
+            <>{" "}<Link className="underline" href={`/jobs?job_id=${encodeURIComponent(createdId)}`}>Buka job di Produksi</Link></>
+          ) : null}
         </p>
       ) : null}
     </main>

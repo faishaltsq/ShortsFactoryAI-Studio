@@ -74,6 +74,21 @@ run** — expect real errors in the three components, fix them rather than delet
 > `data-state` against the persisted snapshot). Three consecutive full gate runs were green:
 > pytest 215, ruff 0, typecheck 0, Vitest 16, Playwright 1 passed.
 >
+> **Status 2026-10-29 — local completion slice.** All eleven dashboard routes are now linked and
+> rendered (`/storyboard`, `/assets`, `/skills`, `/settings` were the last four), the durable
+> revision controller and render admission are real, and `scripts/dashboard_e2e.py` owns an
+> isolated API + production dashboard so the gate runs without touching operator state.
+> Verified this session, all observed: `scripts/check.ps1` **13/13 gates PASS** (ruff, pytest,
+> dash-typecheck, dash-test, schemas 15, secrets 0, video-typecheck, video-adapter, video-beats,
+> still-smoke 7/7, template-stills, e2e 19 passed, mypy 52 files).
+> A real production run was driven through the live surface: a `render_video: true` job with a
+> deliberately impossible RAM floor blocked on `waiting_resources` with **zero** render artifacts
+> and **zero** new usage rows, then resumed after the saved policy changed and reached
+> `READY_FOR_APPROVAL` reusing the same six paid calls. The rendered MP4 played in Chromium at
+> 1080×1920 with decoded audio (13 s), and `scripts/verify_video.py` passed all 13 checks.
+> Still held: G6 thumbnail upload, G7 real YouTube OAuth/`videos.insert`, G8 a real vision
+> provider — all three need an operator decision and none is claimed.
+>
 > **Phase 2 (same day, later).** `packages/video` is ported: 49 files under `src/` (47 donor +
 > `product-adapter.ts` and `storyboard-props.ts`), 10 scripts, 2 fixtures. The donor's
 > `public/jobs/*.wav` were deliberately excluded; only `public/sample/narration-test.mp3` came

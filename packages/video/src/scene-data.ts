@@ -1,9 +1,11 @@
 import type {SceneSpec} from './types';
 import {
+  CLOTHING_VARIANTS,
   EXPRESSIONS,
   GESTURES,
   MOTION_PRESETS,
   POSES,
+  type ClothingVariant,
   type ExpressionId,
   type GestureId,
   type MotionPreset,
@@ -137,9 +139,21 @@ export interface IllustrationActor extends IllustrationCharacterCue {
   facing: 'left' | 'right';
   tone: 'primary' | 'secondary' | 'accent';
   silhouette: boolean;
+  /** Clothing variant. Part of character identity; absent normalises to 'default'. */
+  clothing_variant?: ClothingVariant;
 }
 
-export interface IllustrationProp {kind: PropKind; x: number; y: number; scale: number}
+export interface IllustrationProp {
+  kind: PropKind;
+  x: number;
+  y: number;
+  scale: number;
+  /**
+   * Optional attachment: the prop is held by this actor's named hand, resolved from the *solved*
+   * rig transform at the frame being drawn — never left stationary in stage coordinates.
+   */
+  attachment?: {actor: string; bone: 'handNear' | 'handFar'; offset: {x: number; y: number}};
+}
 export interface IllustrationShot {framing: Framing; camera: CameraMove; weight: number}
 
 export interface IllustrationData {

@@ -103,6 +103,20 @@ export const EXPRESSIONS: Record<ExpressionId, ExpressionTarget> = {
     cheek: 0,
     blush: 0.06,
   },
+  // Anger: brows driven down and in, lids narrowed, mouth pressed flat. The values are
+  // deliberately the inverse of `surprised` on brow lift and eye openness, so the two never
+  // read as the same face at a blend midpoint.
+  angry: {
+    browAngle: -20,
+    browLift: -6,
+    eyeOpen: 0.68,
+    gaze: {x: 0.5, y: -1.5},
+    mouthWidth: 0.92,
+    mouthOpen: 0.12,
+    mouthCurve: -0.18,
+    cheek: -0.05,
+    blush: 0,
+  },
 };
 
 /** Per-parameter clamps so blending two extremes can never invert an eyelid. */

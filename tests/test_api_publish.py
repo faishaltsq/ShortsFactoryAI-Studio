@@ -44,10 +44,12 @@ def client(app):
 def _stub_thumbnail_render(monkeypatch):
     """Every publish in this module runs the thumbnail stage first; a unit test stubs the
     renderer (the slow suite proves the real render), otherwise each publish needs a browser."""
+    from packages.core.orchestration import resources
     from packages.core.publish import thumbnail as thumb_mod
     from tests.test_publish_stage import _run_fake_thumbnail
 
     monkeypatch.setattr(thumb_mod, "render_storyboard", _run_fake_thumbnail)
+    monkeypatch.setattr(resources, "probe_telemetry", lambda **kwargs: resources.Telemetry(8192, 8192))
 
 
 def _approved_live_job(app) -> str:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,24 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 SECRET_SENTINEL = "sk-SENTINEL-4f19c2ae-DO-NOT-LEAK"
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Isolate module-level API construction before collection imports ``apps.api.main``."""
+    temporary = tempfile.TemporaryDirectory(prefix="shorts-pytest-collection-")
+    root = Path(temporary.name)
+    patch = pytest.MonkeyPatch()
+    for key, path in {
+        "SHORTS_DATA_DIR": root / "data",
+        "SHORTS_DB_PATH": root / "data" / "factory.db",
+        "SHORTS_JOBS_DIR": root / "data" / "jobs",
+        "SHORTS_SECRETS_DIR": root / "data" / "secrets",
+        "SHORTS_STUDIO_CONFIG": root / "config" / "studio.json",
+    }.items():
+        patch.setenv(key, str(path))
+    patch.setenv("SHORTS_SCHEDULER_ENABLED", "0")
+    config.add_cleanup(patch.undo)
+    config.add_cleanup(temporary.cleanup)
 
 
 @pytest.fixture(autouse=True)

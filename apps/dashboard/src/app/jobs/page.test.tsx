@@ -190,3 +190,25 @@ test("a failed refresh keeps the panel and shows an inline banner", async () => 
 
   pendingDetail = null;
 });
+
+test.each(["success", "failure"])("a late %s for another job cannot replace selected production controls", async (outcome) => {
+  const other = { ...job, id: "job-2", title: "Produksi terpilih", running: false };
+  apiMock.jobs.mockResolvedValue({ jobs: [jobView, other] });
+  let resolve!: (detail: JobDetail) => void;
+  let reject!: (error: Error) => void;
+  const delayed = new Promise<JobDetail>((yes, no) => { resolve = yes; reject = no; });
+  apiMock.job.mockImplementation((id: string) => id === job.id ? delayed : Promise.resolve(other));
+  render(<JobsPage />);
+  await waitFor(() => expect(apiMock.job).toHaveBeenCalledWith(job.id));
+
+  act(() => screen.getByRole("button", { name: /Produksi terpilih/ }).click());
+  await screen.findByRole("heading", { name: other.title });
+  await act(async () => {
+    if (outcome === "success") resolve(job);
+    else reject(new Error("Respons job lama gagal"));
+  });
+
+  expect(screen.getByRole("heading", { name: other.title })).toBeTruthy();
+  expect(screen.queryByRole("heading", { name: job.title })).toBeNull();
+  expect(screen.queryByText("Respons job lama gagal")).toBeNull();
+});

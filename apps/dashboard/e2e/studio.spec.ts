@@ -2,7 +2,7 @@ import { expect, test, type Page } from "@playwright/test";
 import type { StudioStatus } from "../src/lib/api";
 import { characterState } from "../src/lib/studioState";
 
-const API = "http://127.0.0.1:8019";
+const API = process.env.STUDIO_E2E_API!;
 const CHARACTERS = 'ul[aria-label="Karakter studio"] [data-agent]';
 
 const STATUSES: readonly StudioStatus[] = [

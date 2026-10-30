@@ -30,6 +30,7 @@ from packages.core.orchestration.pipeline import (
     mock_pipeline_supported,
     run_job,
 )
+from packages.core.orchestration.resources import admit_render_stage
 from packages.core.orchestration.runner import run_stages
 from packages.core.publish.stage import build_publish_stage
 from packages.core.publish.thumbnail import build_thumbnail_stage
@@ -245,7 +246,9 @@ class JobService:
             # The thumbnail belongs to this flow, not the pipeline chain: it is uploaded with the
             # video and must exist and validate before the insert. Same lease, same run, so a
             # crash between the two stages resumes both under the runner's reuse rules.
-            thumbnail = build_thumbnail_stage(self.state, video_dir=_video_dir())
+            thumbnail = admit_render_stage(
+                self.state, build_thumbnail_stage(self.state, video_dir=_video_dir())
+            )
             stage = build_publish_stage(self.state, transport)
             report = run_stages(
                 store=self.state.store,

@@ -40,12 +40,19 @@ class UploadBody:
     ``content_length`` is declared rather than inferred at send time on purpose: a server that is
     told 5 MB and receives 4.9 MB can reject the upload, while a chunked-encoding body with no
     declared length leaves a truncated transfer looking exactly like a complete one.
+
+    ``start`` exists for the resumable-upload protocol, where one request carries one range of the
+    file rather than the whole thing. It is the byte offset the stream begins at, and it defaults
+    to 0 so every existing caller is unaffected.
     """
 
     path: Path
     content_length: int
     content_type: str = "application/octet-stream"
     chunk_bytes: int = UPLOAD_CHUNK_BYTES
+    #: Byte offset the stream starts at. Only meaningful together with ``content_length``, which
+    #: describes the slice rather than the whole file.
+    start: int = 0
 
     @classmethod
     def from_path(
@@ -55,20 +62,26 @@ class UploadBody:
         content_type: str = "application/octet-stream",
         content_length: int | None = None,
         chunk_bytes: int = UPLOAD_CHUNK_BYTES,
+        start: int = 0,
     ) -> UploadBody:
         resolved = Path(path)
         if not resolved.is_file():
             raise FileNotFoundError(f"upload body file does not exist: {resolved}")
         size = resolved.stat().st_size
-        if content_length is not None and content_length != size:
+        if start < 0 or start > size:
+            raise ValueError(f"start {start} is outside the file ({size} bytes) for {resolved}")
+        remaining = size - start
+        if content_length is not None and content_length != remaining:
             raise ValueError(
-                f"content_length {content_length} does not match the file size {size} for {resolved}"
+                f"content_length {content_length} does not match {remaining} bytes remaining "
+                f"from offset {start} for {resolved}"
             )
         return cls(
             path=resolved,
-            content_length=size,
+            content_length=remaining,
             content_type=content_type,
             chunk_bytes=chunk_bytes,
+            start=start,
         )
 
     @property
@@ -76,12 +89,16 @@ class UploadBody:
         return self.content_length
 
     def chunks(self) -> Iterator[bytes]:
-        """Yield the file in bounded pieces. Never reads the whole file into memory."""
+        """Yield the slice in bounded pieces. Never reads the whole file into memory."""
+        remaining = self.content_length
         with open(self.path, "rb") as handle:
-            while True:
-                chunk = handle.read(self.chunk_bytes)
+            if self.start:
+                handle.seek(self.start)
+            while remaining > 0:
+                chunk = handle.read(min(self.chunk_bytes, remaining))
                 if not chunk:
                     return
+                remaining -= len(chunk)
                 yield chunk
 
 

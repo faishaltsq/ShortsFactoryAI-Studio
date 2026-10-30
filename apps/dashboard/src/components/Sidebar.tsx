@@ -2,48 +2,69 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useRef } from "react";
+import styles from "./Sidebar.module.css";
 
 const ROUTES = [
   { href: "/", label: "Studio", hint: "ruang produksi 3D" },
   { href: "/jobs", label: "Produksi", hint: "antrean & riwayat job" },
   { href: "/create", label: "Buat Video", hint: "topik & preferensi" },
-  { href: "/storyboard", label: "Storyboard", hint: "adegan & kamera" },
-  { href: "/assets", label: "Aset", hint: "karakter & latar" },
+  { href: "/storyboard", label: "Storyboard", hint: "alur adegan & kamera" },
+  { href: "/assets", label: "Aset", hint: "karakter & berkas produksi" },
   { href: "/providers", label: "Provider", hint: "model & kredensial" },
   { href: "/usage", label: "Pemakaian", hint: "token & biaya" },
   { href: "/agents", label: "Agent", hint: "penugasan model" },
-  { href: "/skills", label: "Skills", hint: "motion skill" },
-  { href: "/calendar", label: "Kalender", hint: "jadwal terbit" },
-  { href: "/settings", label: "Setelan", hint: "batas & penyimpanan" },
+  { href: "/skills", label: "Skills", hint: "template & gerak bawaan" },
+  { href: "/calendar", label: "Kalender", hint: "jadwal produksi" },
+  { href: "/settings", label: "Setelan", hint: "batas biaya & render" },
 ];
 
-export function Sidebar() {
+function NavigationLinks({ onNavigate }: { onNavigate?: () => void }) {
   const pathname = usePathname();
+  return ROUTES.map((route) => (
+    <Link
+      key={route.href}
+      href={route.href}
+      onClick={onNavigate}
+      aria-current={pathname === route.href ? "page" : undefined}
+      className={styles.link}
+    >
+      <span className={styles.label}>{route.label}</span>
+      <span className={styles.hint}>{route.hint}</span>
+    </Link>
+  ));
+}
+
+export function Sidebar() {
   return (
-    <nav aria-label="Navigasi utama" className="flex h-full flex-col gap-1 p-3">
-      <div className="mb-3 px-2">
-        <div className="text-sm font-semibold tracking-tight">ShortsFactoryAI</div>
-        <div className="text-[11px] uppercase tracking-widest text-ink-400">Studio</div>
+    <nav aria-label="Navigasi utama" className={styles.sidebar}>
+      <div className={styles.brand}>
+        <div>ShortsFactoryAI</div>
+        <span>Studio</span>
       </div>
-      {ROUTES.map((route) => {
-        const active = pathname === route.href;
-        return (
-          <Link
-            key={route.href}
-            href={route.href}
-            aria-current={active ? "page" : undefined}
-            className={[
-              "rounded-md px-2.5 py-2 text-sm transition-colors",
-              active
-                ? "bg-teal-600/25 text-ink-100 border border-teal-500/40"
-                : "text-ink-300 hover:bg-ink-800 hover:text-ink-100 border border-transparent",
-            ].join(" ")}
-          >
-            <span className="block font-medium">{route.label}</span>
-            <span className="block text-[11px] text-ink-400">{route.hint}</span>
-          </Link>
-        );
-      })}
+      <NavigationLinks />
     </nav>
+  );
+}
+
+export function MobileNavigation() {
+  const menu = useRef<HTMLDetailsElement>(null);
+  const pathname = usePathname();
+  const current = ROUTES.find((route) => route.href === pathname);
+  return (
+    <details ref={menu} className={styles.mobile} key={pathname}>
+      <summary>
+        <span>Menu studio</span>
+        <span className={styles.current}>{current?.label ?? "ShortsFactoryAI"}</span>
+      </summary>
+      <nav aria-label="Navigasi utama seluler" className={styles.mobileLinks}>
+        <NavigationLinks onNavigate={() => {
+          if (menu.current) {
+            menu.current.open = false;
+            menu.current.querySelector("summary")?.focus();
+          }
+        }} />
+      </nav>
+    </details>
   );
 }

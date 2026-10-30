@@ -175,7 +175,7 @@ def test_check_fails_when_a_schema_on_disk_is_mutated(tmp_path):
     """The gate's whole purpose: a hand-edited schema must not pass."""
     module = _load(EXPORT, "export_schemas_mod")
     target = tmp_path / "schemas"
-    assert module.write_schemas(target) == 14, "every contract must be exported"
+    assert module.write_schemas(target) == len(module._contracts()), "every contract must be exported"
     mutated = target / "qa.json"
     payload = json.loads(mutated.read_text(encoding="utf-8"))
     payload["properties"]["extra"] = {"type": "string"}
@@ -186,7 +186,7 @@ def test_check_fails_when_a_schema_on_disk_is_mutated(tmp_path):
 def test_check_fails_when_a_schema_is_missing(tmp_path):
     module = _load(EXPORT, "export_schemas_mod2")
     target = tmp_path / "schemas"
-    assert module.write_schemas(target) == 14
+    assert module.write_schemas(target) == len(module._contracts())
     (target / "render.json").unlink()
     assert module.check_schemas(target) == 1
 
@@ -194,8 +194,17 @@ def test_check_fails_when_a_schema_is_missing(tmp_path):
 def test_write_then_check_is_clean(tmp_path):
     module = _load(EXPORT, "export_schemas_mod3")
     target = tmp_path / "schemas"
-    assert module.write_schemas(target) == 14
+    assert module.write_schemas(target) == len(module._contracts())
     assert module.check_schemas(target) == 0
+
+
+def test_the_committed_schema_set_matches_the_contracts():
+    """A hardcoded count goes stale the moment a contract is added, which is exactly the drift
+    this gate exists to catch: the committed set must equal what the models produce now."""
+    module = _load(EXPORT, "export_schemas_mod4")
+    expected = {f"{kind}.json" for kind in module._contracts()}
+    present = {path.name for path in module.SCHEMA_DIR.glob("*.json")}
+    assert present == expected
 
 # -- mypy --------------------------------------------------------------------------------------
 # The type gate is checked through the real tool, not a re-implementation: a planted type error

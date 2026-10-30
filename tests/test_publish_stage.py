@@ -668,8 +668,10 @@ def test_a_process_restart_after_uncertain_uploads_exactly_once(tmp_path, monkey
     # The publish flow now renders the thumbnail first; a unit test stubs the renderer (the slow
     # suite proves the real one), otherwise this test would need a browser for a Remotion render
     # that has nothing to do with what it proves.
+    from packages.core.orchestration import resources
     from packages.core.publish import thumbnail as thumb_mod
     monkeypatch.setattr(thumb_mod, "render_storyboard", _run_fake_thumbnail)
+    monkeypatch.setattr(resources, "probe_telemetry", lambda **kwargs: resources.Telemetry(8192, 8192))
     # A genuinely publishable job: the same gate fixture the approval tests use, driven through
     # the real approve route so every artifact the gate recomputes is present and coherent.
     from fastapi.testclient import TestClient

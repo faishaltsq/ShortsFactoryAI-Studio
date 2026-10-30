@@ -48,7 +48,26 @@ function SummaryTable({ id, title, countLabel, rows, priced, columns }: TablePro
         <span className="text-xs text-ink-400">{countLabel}</span>
       </div>
       {rows.length === 0 ? (
-        <p className="mt-3 text-sm text-ink-400">Belum ada pemakaian tercatat.</p>
+        <>
+          <p className="mt-3 text-sm text-ink-400">Belum ada pemakaian tercatat.</p>
+          <table className="mt-3 w-full text-left text-sm">
+            <thead className="text-xs text-ink-400">
+              <tr className="border-b border-ink-700">
+                {columns.map((column) => (
+                  <th
+                    key={column.key}
+                    scope="col"
+                    className={`p-2 font-medium ${column.key === "cost" || column.key === "tokens" || column.key === "calls" ? "text-right" : ""}`}
+                  >
+                    {column.label}
+                  </th>
+                ))}
+                <th scope="col" className="p-2 text-right font-medium">Estimasi biaya</th>
+              </tr>
+            </thead>
+            <tbody />
+          </table>
+        </>
       ) : (
         <div className="mt-3 overflow-x-auto">
           <table className="min-w-[40rem] w-full text-left text-sm">

@@ -1,18 +1,9 @@
 import { Vector3 } from "three";
 
 /**
- * The isometric rig, in numbers, so the scene and its test agree.
- *
- * True isometric means the three axes are foreshortened equally: elevation `atan(1/√2)` above the
- * floor plane and azimuth 45°. That is the only pair that makes the room's square grid project to
- * 120° rhombi; an "isometric-looking" 35°/30° pair is a different (dimetric) projection.
- *
- * The camera is orthographic, so distance changes nothing about the framing. Instead of a fov we
- * fit a frustum: the room is 16 × 12, and its axis-aligned bounding box projects to a rectangle
- * whose extent is bounded by the half-diagonal `sqrt(16² + 12²) / 2 = 10` on both screen axes.
- * A half-height of 10 / cos(35.264°) ≈ 12.25 covers the diagonal in the vertical screen axis, and
- * `zoom` < 1 adds margin. The frustum is therefore a fixed half-height of 12.5 with `1 / zoom`
- * clamped to the dolly envelope below: no resizing event can clip the floor.
+ * World-unit orthographic framing. R3F's default orthographic frustum uses canvas pixels,
+ * so a world-scale zoom on that frustum makes the entire room smaller than two pixels.
+ * The rig applies `roomFrustum` explicitly on every resize instead.
  */
 
 export const ROOM = { width: 16, depth: 12 } as const;
@@ -20,23 +11,43 @@ export const ROOM = { width: 16, depth: 12 } as const;
 export const ISO_ELEVATION = Math.atan(1 / Math.sqrt(2));
 export const ISO_AZIMUTH = Math.PI / 4;
 
-/** Half-extent of the room's projection onto either screen axis before the zoom margin. */
-export const FRUSTUM_HALF = Math.hypot(ROOM.width, ROOM.depth) / 2 / Math.cos(ISO_ELEVATION);
+/** OrbitControls measures polar angle down from Y, not up from the floor. */
+export const ISO_POLAR = Math.PI / 2 - ISO_ELEVATION;
+export const ROOM_TARGET_Y = 0.55;
+export const ROOM_HEIGHT = 2.4;
+
+/** Vertical extent about the room target, including the upper edge of the low walls. */
+export const FRUSTUM_HALF =
+  ((ROOM.width + ROOM.depth) * Math.sin(ISO_ELEVATION)) / (2 * Math.SQRT2) +
+  Math.max(ROOM_TARGET_Y, ROOM_HEIGHT - ROOM_TARGET_Y) * Math.cos(ISO_ELEVATION);
 
 /** Orbit envelope from `docs/STUDIO_3D.md` §5: ±35° azimuth, ±20° polar. */
-export const POLAR_MIN = ISO_ELEVATION - (20 * Math.PI) / 180;
-export const POLAR_MAX = ISO_ELEVATION + (20 * Math.PI) / 180;
+export const POLAR_MIN = ISO_POLAR - (20 * Math.PI) / 180;
+export const POLAR_MAX = ISO_POLAR + (20 * Math.PI) / 180;
 export const AZIMUTH_MIN = ISO_AZIMUTH - (35 * Math.PI) / 180;
 export const AZIMUTH_MAX = ISO_AZIMUTH + (35 * Math.PI) / 180;
 
 /** Dolly envelope: 0.7×–1.6×, expressed as `zoom` rather than distance. */
 export const DOLLY_MIN = 0.7;
 export const DOLLY_MAX = 1.6;
-export const ZOOM_BASE = 1 / (FRUSTUM_HALF * 1.02);
+export const ZOOM_BASE = 1;
 export const ZOOM_MIN = ZOOM_BASE * DOLLY_MIN;
 export const ZOOM_MAX = ZOOM_BASE * DOLLY_MAX;
 
 export const FOCUS_MS = 400;
+
+/** Fit both axes, including a little breathing room, at any canvas aspect ratio. */
+export function roomFrustum(width: number, height: number) {
+  const aspect = Math.max(1, width) / Math.max(1, height);
+  const halfWidth = (ROOM.width + ROOM.depth) / (2 * Math.SQRT2);
+  const halfHeight = Math.max(FRUSTUM_HALF, halfWidth / aspect) * 1.12;
+  return {
+    left: -halfHeight * aspect,
+    right: halfHeight * aspect,
+    top: halfHeight,
+    bottom: -halfHeight,
+  };
+}
 
 /** Where the camera sits relative to its target. Unit direction × any distance is equivalent. */
 export function isoDirection(): [number, number, number] {

@@ -1,35 +1,19 @@
 import { defineConfig } from "@playwright/test";
 
+if (process.env.STUDIO_E2E_OWNED !== "1" || !process.env.STUDIO_URL ||
+    !process.env.STUDIO_E2E_API || !process.env.STUDIO_E2E_DATA) {
+  throw new Error("Run npm run test:e2e so the isolated API and production dashboard are started first.");
+}
+
 export default defineConfig({
   testDir: "./e2e",
+  forbidOnly: !!process.env.CI,
   timeout: 60_000,
   fullyParallel: false,
   workers: 1,
   reporter: [["list"]],
   use: {
-    baseURL: process.env.STUDIO_URL ?? "http://127.0.0.1:3018",
+    baseURL: process.env.STUDIO_URL,
     trace: "retain-on-failure",
   },
-  webServer: [
-    {
-      // The wrapper (scripts/dashboard_e2e.py) is the safe path: it owns a TemporaryDirectory
-      // and never deletes a fixed repository path. Ports match its API_URL/UI_URL, so servers
-      // it started satisfy this probe and no second server spawns.
-      command: "uv run python scripts/dashboard_e2e.py --hold",
-      url: "http://127.0.0.1:8019/api/health",
-      cwd: "../..",
-      env: {
-        SHORTS_MOCK_DELAY_MS: "1500",
-      },
-      reuseExistingServer: false,
-      timeout: 30_000,
-    },
-    {
-      command: "npm run dev",
-      url: "http://127.0.0.1:3018",
-      env: { STUDIO_API_ORIGIN: "http://127.0.0.1:8019" },
-      reuseExistingServer: false,
-      timeout: 60_000,
-    },
-  ],
 });

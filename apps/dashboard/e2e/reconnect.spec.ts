@@ -11,7 +11,7 @@ import { characterState } from "../src/lib/studioState";
  * `cursor += 1` breaks, and it breaks it invisibly — the UI looks right while the log doubles.
  */
 
-const API = "http://127.0.0.1:8019";
+const API = process.env.STUDIO_E2E_API!;
 const CHARACTERS = 'ul[aria-label="Karakter studio"] [data-agent]';
 
 const STATUSES: readonly StudioStatus[] = ["working", "waiting", "blocked", "failed", "completed"];
@@ -178,12 +178,16 @@ test("a reconnect during a run restores the same state and replays nothing", asy
   expect(after).toBeGreaterThanOrEqual(before);
 
   // Every stream connection must name a real server id. `after=0` replays the whole log, and a
-  // message counter drifts off the ids it is supposed to name — either would show up here.
+  // message counter drifts off the ids it is supposed to name — either would show up here. A
+  // connection opened before the first event lands legitimately resumes at 0, so the rule is
+  // "never negative, and never ahead of the log", not "never zero".
   expect(opened.length, `the stream never opened: ${opened.join(", ")}`).toBeGreaterThan(0);
+  const latest = await eventCount(request);
   for (const url of opened) {
     const after = Number(new URL(url).searchParams.get("after"));
     expect(Number.isInteger(after), `${url} has no numeric after`).toBe(true);
-    expect(after, `${url} would replay from the start`).toBeGreaterThan(0);
+    expect(after, `${url} would replay from before the log`).toBeGreaterThanOrEqual(0);
+    expect(after, `${url} resumes ahead of the log it must read`).toBeLessThanOrEqual(latest);
   }
 
   // Stop the job so the fixture leaves nothing running behind it.

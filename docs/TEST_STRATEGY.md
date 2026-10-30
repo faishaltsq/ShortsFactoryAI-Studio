@@ -24,7 +24,7 @@ missing, delete that provision in the test and re-run.
 | Render | node script | every template at 1080×1920, one still each | < 4 min |
 | Media | pytest + ffprobe/ffmpeg | a produced MP4 satisfies every technical requirement | < 5 min |
 | Visual | vision inspection | rendered stills actually contain what they should | manual, per phase gate |
-| Types (py) | **none — gap** | mypy is undeclared and uninstalled, so the Python side has never been type-checked. Not a passing gate: an unrun one. See IMPLEMENTATION_ROADMAP's cross-cutting table for the eight modules in scope and what would make it runnable. | — |
+| Types (py) | mypy 1.18.2 `--strict` | the whole `packages/core` tree — the gate runs, 52 files clean |
 
 ## 3. What must be tested, by invariant
 
@@ -120,6 +120,18 @@ missing, delete that provision in the test and re-run.
 - Empty, loading, error, and success states render for each page.
 - The 2D fallback keeps every route reachable.
 - No horizontal overflow at 390 px width; the job list scrolls rather than growing the page.
+- A non-zero canvas and a correct DOM mirror do not prove a visible room. Camera regressions
+  project real room corners and character endpoints through `OrthographicCamera` at desktop,
+  tablet, and phone sizes, asserting screen coverage and readable character scale. Reapplying
+  the former pixel-frustum/inverse-room-zoom setup fails all four viewport cases.
+- Studio smoke verification also switches 3D/2D quality, selects/resets production zones, opens
+  crew inspectors with Escape dismissal, and loses the actual WebGL context before retrying 3D.
+  Narrow overviews reveal agent labels only after zone selection so names cannot cover the crew.
+- Per-job monitoring must mask the previous job before a new scope's effects run. Delayed
+  snapshots, errors, detail responses, and reconnect callbacks cannot replace the selected job,
+  while an unfiltered projection still controls render pause across jobs.
+- Deep-link job ids are encoded independently in snapshot queries and detail paths. A fragment
+  or query delimiter must not alias a real job or leave an unknown selection loading forever.
 
 ## 4. Fixtures and test doubles
 
@@ -262,17 +274,32 @@ failure, quarantined with a written cause.
 
 ### E2E harness contract
 
-`scripts/dashboard_e2e.py` owns both servers and all test state: it creates one
-`tempfile.TemporaryDirectory`, points `SHORTS_DATA_DIR`, `SHORTS_DB_PATH`, `SHORTS_JOBS_DIR`,
-`SHORTS_SECRETS_DIR` and `SHORTS_STUDIO_CONFIG` into it, starts the API on `127.0.0.1:8019` and
-the dashboard on `3018` with `STUDIO_API_ORIGIN=http://127.0.0.1:8019`, and removes only that
-directory after both children stop. `apps/dashboard/playwright.config.ts` spawns the wrapper
-(`--hold`) as its API webServer and probes `:3018`, which the wrapper's UI child already owns, so
-no second server ever spawns and **no fixed repository path is ever deleted by a test hook**
-(the previous `rmSync('../../data/e2e')` was both wrong-pathed and unsafe and is gone).
+`scripts/dashboard_e2e.py` owns both servers, the build, and all test state. It reserves
+OS-selected loopback ports (or `STUDIO_E2E_API_PORT` / `STUDIO_E2E_UI_PORT` when pinned), builds a
+temporary **production** dashboard from a copy of `src`/`public` plus config files with the real
+`node_modules` junctioned in, and starts the API and `next start` with every storage variable
+pointed into one `tempfile.TemporaryDirectory`. Operator `data/`, `config/studio.json`, `.next`,
+and `.env.local` are never read or written; the harness refuses an occupied port rather than
+adopting whatever answers on it. The dashboard build no longer bakes in a backend address —
+`src/app/api/[...path]/route.ts` resolves `STUDIO_API_ORIGIN` and the server-held token at request
+time, so one build serves any port and browser credentials never reach the API. `tests/test_dashboard_e2e.py`
+proves the port refusal, the environment isolation, the build/dashboard/test failure cleanup order,
+and the runtime proxy.
+
+The 2026-10-29 run passes 19 tests with one skip (`video-proof` stays gated behind
+`STUDIO_VIDEO_PROOF=1`, which provisions its own fixture). The three failures recorded earlier
+were fixed: `/jobs` now renders its heading in the empty state, the usage tables render their
+headers when empty, and the reconnect assertion accepts `after=0` for a stream opened before the
+first event while still refusing a cursor ahead of the log.
 `SHORTS_MOCK_DELAY_MS` still slows the mock transport so a test can observe a running job; it
 does not change provider resolution and never makes mock reachable for a live job. The studio
 assertion compares each rendered `data-state` against the persisted snapshot, not the DOM alone.
+
+`local-workspaces.spec.ts` covers the four routes that completed this build: it saves a budget
+through `/settings` and reads it back from the API, filters `/skills` by the real catalog, walks a
+zone link into `/storyboard` with the `job_id` preserved, switches jobs and asserts the previous
+job's scenes disappear, follows browser history back, and checks `/settings` and `/skills` stay
+inside a 768px viewport at 200% text size.
 
 The spec also proves the 2D path is genuinely mounted rather than merely present: it waits for a
 zone heading (`Ruang Direktur`) that only `StudioFallback` emits, since `StudioScene` is a canvas

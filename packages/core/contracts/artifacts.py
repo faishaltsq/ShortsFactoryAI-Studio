@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .base import Artifact
 from .scene import SceneSpec, SubtitleCue
@@ -57,6 +57,14 @@ class ScriptArtifact(Artifact):
             seen.add(sid)
         return self
 
+    def authored_content_hash(self) -> str:
+        """Ignore run metadata when checking whether a revision changed authored content."""
+        from .base import content_hash
+
+        return content_hash(self.model_dump(
+            mode="json", exclude={"schema_version", "created_at", "provenance"},
+        ))
+
 
 class ReviewArtifact(Artifact):
     kind = "review"
@@ -70,6 +78,50 @@ class ReviewArtifact(Artifact):
     def _revise_needs_findings(self) -> ReviewArtifact:
         if self.verdict == "revise" and not self.findings:
             raise ValueError("a revise verdict must state at least one finding")
+        return self
+
+
+class RevisionAttempt(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    attempt: int = Field(ge=1)
+    before_script: ScriptArtifact
+    review: ReviewArtifact
+    candidate_script: ScriptArtifact | None = None
+    phase: Literal["prepared", "generated", "applied", "unchanged"] = "prepared"
+    invalidated_artifacts: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _decision_has_evidence(self) -> RevisionAttempt:
+        if self.review.verdict != "revise":
+            raise ValueError("a revision requires recorded revise findings")
+        if self.phase == "prepared":
+            if self.candidate_script is not None or self.invalidated_artifacts:
+                raise ValueError("a prepared revision cannot claim a result or invalidation")
+            return self
+        if self.candidate_script is None:
+            raise ValueError("a revision decision requires its candidate script")
+        changed = self.candidate_script.authored_content_hash() != self.before_script.authored_content_hash()
+        if self.phase == "unchanged":
+            if changed or self.invalidated_artifacts:
+                raise ValueError("unchanged revisions must preserve authored content and downstream outputs")
+        elif not changed:
+            raise ValueError("generated or applied revisions must change authored content")
+        return self
+
+
+class RevisionArtifact(Artifact):
+    kind = "revisions"
+
+    attempts: list[RevisionAttempt] = Field(default_factory=list, max_length=2)
+
+    @model_validator(mode="after")
+    def _attempts_are_sequential(self) -> RevisionArtifact:
+        for index, attempt in enumerate(self.attempts, start=1):
+            if attempt.attempt != index:
+                raise ValueError("revision attempts must be sequential and cannot reset")
+            if index < len(self.attempts) and attempt.phase != "applied":
+                raise ValueError("an unfinished revision cannot be followed by another attempt")
         return self
 
 

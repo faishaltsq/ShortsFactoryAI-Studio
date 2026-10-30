@@ -102,6 +102,23 @@ export type AgentBinding = {
   fallback: string[];
 };
 
+export type AgentModelBinding = {
+  primary: string | null;
+  fallback: string[];
+  model: string | null;
+  temperature: number | null;
+  max_tokens: number | null;
+  system_prompt_override: string | null;
+};
+
+export type AgentConfigView = {
+  id: string;
+  kind: "llm" | "deterministic";
+  requires: string[];
+  binding: AgentModelBinding;
+  capability_gaps: string[];
+};
+
 export class ApiError extends Error {
   constructor(
     message: string,
@@ -149,6 +166,50 @@ export type ReconcileReport = {
   receipt_steps: string[];
 };
 
+export type StudioBudget = {
+  max_daily_tokens: number | null;
+  max_daily_cost_usd: number | null;
+  unlimited: boolean;
+};
+
+export type StudioRenderSettings = {
+  min_free_ram_mib: number;
+  min_free_vram_mib: number;
+  allow_unmeasured_gpu: boolean;
+};
+
+export type StudioSettings = {
+  budget: StudioBudget;
+  render: StudioRenderSettings;
+  storage: { data_dir: string; jobs_dir: string; secrets_dir: string };
+};
+
+export type StudioCatalog = {
+  templates: string[];
+  characters: Array<{
+    id: string;
+    version: string;
+    displayName: string;
+    artStyle: string;
+    poses: string[];
+    expressions: string[];
+    gestures: string[];
+    clothingVariants: string[];
+    mouthShapes: string[];
+    license: string;
+    provenance: string;
+  }>;
+  motion: {
+    poses: string[];
+    expressions: string[];
+    presets: string[];
+    beat_kinds: string[];
+    camera_moves: string[];
+    transitions: string[];
+  };
+  renderers: Array<{ id: string; label: string; description: string }>;
+};
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
     ...init,
@@ -175,8 +236,16 @@ export const api = {
   health: () =>
     request<{ ok: boolean; version: string; jobs: number; vision_available: boolean }>("/api/health"),
 
+  catalog: () => request<StudioCatalog>("/api/catalog"),
+  settings: () => request<StudioSettings>("/api/settings"),
+  saveSettings: (body: { budget?: StudioBudget; render?: StudioRenderSettings }) =>
+    request<Pick<StudioSettings, "budget" | "render">>("/api/settings", {
+      method: "PUT",
+      body: JSON.stringify(body),
+    }),
+
   jobs: () => request<{ jobs: JobView[] }>("/api/jobs"),
-  job: (id: string) => request<JobDetail>(`/api/jobs/${id}`),
+  job: (id: string) => request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}`),
   createJob: (body: Record<string, unknown>) =>
     request<JobView>("/api/jobs", { method: "POST", body: JSON.stringify(body) }),
   runJob: (id: string) => request<{ started: boolean }>(`/api/jobs/${id}/run`, { method: "POST" }),
@@ -198,7 +267,7 @@ export const api = {
     }),
 
   snapshot: (jobId?: string) =>
-    request<StudioSnapshot>(`/api/studio/snapshot${jobId ? `?job_id=${jobId}` : ""}`),
+    request<StudioSnapshot>(`/api/studio/snapshot${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ""}`),
   history: (jobId: string, limit = 100) =>
     request<{ events: StudioEvent[] }>(`/api/studio/history?job_id=${jobId}&limit=${limit}`),
 
@@ -222,6 +291,12 @@ export const api = {
       { method: "POST", body: JSON.stringify({ id }) },
     ),
   providerModels: (id: string) => request<{ models: string[] }>(`/api/providers/${id}/models`),
+  agents: () => request<{ agents: AgentConfigView[] }>("/api/agents"),
+  saveAgentBinding: (id: string, binding: AgentModelBinding) =>
+    request<{ agent: string; binding: AgentModelBinding }>(
+      `/api/agents/${encodeURIComponent(id)}/binding`,
+      { method: "PUT", body: JSON.stringify(binding) },
+    ),
 
   usageToday: () => request<{ tokens: number; cost_usd: number; calls: number }>("/api/usage/today"),
   usageSummary: () => request<UsageSummary>("/api/usage/summary"),
@@ -230,7 +305,7 @@ export const api = {
 
   metadata: (id: string) => request<Record<string, unknown>>(`/api/jobs/${id}/metadata`),
   artifact: (id: string, name: string) =>
-    request<Record<string, unknown>>(`/api/jobs/${id}/artifact/${encodeURIComponent(name)}`),
+    request<Record<string, unknown>>(`/api/jobs/${encodeURIComponent(id)}/artifact/${encodeURIComponent(name)}`),
   saveMetadata: (id: string, patch: { title?: string; description?: string; tags?: string[] }) =>
     request<Record<string, unknown>>(`/api/jobs/${id}/metadata`, {
       method: "POST",
@@ -263,7 +338,7 @@ export const api = {
 };
 
 export function videoUrl(jobId: string): string {
-  return `/api/jobs/${jobId}/video`;
+  return `/api/jobs/${encodeURIComponent(jobId)}/video`;
 }
 
 export function formatRelative(iso: string | null): string {

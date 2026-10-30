@@ -1,18 +1,21 @@
-import { Vector3 } from "three";
+import { OrthographicCamera, Vector3 } from "three";
 import {
   AZIMUTH_MAX,
   AZIMUTH_MIN,
-  FOCUS_MS,
   ISO_AZIMUTH,
   ISO_ELEVATION,
+  ISO_POLAR,
   POLAR_MAX,
   POLAR_MIN,
   ROOM,
+  ROOM_HEIGHT,
+  ROOM_TARGET_Y,
   ZOOM_BASE,
   ZOOM_MAX,
   ZOOM_MIN,
   easeInOutCubic,
   isoDirection,
+  roomFrustum,
 } from "./camera";
 
 /** The rig is one decision; a wrong elevation is the difference between iso and dimetric. */
@@ -23,49 +26,68 @@ test("the rig is true isometric: equal foreshortening, 45 degree azimuth", () =>
 });
 
 test("the orbit and dolly envelopes are symmetric around the isometric pose", () => {
-  expect(POLAR_MAX - ISO_ELEVATION).toBeCloseTo((20 * Math.PI) / 180, 12);
-  expect(ISO_ELEVATION - POLAR_MIN).toBeCloseTo((20 * Math.PI) / 180, 12);
+  const polarFromDirection = Math.acos(new Vector3(...isoDirection()).normalize().y);
+  expect(polarFromDirection).toBeCloseTo(ISO_POLAR, 12);
+  expect(POLAR_MAX - polarFromDirection).toBeCloseTo((20 * Math.PI) / 180, 12);
+  expect(polarFromDirection - POLAR_MIN).toBeCloseTo((20 * Math.PI) / 180, 12);
   expect(AZIMUTH_MAX - ISO_AZIMUTH).toBeCloseTo((35 * Math.PI) / 180, 12);
   expect(ISO_AZIMUTH - AZIMUTH_MIN).toBeCloseTo((35 * Math.PI) / 180, 12);
   expect(ZOOM_MAX / ZOOM_BASE).toBeCloseTo(1.6, 12);
   expect(ZOOM_MIN / ZOOM_BASE).toBeCloseTo(0.7, 12);
 });
 
-test("the frustum fits the whole 12-unit-deep room at the closest dolly", () => {
-  // Every corner of the 16 x 12 floor, seen from the isometric direction, must project inside the
-  // vertical half-extent available at ZOOM_MAX. This is the assertion the old fov 32 camera failed.
-  const [dx, dy, dz] = isoDirection();
-  const eye = new Vector3(dx, dy, dz);
-  const forward = eye.clone().negate().normalize();
-  const right = new Vector3().crossVectors(forward, new Vector3(0, 1, 0)).normalize();
-  const up = new Vector3().crossVectors(right, forward).normalize();
+test.each([
+  { width: 1120, height: 620, minCrewPixels: 38 },
+  { width: 820, height: 520, minCrewPixels: 34 },
+  { width: 390, height: 460, minCrewPixels: 21 },
+  { width: 320, height: 360, minCrewPixels: 18 },
+])("the real orthographic projection fills a $width × $height canvas", ({ width, height, minCrewPixels }) => {
+  // Start with R3F's actual pixel-sized frustum, then apply the same fit used by IsoRig.
+  // The former zoom (~0.08) on this default frustum made the 20-unit room < 2 pixels wide.
+  const camera = new OrthographicCamera(-width / 2, width / 2, height / 2, -height / 2, 0.1, 200);
+  Object.assign(camera, roomFrustum(width, height));
+  camera.zoom = ZOOM_BASE;
+  const target = new Vector3(0, ROOM_TARGET_Y, 0);
+  camera.position.copy(new Vector3(...isoDirection()).multiplyScalar(30).add(target));
+  camera.lookAt(target);
+  camera.updateProjectionMatrix();
+  camera.updateMatrixWorld(true);
 
-  const halfHeightAtClosest = 1 / ZOOM_MAX;
-  let maxUp = 0;
-  let maxRight = 0;
+  const projected: Vector3[] = [];
   for (const x of [-ROOM.width / 2, ROOM.width / 2]) {
     for (const z of [-ROOM.depth / 2, ROOM.depth / 2]) {
-      // Target is the room centre; project the corner relative to it, orthographically.
-      const corner = new Vector3(x, 0, z);
-      maxUp = Math.max(maxUp, Math.abs(corner.dot(up)));
-      maxRight = Math.max(maxRight, Math.abs(corner.dot(right)));
+      for (const y of [0, ROOM_HEIGHT]) {
+        const point = new Vector3(x, y, z).project(camera);
+        expect(Math.abs(point.x)).toBeLessThan(1);
+        expect(Math.abs(point.y)).toBeLessThan(1);
+        projected.push(point);
+      }
     }
   }
-  // Left/right extent is covered by the same half-height because the ortho frustum is square here
-  // (left/right follow the canvas aspect; the vertical bound is the binding one at 16:9).
-  expect(maxUp).toBeLessThanOrEqual(halfHeightAtClosest + 1e-9);
-  expect(maxRight).toBeLessThanOrEqual(1 / ZOOM_MIN + 1e-9);
+  const roomWidthPixels =
+    (Math.max(...projected.map((point) => point.x)) - Math.min(...projected.map((point) => point.x))) * width / 2;
+  const roomHeightPixels =
+    (Math.max(...projected.map((point) => point.y)) - Math.min(...projected.map((point) => point.y))) * height / 2;
+  expect(Math.max(roomWidthPixels / width, roomHeightPixels / height)).toBeGreaterThan(0.8);
+  expect(roomWidthPixels).toBeGreaterThan(width * 0.6);
+
+  const feet = new Vector3(0, 0, 0).project(camera);
+  const head = new Vector3(0, 1.55, 0).project(camera);
+  const crewHeightPixels = Math.abs(head.y - feet.y) * height / 2;
+  expect(crewHeightPixels).toBeGreaterThan(minCrewPixels);
+
+  camera.zoom = ZOOM_MAX;
+  camera.updateProjectionMatrix();
+  const focusedFeet = new Vector3(0, 0, 0).project(camera);
+  const focusedHead = new Vector3(0, 1.55, 0).project(camera);
+  expect(Math.abs(focusedHead.y - focusedFeet.y) * height / 2).toBeCloseTo(crewHeightPixels * 1.6, 8);
 });
 
 test("easing is a pure function of t and lands exactly on 0 and 1", () => {
   expect(easeInOutCubic(0)).toBe(0);
   expect(easeInOutCubic(1)).toBe(1);
   expect(easeInOutCubic(0.5)).toBeCloseTo(0.5, 12);
-  expect(easeInOutCubic(0.25)).toBeCloseTo(easeInOutCubic(0.25), 12);
   expect(easeInOutCubic(0.25)).toBeCloseTo(0.0625, 12);
   expect(easeInOutCubic(0.75)).toBeCloseTo(0.9375, 12);
 });
 
-test("the focus tween duration is the documented 400 ms", () => {
-  expect(FOCUS_MS).toBe(400);
-});

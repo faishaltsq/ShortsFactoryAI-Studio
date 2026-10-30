@@ -1,4 +1,5 @@
 import React from 'react';
+import type {MouthShape} from '../ids';
 import type {ExpressionTarget, Point} from '../types';
 
 /**
@@ -23,7 +24,13 @@ export const Face: React.FC<{
   height: number;
   turn: number;
   palette: {ink: string; skinShade: string; blush: string; sclera: string};
-}> = ({expression, anchor, width, height, turn, palette}) => {
+  /**
+   * Declared mouth shape. When given, the aperture is drawn to match it; the measured envelope
+   * still decides *when* a shape applies, so the shape is a rendering of the measurement rather
+   * than a replacement for it.
+   */
+  mouthShape?: MouthShape;
+}> = ({expression, anchor, width, height, turn, palette, mouthShape}) => {
   const {browAngle, browLift, eyeOpen, gaze, mouthWidth, mouthOpen, mouthCurve, cheek, blush} = expression;
 
   const eyeY = anchor.y;
@@ -33,7 +40,8 @@ export const Face: React.FC<{
   const farEye = {x: anchor.x + eyeDX + turnShift, y: eyeY, rx: width * 0.1, ry: width * 0.1};
 
   const mouthY = anchor.y + height * 0.3;
-  const halfMouth = width * 0.15 * mouthWidth;
+  const mouthWidthScale = mouthShape === 'wide' ? 1.22 : mouthShape === 'round' ? 0.78 : 1;
+  const halfMouth = width * 0.15 * mouthWidth * mouthWidthScale;
   const lidLift = cheek * width * 0.02;
   const open = Math.max(0.08, eyeOpen);
 
@@ -120,7 +128,15 @@ export const Face: React.FC<{
         />
       );
     }
-    const drop = mouthOpen * height * 0.07;
+    // The declared shape scales the aperture within the measured opening. `wide` spreads it
+    // horizontally, `round` pulls it in and deepens it; `open` is the neutral band. Without a
+    // declared shape the measured amplitude alone drives the geometry, which is the legacy path.
+    const shapeScale = mouthShape === 'wide'
+      ? {w: 1.22, d: 0.92}
+      : mouthShape === 'round'
+        ? {w: 0.78, d: 1.3}
+        : {w: 1, d: 1};
+    const drop = mouthOpen * height * 0.07 * shapeScale.d;
     const top = mouthY - drop * 0.16;
     return (
       <g>

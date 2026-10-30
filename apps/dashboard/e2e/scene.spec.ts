@@ -16,7 +16,7 @@ import { ZONES } from "../src/three/zones";
  * anything, which is why the sidebar assertions stay in the other spec.
  */
 
-const API = "http://127.0.0.1:8019";
+const API = process.env.STUDIO_E2E_API!;
 const MIRROR = "[data-scene-mirror] [data-agent]";
 const SCENE = "[data-studio-scene]";
 const TIER = "medium";
@@ -258,12 +258,18 @@ test("activating a zone moves the camera target, and only existing routes are re
       })),
     );
 
-  const builtRoutes = new Set(["/", "/jobs"]);
+  const builtRoutes: Record<string, true> = {
+    "/": true,
+    "/jobs": true,
+    "/agents": true,
+    "/storyboard": true,
+    "/assets": true,
+  };
   expect(new Set(enabled)).toEqual(
-    new Set(ZONES.map((zone) => zone.href).filter((href) => href !== null && builtRoutes.has(href))),
+    new Set(ZONES.map((zone) => zone.href).filter((href) => href !== null && builtRoutes[href] === true)),
   );
   expect(new Set(disabled.map((link) => link.zone))).toEqual(
-    new Set(ZONES.filter((zone) => zone.href === null || !builtRoutes.has(zone.href)).map((z) => z.id)),
+    new Set(ZONES.filter((zone) => zone.href === null || builtRoutes[zone.href] !== true).map((z) => z.id)),
   );
   for (const link of disabled) {
     expect(link.href, "a zone with no page must not be an anchor").toBeNull();

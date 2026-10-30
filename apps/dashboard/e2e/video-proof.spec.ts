@@ -21,9 +21,8 @@ import path from "node:path";
  *   is a real AAC track rather than a silent placeholder.
  */
 
-const API = process.env.STUDIO_E2E_API ?? "http://127.0.0.1:8019";
-const DATA_DIR =
-  process.env.STUDIO_E2E_DATA ?? path.resolve(import.meta.dirname, "../../../data/e2e");
+const API = process.env.STUDIO_E2E_API!;
+const DATA_DIR = process.env.STUDIO_E2E_DATA!;
 const FLAG = process.env.STUDIO_VIDEO_PROOF;
 
 const NARRATION_TOLERANCE_MS = 120;

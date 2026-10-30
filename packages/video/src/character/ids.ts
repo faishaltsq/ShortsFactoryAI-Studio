@@ -17,8 +17,36 @@ export const EXPRESSIONS = [
   'determined',
   'thinking',
   'sad',
+  'angry',
 ] as const;
 export type ExpressionId = (typeof EXPRESSIONS)[number];
+/**
+ * Clothing variants. `default` is the authored jacket; `shirt` drops the jacket layers so the
+ * same rig and pose library drives a different look. A variant is part of character identity:
+ * the manifest and the selected variant decide the paint, never the scene's theme.
+ */
+export const CLOTHING_VARIANTS = ['default', 'shirt'] as const;
+export type ClothingVariant = (typeof CLOTHING_VARIANTS)[number];
+/**
+ * Mouth shapes. These are deterministic amplitude bands over the measured speech envelope —
+ * closed outside speech, then open/wide/round as the envelope rises. They are NOT phoneme
+ * measurements, and nothing here may claim otherwise.
+ */
+export const MOUTH_SHAPES = ['closed', 'open', 'wide', 'round'] as const;
+export type MouthShape = (typeof MOUTH_SHAPES)[number];
+/**
+ * Deterministic amplitude band for a mouth shape.
+ *
+ * The bands are fixed and documented so a reviewer can check them: closed at weight 0, open over
+ * (0, .35), wide over [.35, .7), round from [.7, 1]. This is an amplitude-only selection — the
+ * envelope carries loudness, not phonemes, and nothing here may claim a measured phoneme.
+ */
+export const mouthShapeFor = (amplitude: number): MouthShape => {
+  if (amplitude <= 0) return 'closed';
+  if (amplitude < 0.35) return 'open';
+  if (amplitude < 0.7) return 'wide';
+  return 'round';
+};
 
 /** Transient accents layered over a sustained pose. `none` is a valid, explicit no-op. */
 export const GESTURES = ['none', 'pointForward', 'openPalm', 'bothOpen', 'wave', 'think', 'shrug'] as const;

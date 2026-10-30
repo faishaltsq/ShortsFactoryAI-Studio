@@ -1,5 +1,5 @@
 import type {CharacterManifest} from '../../types';
-import {MAYA_LAYERS} from './art';
+import {MAYA_LAYERS, MAYA_VARIANT_LAYERS} from './art';
 
 /**
  * Maya — versioned character manifest.
@@ -20,7 +20,12 @@ export const MAYA: CharacterManifest = {
   viewBox: {minX: -180, width: 760, height: 760},
   groundY: 740,
   poses: ['stand', 'point', 'reach', 'walk', 'lookUp', 'shrug', 'sit'],
-  expressions: ['neutral', 'curious', 'happy', 'surprised', 'concerned', 'determined', 'thinking', 'sad'],
+  expressions: ['neutral', 'curious', 'happy', 'surprised', 'concerned', 'determined', 'thinking', 'sad', 'angry'],
+  // The manifest declares real capability, not an aspiration: both variants have distinct art
+  // and both renderers implement them.
+  clothingVariants: ['default', 'shirt'],
+  variantLayers: {shirt: MAYA_VARIANT_LAYERS.shirt},
+  mouthShapes: ['closed', 'open', 'wide', 'round'],
   gestures: ['none', 'pointForward', 'openPalm', 'bothOpen', 'wave', 'think', 'shrug'],
   layers: MAYA_LAYERS,
   rig: {

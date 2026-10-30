@@ -28,7 +28,7 @@ from pathlib import Path
 from typing import Any, Literal, Protocol
 
 from ..contracts.base import Artifact, ArtifactValidationError, validate_artifact
-from ..contracts.state import JobState, is_transition_allowed
+from ..contracts.state import SIDE_STATES, JobState, is_transition_allowed
 from ..observability.events import STAGE_AGENTS
 from .jobstore import JobStore, safe_artifact_name
 from .leases import LeaseKeeper, LeaseLost
@@ -87,6 +87,10 @@ class StageError(RuntimeError):
 EVIDENCE_CODES = frozenset(
     {"qa_blocked", "publication_uncertain", "publication_key_mismatch", "revision_required"}
 )
+
+# Enum declaration order is the production path; legal repair/revision edges are not forward
+# progress. Controllers must explicitly reopen those stages before asking the runner to retry.
+_FORWARD_ORDER = {state: index for index, state in enumerate(JobState) if state not in SIDE_STATES}
 
 
 def _end_stage(store: JobStore, job_id: str, keeper: LeaseKeeper | None) -> None:
@@ -194,6 +198,31 @@ def _now() -> str:
     return dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
 
 
+def _resume_evidence_block(
+    store: JobStore, job_id: str, stage: Stage, report: dict[str, Any],
+    keeper: LeaseKeeper | None,
+) -> dict[str, Any]:
+    if keeper is not None and not keeper.renew():
+        report.update(ok=False, stopped="lease_lost")
+        return report
+    current = store.get(job_id).state
+    problem = _validate_produced(store, job_id, stage)
+    detail = (
+        f"Cannot resume from {current.value}: "
+        f"{problem or stage.name + ': ' + ', '.join(stage.produces) + ' records a non-success verdict'}. "
+        "Restore the validated upstream evidence or explicitly rework this stage and its "
+        "dependent outputs; resuming will not regenerate earlier paid work."
+    )
+    store.commit_stage(
+        job_id, token=keeper.token if keeper is not None else None,
+        target=JobState.BLOCKED if current != JobState.BLOCKED else None, detail=detail,
+    )
+    store.set_error(job_id, detail)
+    report.update(ok=False, stopped="resume_evidence_missing", detail=detail)
+    report["stages"].append({"name": stage.name, "ok": False, "detail": detail})
+    return report
+
+
 def run_stages(
     *,
     store: JobStore,
@@ -212,24 +241,31 @@ def run_stages(
     cancel = cancel or NullCancel()
     report: dict[str, Any] = {"job_id": job_id, "stages": [], "ok": True, "stopped": None}
 
-    # A resume over a finished job must be a no-op, not an illegal transition. Stages whose
-    # artifacts already validate are dropped from chain validation (they will report ``reused``),
-    # and only the remaining work has to be reachable from the current state.
-    #
-    # The starting point is the last reused stage's state, not the stored state: reuse now
-    # advances the state, so a crash between "artifact written" and "transition" leaves the job
-    # behind its own artifacts. Validating from the stored state would refuse a chain that the
-    # loop is about to make legal.
     stored = store.get(job_id).state
-    done = [stage for stage in stages if _is_done(store, job_id, stage)]
-    pending = [stage for stage in stages if not _is_done(store, job_id, stage)]
-    # Only move the starting point forward. A finished job re-run from the top has every stage
-    # done and must stay where it is; a crashed job whose last artifact outran its transition
-    # must be validated from that artifact's stage.
-    start = stored
-    if done and is_transition_allowed(stored, done[-1].state):
-        start = done[-1].state
-    _validate_chain(start, pending)
+    position = _FORWARD_ORDER.get(stored, -1)
+    if stored in SIDE_STATES:
+        events = store.events(job_id, limit=store.event_count(job_id))
+        if events and events[-1].get("from_state"):
+            position = _FORWARD_ORDER.get(JobState(events[-1]["from_state"]), -1)
+    historical = [
+        stage for stage in stages if _FORWARD_ORDER.get(stage.state, -1) < position
+    ]
+    for stage in historical:
+        if _is_done(store, job_id, stage):
+            continue
+        if cancel.is_cancelled():
+            report["ok"] = False
+            report["stopped"] = "cancelled"
+            store.transition(job_id, JobState.CANCELLED, detail="cancelled before resume")
+            return report
+        return _resume_evidence_block(store, job_id, stage, report, keeper)
+    # Reused stages still connect the chain. Removing them loses real intermediate hops, and
+    # jumping to the last reused artifact can skip work that has not happened yet.
+    if any(not _is_done(store, job_id, stage) for stage in stages):
+        _validate_chain(
+            stored,
+            [stage for stage in stages if _FORWARD_ORDER.get(stage.state, -1) >= position],
+        )
 
     for stage in stages:
         if cancel.is_cancelled():
@@ -251,20 +287,23 @@ def run_stages(
         # a stage that reports a control decision (a revise verdict) is never mistaken for a
         # completed stage here just because its artifact validates.
         if _is_done(store, job_id, stage):
-                # The artifact was verified, so the stage really is done — the state must say so.
-                # Skipping the transition here left a crash between "artifact written" and
-                # "state advanced" unresumable: the next stage was no longer reachable.
-                #
-                # Only ever forward. A finished job re-run from the top has every stage done and
-                # already sits past all of them; transitioning to an earlier stage would be a
-                # rewind, and the allow-list refuses it — so it must not be attempted.
-                current = store.get(job_id).state
-                if current != stage.state and is_transition_allowed(current, stage.state):
-                    store.transition(job_id, stage.state, detail=f"{stage.name} reused")
-                report["stages"].append(
-                    {"name": stage.name, "ok": True, "reused": True, "detail": "artifacts present"}
+            current = store.get(job_id).state
+            if (
+                current != stage.state
+                and _FORWARD_ORDER.get(stage.state, -1) >= position
+                and _FORWARD_ORDER.get(stage.state, -1) > _FORWARD_ORDER.get(current, -1)
+                and is_transition_allowed(current, stage.state)
+            ):
+                store.commit_stage(
+                    job_id, token=keeper.token if keeper is not None else None,
+                    target=stage.state, detail=f"{stage.name} reused",
                 )
-                continue
+            report["stages"].append(
+                {"name": stage.name, "ok": True, "reused": True, "detail": "artifacts present"}
+            )
+            continue
+        if _FORWARD_ORDER.get(stage.state, -1) < position:
+            return _resume_evidence_block(store, job_id, stage, report, keeper)
 
         attempts = 0
         # The stage that is actually running, persisted with the worker's lease token. The studio
@@ -318,10 +357,33 @@ def run_stages(
                     retryable=False,
                 )
 
+            if outcome.ok and outcome.control == "waiting_resources":
+                # Admission happens before rendering. A refusal has no render outputs to
+                # validate or promote, and must never create a success checkpoint.
+                try:
+                    current = store.get(job_id).state
+                    store.commit_stage(
+                        job_id, token=keeper.token if keeper is not None else None,
+                        target=JobState.BLOCKED if current != JobState.BLOCKED else None,
+                        detail=f"{stage.name} waiting: {outcome.detail}",
+                    )
+                except LeaseLost:
+                    report.update(ok=False, stopped="lease_lost")
+                else:
+                    store.set_error(job_id, f"{stage.name}: waiting_resources {outcome.detail}")
+                    report.update(ok=False, stopped="waiting_resources", detail=outcome.detail)
+                    report["stages"].append({
+                        "name": stage.name, "ok": False, "control": "waiting_resources",
+                        "detail": outcome.detail,
+                    })
+                _discard_staging(staging)
+                if keeper is not None:
+                    keeper.stop_heartbeat()
+                _end_stage(store, job_id, keeper)
+                return report
             if outcome.ok and outcome.control is not None:
                 # A decision, not a result: commit what the stage staged as evidence, then stop.
-                # ``waiting_resources`` releases ownership so another worker can take the job; the
-                # others keep it and wait for the rework controller (step 8) to reopen.
+                # Revision/QA control decisions carry their validated evidence, never success.
                 problem = _validate_staged(ctx, stage)
                 if problem is None:
                     promoted = _promote_staged(store, job_id, ctx, stage, validate=False)
@@ -329,12 +391,8 @@ def run_stages(
                         outcome = StageOutcome(ok=False, detail=promoted, error_code="missing_artifact")
                     else:
                         store.set_error(job_id, f"{stage.name}: {outcome.control} {outcome.detail}".strip())
-                        if outcome.control == "waiting_resources":
-                            store.transition(job_id, JobState.BLOCKED,
-                                             detail=f"{stage.name} waiting: {outcome.detail}")
-                        else:
-                            store.transition(job_id, JobState.BLOCKED,
-                                             detail=f"{stage.name} {outcome.control}: {outcome.detail}")
+                        store.transition(job_id, JobState.BLOCKED,
+                                         detail=f"{stage.name} {outcome.control}: {outcome.detail}")
                         report["ok"] = False
                         report["stopped"] = outcome.control
                         report["detail"] = outcome.detail
@@ -343,8 +401,8 @@ def run_stages(
                         _discard_staging(staging)
                         if keeper is not None:
                             keeper.stop_heartbeat()
-                        return report
                         _end_stage(store, job_id, keeper)
+                        return report
                 else:
                     outcome = StageOutcome(ok=False, detail=problem, error_code="missing_artifact")
             if outcome.ok:
@@ -421,8 +479,8 @@ def run_stages(
             _discard_staging(staging)
             if keeper is not None:
                 keeper.stop_heartbeat()
-            return report
             _end_stage(store, job_id, keeper)
+            return report
 
         _discard_staging(staging)
         _end_stage(store, job_id, keeper)
@@ -559,7 +617,7 @@ def _validate_produced(store: JobStore, job_id: str, stage: Stage) -> str | None
         try:
             validate_artifact(stage.contract, payload)
         except ArtifactValidationError as exc:
-            return f"{stage.name}: {exc}"
+            return f"{stage.name}: {stage.contract_artifact}: {exc}"
     return None
 
 

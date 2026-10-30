@@ -1,0 +1,53 @@
+{
+  "version": 1,
+  "generatedFrom": "packages/video/src/character/assets",
+  "characters": [
+    {
+      "id": "maya",
+      "version": "1.0.0",
+      "displayName": "Maya",
+      "artStyle": "editorial-vector",
+      "poses": [
+        "stand",
+        "point",
+        "reach",
+        "walk",
+        "lookUp",
+        "shrug",
+        "sit"
+      ],
+      "expressions": [
+        "neutral",
+        "curious",
+        "happy",
+        "surprised",
+        "concerned",
+        "determined",
+        "thinking",
+        "sad",
+        "angry"
+      ],
+      "gestures": [
+        "none",
+        "pointForward",
+        "openPalm",
+        "bothOpen",
+        "wave",
+        "think",
+        "shrug"
+      ],
+      "clothingVariants": [
+        "default",
+        "shirt"
+      ],
+      "mouthShapes": [
+        "closed",
+        "open",
+        "wide",
+        "round"
+      ],
+      "license": "project-original",
+      "provenance": "packages/video/src/character/assets/maya"
+    }
+  ]
+}

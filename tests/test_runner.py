@@ -341,3 +341,22 @@ def test_waiting_resources_control_blocks_without_failing(store):
     assert report["stopped"] == "waiting_resources"
     assert store.get(job.id).state is JobState.BLOCKED
     assert "GPU telemetry unavailable" in (store.get(job.id).last_error or "")
+
+
+@pytest.mark.parametrize("staged", [False, True])
+def test_resource_refusal_needs_no_render_outputs_and_promotes_nothing(store, staged):
+    job = store.create(title="resource wait")
+
+    def refusal(ctx, _job_id, _n):
+        if staged:
+            ctx.write_artifact("out.json", {"partial": True})
+        return StageOutcome(ok=True, control="waiting_resources", detail="render slot occupied")
+
+    stage, calls = _stage("render", JobState.TOPIC_SELECTED, behaviour=refusal)
+    report = run_stages(store=store, job_id=job.id, stages=[stage])
+
+    assert report["stopped"] == "waiting_resources"
+    assert report["ok"] is False
+    assert calls["n"] == 1
+    assert not store.has_artifact(job.id, "out.json")
+    assert store.get(job.id).state is JobState.BLOCKED

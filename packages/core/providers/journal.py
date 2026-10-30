@@ -135,6 +135,12 @@ class RequestJournal:
                 "CREATE INDEX IF NOT EXISTS idx_reservations_status"
                 " ON budget_reservations(status)"
             )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS provider_retry_authorizations ("
+                " request_key TEXT NOT NULL, attempt INTEGER NOT NULL,"
+                " operator TEXT NOT NULL, authorized_at TEXT NOT NULL,"
+                " consumed_at TEXT, PRIMARY KEY(request_key, attempt))"
+            )
 
     # -- lifecycle ---------------------------------------------------------------------------
     def prepare(
@@ -150,7 +156,7 @@ class RequestJournal:
         """Record the intent to call, before any transport work happens."""
         with self._lock, self._connect() as conn:
             conn.execute(
-                "INSERT OR REPLACE INTO provider_requests(request_key, attempt, job_id, agent,"
+                "INSERT INTO provider_requests(request_key, attempt, job_id, agent,"
                 " status, provider, model, request_id, prepared_at, sent_at, settled_at,"
                 " usage_json, result_json, error)"
                 " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
@@ -347,6 +353,16 @@ class RequestJournal:
             "request_id": row["request_id"],
         }
 
+    def has_unresolved(self, request_key: str) -> bool:
+        """Whether an attempt may already have reached the provider."""
+        with self._lock, self._connect() as conn:
+            row = conn.execute(
+                "SELECT 1 FROM provider_requests WHERE request_key = ?"
+                " AND status IN (?, ?) LIMIT 1",
+                (request_key, SENT, UNCERTAIN),
+            ).fetchone()
+        return row is not None
+
     def uncertain(self, job_id: str) -> list[dict[str, Any]]:
         """Attempts whose outcome is unknown, for the operator's acknowledgement queue."""
         with self._lock, self._connect() as conn:
@@ -367,16 +383,60 @@ class RequestJournal:
         return int(row["highest"] or 0) + 1
 
     def acknowledge(self, *, request_key: str, attempt: int, operator: str) -> None:
-        """Record the operator's decision that an uncertain attempt will not be retried blindly.
-
-        The row stays ``uncertain`` — the outcome genuinely is unknown — but it leaves the
-        blocking queue, with the operator's name attached to the decision.
-        """
+        """Authorize one retry, preserving the uncertain attempt as evidence."""
         with self._lock, self._connect() as conn:
-            conn.execute(
-                "UPDATE provider_requests SET error = ? WHERE request_key = ? AND attempt = ?",
-                (f"acknowledged by {operator}: outcome remains unknown", request_key, attempt),
-            )
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT status FROM provider_requests WHERE request_key = ? AND attempt = ?",
+                    (request_key, attempt),
+                ).fetchone()
+                if row is None or row["status"] != UNCERTAIN:
+                    raise ValueError("request is not uncertain")
+                conn.execute(
+                    "INSERT INTO provider_retry_authorizations"
+                    "(request_key, attempt, operator, authorized_at) VALUES (?, ?, ?, ?)",
+                    (request_key, attempt, operator, _utc_now()),
+                )
+                conn.commit()
+            except BaseException:
+                conn.rollback()
+                raise
+
+    def claim_attempt(
+        self, *, request_key: str, job_id: str | None, agent: str, provider: str, model: str
+    ) -> int:
+        """Atomically claim a request, consuming authorization for an uncertain attempt."""
+        with self._lock, self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = conn.execute(
+                    "SELECT attempt, status FROM provider_requests WHERE request_key = ?"
+                    " ORDER BY attempt DESC LIMIT 1", (request_key,),
+                ).fetchone()
+                attempt = 1 if row is None else int(row["attempt"]) + 1
+                if row is not None:
+                    if row["status"] == UNCERTAIN:
+                        cursor = conn.execute(
+                            "UPDATE provider_retry_authorizations SET consumed_at = ?"
+                            " WHERE request_key = ? AND attempt = ? AND consumed_at IS NULL",
+                            (_utc_now(), request_key, row["attempt"]),
+                        )
+                        if cursor.rowcount != 1:
+                            raise ValueError("uncertain request requires explicit authorization")
+                    elif row["status"] != REFUSED:
+                        raise ValueError("request already active or completed")
+                conn.execute(
+                    "INSERT INTO provider_requests"
+                    "(request_key, attempt, job_id, agent, status, provider, model, prepared_at)"
+                    " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (request_key, attempt, job_id, agent, PREPARED, provider, model, _utc_now()),
+                )
+                conn.commit()
+                return attempt
+            except BaseException:
+                conn.rollback()
+                raise
 
     def statuses(self, job_id: str) -> list[dict[str, Any]]:
         """Safe per-request summaries for the job detail view. No payload content."""

@@ -16,10 +16,11 @@ from fastapi.testclient import TestClient
 
 
 @pytest.fixture
-def app(tmp_path):
+def app(tmp_path, monkeypatch):
     from apps.api.main import create_app
     from apps.api.settings import Settings
     from apps.api.state import AppState
+    from packages.core.orchestration import resources
     from packages.core.providers.usage import Budget
 
     settings = Settings(
@@ -29,6 +30,7 @@ def app(tmp_path):
         secrets_dir=tmp_path / "data" / "secrets",
         studio_config=tmp_path / "config" / "studio.json",
     ).ensure()
+    monkeypatch.setattr(resources, "probe_telemetry", lambda **kwargs: resources.Telemetry(8192, 8192))
     return create_app(AppState.build(settings, budget=Budget()))
 
 

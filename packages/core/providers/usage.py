@@ -14,7 +14,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from .base import Health, Provider, ProviderResult, ResolvedCall, Usage, VisionImage
+from .base import Health, Provider, ProviderError, ProviderResult, ResolvedCall, Usage, VisionImage
 from .journal import RequestJournal
 
 
@@ -427,15 +427,6 @@ class RecordingProvider:
     def complete(
         self, call: ResolvedCall, *, system: str, user: str, task: str
     ) -> ProviderResult:
-        # Pre-call budget check: a budget enforced after the money is spent is not a budget.
-        worst_cost = estimate_cost(
-            Usage(prompt_tokens=len(user) // 3, completion_tokens=self.worst_case_tokens),
-            price_in=self.price_in,
-            price_out=self.price_out,
-        )
-        self.tracker.assert_can_spend(
-            worst_case_tokens=self.worst_case_tokens, worst_case_cost_usd=worst_cost
-        )
         key, attempt = self._identity(user=user, system=system, task=task)
         recorded = self._recorded_result(key)
         if recorded is not None:
@@ -453,14 +444,31 @@ class RecordingProvider:
                 model=recorded["model"],
                 elapsed_ms=0,
             )
+        # Pre-call budget check: a budget enforced after the money is spent is not a budget.
+        worst_cost = estimate_cost(
+            Usage(prompt_tokens=len(user) // 3, completion_tokens=self.worst_case_tokens),
+            price_in=self.price_in,
+            price_out=self.price_out,
+        )
+        self.tracker.assert_can_spend(
+            worst_case_tokens=self.worst_case_tokens, worst_case_cost_usd=worst_cost
+        )
         if self.journal is not None:
-            self.journal.prepare(
-                request_key=key, job_id=self.job_id, agent=self.agent, attempt=attempt,
-                provider=call.provider, model=call.model,
-            )
+            try:
+                attempt = self.journal.claim_attempt(
+                    request_key=key, job_id=self.job_id, agent=self.agent,
+                    provider=call.provider, model=call.model,
+                )
+            except ValueError as exc:
+                raise ProviderError(
+                    "provider_outcome_unknown", str(exc), provider=call.provider
+                ) from exc
             self.journal.reserve(
                 request_key=key, attempt=attempt, job_id=self.job_id, agent=self.agent,
                 tokens=len(user) // 3 + self.worst_case_tokens, cost_usd=worst_cost,
+            )
+            self.journal.mark_sent(
+                request_key=key, attempt=attempt, provider=call.provider, model=call.model
             )
         try:
             result = self.inner.complete(call, system=system, user=user, task=task)
@@ -473,10 +481,6 @@ class RecordingProvider:
                 self.journal.retained(request_key=key, attempt=attempt)
             raise
         cost = estimate_cost(result.usage, price_in=self.price_in, price_out=self.price_out)
-        if self.journal is not None:
-            self.journal.mark_sent(
-                request_key=key, attempt=attempt, provider=result.provider, model=result.model
-            )
         self.tracker.record(
             job_id=self.job_id,
             agent=self.agent,

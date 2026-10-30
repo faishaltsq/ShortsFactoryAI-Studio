@@ -1,6 +1,7 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useState } from "react";
+import Link from "next/link";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { Empty, ErrorState, Loading } from "@/components/states";
 import { VideoSurface } from "@/components/VideoSurface";
 import { api, type JobDetail, type JobView } from "@/lib/api";
@@ -28,14 +29,28 @@ function formatCost(value: number): string {
 export default function JobsPage() {
   const [jobs, setJobs] = useState<JobView[] | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [detail, setDetail] = useState<JobDetail | null>(null);
+  const scope = useMemo(() => ({ id: selectedId, active: true, request: 0 }), [selectedId]);
+  const [detailResult, setDetailResult] = useState<{
+    scope: typeof scope;
+    request: number;
+    detail: JobDetail | null;
+    error: string | null;
+    loading: boolean;
+  } | null>(null);
   const [createTitle, setCreateTitle] = useState("");
   const [createTopic, setCreateTopic] = useState("");
   const [creating, setCreating] = useState(false);
   const [createError, setCreateError] = useState<string | null>(null);
   const [listError, setListError] = useState<string | null>(null);
-  const [detailError, setDetailError] = useState<string | null>(null);
-  const [detailLoading, setDetailLoading] = useState(false);
+  const visibleDetail = detailResult?.scope === scope ? detailResult : null;
+  const detail = visibleDetail?.detail ?? null;
+  const detailError = visibleDetail?.error ?? null;
+  const detailLoading = !!selectedId && (visibleDetail?.loading ?? true);
+
+  useEffect(() => {
+    scope.active = true;
+    return () => { scope.active = false; };
+  }, [scope]);
 
   const loadJobs = useCallback(async () => {
     try {
@@ -50,18 +65,26 @@ export default function JobsPage() {
   }, []);
 
   const loadDetail = useCallback(async (jobId: string) => {
-    setDetailLoading(true);
+    if (!scope.active || jobId !== scope.id) return;
+    const request = ++scope.request;
+    setDetailResult((current) => ({
+      scope, request, detail: current?.scope === scope ? current.detail : null,
+      error: null, loading: true,
+    }));
     try {
-      setDetail(await api.job(jobId));
-      setDetailError(null);
+      const result = await api.job(jobId);
+      if (result.id !== jobId) throw new Error("Detail produksi tidak sesuai dengan job terpilih.");
+      if (scope.active && request === scope.request) {
+        setDetailResult({ scope, request, detail: result, error: null, loading: false });
+      }
     } catch (error) {
-      // A failed refresh must not erase a panel the operator is already reading: keep the last
-      // good detail and surface the failure as a banner instead.
-      setDetailError(error instanceof Error ? error.message : "gagal memuat detail job");
-    } finally {
-      setDetailLoading(false);
+      if (scope.active && request === scope.request) {
+        setDetailResult((current) => current?.scope === scope && current.request === request
+          ? { ...current, error: error instanceof Error ? error.message : "gagal memuat detail job", loading: false }
+          : current);
+      }
     }
-  }, []);
+  }, [scope]);
 
   useEffect(() => {
     void loadJobs();
@@ -69,14 +92,9 @@ export default function JobsPage() {
 
   useEffect(() => {
     if (!selectedId) {
-      setDetail(null);
-      setDetailError(null);
+      setDetailResult(null);
       return;
     }
-    // Switching jobs must not leave the previous job's panel on screen, so drop a detail that
-    // belongs to another job. A same-job poll keeps it.
-    setDetail((current) => (current && current.id !== selectedId ? null : current));
-    setDetailError(null);
     void loadDetail(selectedId);
   }, [loadDetail, selectedId]);
 
@@ -136,6 +154,12 @@ export default function JobsPage() {
   if (jobs.length === 0) {
     return (
       <div className="min-h-dvh p-3 sm:p-5 lg:p-6">
+        <header className="mb-4 border-b border-ink-700 pb-4">
+          <h1 className="text-2xl font-semibold tracking-tight text-ink-100">Produksi</h1>
+          <p className="mt-1 text-sm text-ink-300">
+            Antrean, hasil, dan keputusan operator untuk job yang tersimpan.
+          </p>
+        </header>
         <CreateMockJobForm
           title={createTitle}
           topic={createTopic}
@@ -405,6 +429,9 @@ function JobDetails({ job, onRefresh }: { job: JobDetail; onRefresh: () => Promi
           </p>
         ) : null}
         <div className="mt-4 flex flex-col gap-2 sm:flex-row">
+          <Link className="btn min-h-11 justify-center" href={`/?job_id=${encodeURIComponent(job.id)}`}>
+            Pantau di studio
+          </Link>
           <button
             type="button"
             className="btn btn-primary min-h-11 justify-center"
