@@ -193,6 +193,7 @@ class StoryboardAgent(Agent):
     def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         scenes = payload.get("scenes")
         if isinstance(scenes, list):
+            valid_roles = {"title", "body", "caption", "label"}
             current_frame = 0
             for sc in scenes:
                 if not isinstance(sc, dict):
@@ -202,23 +203,63 @@ class StoryboardAgent(Agent):
                 if tmpl in DATA_DRIVEN_TEMPLATES and not sc.get("data"):
                     sc["template"] = "EducationalExplainer"
 
+                duration = int(sc.get("durationInFrames") or 300)
+                duration = max(30, min(3000, duration))
+                sc["startFrame"] = current_frame
+                sc["durationInFrames"] = duration
+
+                # Normalize text roles and frame bounds
+                text_ids: set[str] = set()
+                text_list = sc.get("text")
+                if isinstance(text_list, list):
+                    for i, t in enumerate(text_list):
+                        if not isinstance(t, dict):
+                            continue
+                        tid = str(t.get("id") or f"t{i+1}")
+                        t["id"] = tid
+                        text_ids.add(tid)
+                        role = str(t.get("role") or "").lower()
+                        if role not in valid_roles:
+                            if any(k in role for k in ("title", "head", "hook")):
+                                t["role"] = "title"
+                            elif any(k in role for k in ("cap", "sub")):
+                                t["role"] = "caption"
+                            elif "label" in role:
+                                t["role"] = "label"
+                            else:
+                                 t["role"] = "body"
+                        tf = int(t.get("atFrame") or 0)
+                        if tf >= current_frame and current_frame > 0:
+                            tf -= current_frame
+                        t["atFrame"] = max(0, min(duration - 1, tf))
+
                 # Normalize camera target if camera moves without a valid subject
                 cam = sc.get("camera")
-                if isinstance(cam, dict) and cam.get("move") != "static":
-                    text_ids = {
-                        t.get("id")
-                        for t in sc.get("text", [])
-                        if isinstance(t, dict) and t.get("id")
-                    }
-                    if not cam.get("target") or cam.get("target") not in text_ids:
+                if isinstance(cam, dict):
+                    move = cam.get("move")
+                    if move != "static":
+                        target = cam.get("target")
+                        if not target or target not in text_ids:
+                            cam["move"] = "static"
+                            cam["target"] = None
+                    if cam.get("move") == "orbit" and sc.get("template") not in {"IllustratedStory", "ParallaxStory"}:
                         cam["move"] = "static"
                         cam["target"] = None
 
-                # Ensure contiguous frame progression
-                duration = int(sc.get("durationInFrames") or 300)
-                sc["startFrame"] = current_frame
-                sc["durationInFrames"] = max(30, min(3000, duration))
-                current_frame += sc["durationInFrames"]
+                # Normalize motion beats within scene relative duration
+                motion = sc.get("motion")
+                if isinstance(motion, dict):
+                    beats = motion.get("beats")
+                    if isinstance(beats, list):
+                        for b in beats:
+                            if not isinstance(b, dict):
+                                continue
+                            bf = int(b.get("atFrame") or 0)
+                            if bf >= current_frame and current_frame > 0:
+                                bf -= current_frame
+                            b["atFrame"] = max(0, min(duration - 1, bf))
+
+                current_frame += duration
         return payload
 
 class AnimationAgent(Agent):
