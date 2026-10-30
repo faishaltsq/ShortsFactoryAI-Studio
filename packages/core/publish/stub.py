@@ -17,6 +17,7 @@ from .transport import (
     InsertRequest,
     InsertResult,
     RemoteVideo,
+    ThumbnailResult,
     TransportRefused,
     TransportUncertain,
 )
@@ -26,6 +27,12 @@ from .transport import (
 class InsertCall:
     request: InsertRequest
     outcome: str  # "inserted" | "refused" | "uncertain"
+
+
+@dataclass
+class ThumbnailCall:
+    video_id: str
+    thumbnail_path: str
 
 
 @dataclass
@@ -41,6 +48,7 @@ class StubTransport:
     script: list[str] = field(default_factory=list)
     remote: list[RemoteVideo] = field(default_factory=list)
     inserts: list[InsertCall] = field(default_factory=list)
+    thumbnail_calls: list[ThumbnailCall] = field(default_factory=list)
     list_calls: int = 0
     #: Set to make ``list_private`` raise, to prove reconciliation propagates rather than guesses.
     list_error: Exception | None = None
@@ -112,3 +120,10 @@ class StubTransport:
         if self.list_error is not None:
             raise self.list_error
         return list(self.remote)
+
+    def set_thumbnail(self, video_id: str, thumbnail_path: str) -> ThumbnailResult:
+        self.thumbnail_calls.append(ThumbnailCall(video_id=video_id, thumbnail_path=thumbnail_path))
+        return ThumbnailResult(
+            url=f"https://img.youtube.com/vi/{video_id}/maxresdefault.jpg",
+            detail="thumbnail set by stub",
+        )

@@ -63,6 +63,10 @@ def _run_job(tmp_path, server: StubServer):
         secrets_dir=tmp_path / "data" / "secrets",
         studio_config=tmp_path / "config" / "studio.json",
     ).ensure()
+    # Mock resource telemetry so the render admission gate does not block on low host RAM.
+    # Every other rendering test does this; this file omitted it and failed under memory pressure.
+    from packages.core.orchestration import resources
+    resources.probe_telemetry = lambda **_kw: resources.Telemetry(8192, 8192)  # type: ignore[assignment]
     state = AppState.build(settings, budget=Budget())
 
     # A vision-capable provider at the loopback stub. `allow_private_hosts` is the documented

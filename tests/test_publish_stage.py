@@ -825,6 +825,89 @@ def test_the_thumbnail_stage_records_a_sha256_in_metadata(tmp_path, monkeypatch)
     assert len(thumb["sha256"]) == 64
 
 
+
+def test_publish_uploads_thumbnail_when_present(store):
+    """When a thumbnail was rendered by build_thumbnail_stage, publishing uploads it."""
+    job_id = _approved_job(store)
+    thumb_file = Path(store.job_dir(job_id)) / "thumb.png"
+    thumb_file.write_bytes(b"\x89PNG\r\n\x1a\nfake-thumbnail")
+    store.write_artifact(
+        job_id,
+        "metadata.json",
+        {
+            "schema_version": 1,
+            "title": "Judul",
+            "description": "Deskripsi",
+            "category_id": "22",
+            "thumbnail": {"path": "thumb.png", "sha256": "x" * 64, "bytes": len(b"fake-thumbnail")},
+        },
+    )
+    transport = StubTransport()
+    report = _run(store, job_id, transport)
+
+    assert report["ok"] is True
+    assert transport.insert_count == 1
+    assert len(transport.thumbnail_calls) == 1
+    assert transport.thumbnail_calls[0].video_id == "stub-0001"
+    assert transport.thumbnail_calls[0].thumbnail_path == str(thumb_file)
+
+
+def test_publish_skips_thumbnail_upload_when_not_rendered(store):
+    """When no thumbnail was rendered, publishing uploads the video with no thumbnail call."""
+    job_id = _approved_job(store)
+    transport = StubTransport()
+    report = _run(store, job_id, transport)
+
+    assert report["ok"] is True
+    assert transport.insert_count == 1
+    assert len(transport.thumbnail_calls) == 0
+
+
+def test_publish_succeeds_even_when_thumbnail_upload_fails(store, monkeypatch):
+    """Thumbnail upload is best-effort: a failure there must not fail or roll back the publish."""
+    job_id = _approved_job(store)
+    thumb_file = Path(store.job_dir(job_id)) / "thumb.png"
+    thumb_file.write_bytes(b"\x89PNG\r\n\x1a\nfake-thumbnail")
+    store.write_artifact(
+        job_id,
+        "metadata.json",
+        {
+            "schema_version": 1,
+            "title": "Judul",
+            "description": "Deskripsi",
+            "category_id": "22",
+            "thumbnail": {"path": "thumb.png", "sha256": "x" * 64, "bytes": len(b"fake-thumbnail")},
+        },
+    )
+    transport = StubTransport()
+
+    from packages.core.publish.transport import TransportRefused
+
+    def fail_thumbnail(video_id, path):
+        raise TransportRefused("thumbnail_quota", "daily thumbnail upload quota exceeded")
+
+    monkeypatch.setattr(transport, "set_thumbnail", fail_thumbnail)
+
+    state = _State(store)
+    report = run_stages(
+        store=store,
+        job_id=job_id,
+        stages=[build_publish_stage(state, transport)],
+    )
+
+    # Video publish still succeeded
+    assert report["ok"] is True
+    assert transport.insert_count == 1
+    assert store.get(job_id).state is JobState.PRIVATE_UPLOAD
+    pub = PublicationArtifact.model_validate(store.read_artifact(job_id, PUBLICATION_NAME))
+    assert pub.phase == "confirmed"
+    assert pub.video_id == "stub-0001"
+
+    # The failure event was emitted
+    events = [r for r in state.events.rows if r.get("event_type") == "thumbnail_failed"]
+    assert len(events) == 1
+    assert "thumbnail_quota" in events[0].get("description", "")
+
 def stage_ctx(store, job_id, tmp: Path | None = None) -> Any:
     """A stage context for direct stage.run() calls outside run_stages."""
     from packages.core.orchestration.runner import NullCancel, StageContext

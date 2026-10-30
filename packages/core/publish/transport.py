@@ -121,6 +121,39 @@ class PublicationTransport(Protocol):
     def list_private(self) -> list[RemoteVideo]: ...
 
 
+@dataclass(frozen=True)
+class ThumbnailResult:
+    """The thumbnail was accepted by the remote.  ``url`` is the canonical resource URL
+    Google returns; it is recorded for operator inspection but never used as a redirect
+    target or a writeable reference.
+    """
+
+    url: str = ""
+    detail: str = ""
+
+
+@runtime_checkable
+class ThumbnailTransport(Protocol):
+    """Optional capability: upload a rendered thumbnail after a successful video insert.
+
+    A transport may implement *both* ``PublicationTransport`` and ``ThumbnailTransport``;
+    the publish stage checks ``isinstance(transport, ThumbnailTransport)`` and uploads the
+    thumbnail only when it does.  Keeping this as a separate protocol means old stub tests
+    are unaffected and a transport can satisfy one without the other.
+
+    The operation is **best-effort with respect to the video publish**: a thumbnail failure
+    raises ``TransportRefused`` (the video is already up; we can retry the thumbnail) but
+    never ``TransportUncertain`` (a thumbnail duplicate is visible in the UI and harmless,
+    unlike a duplicate video upload).
+    """
+
+    def set_thumbnail(
+        self,
+        video_id: str,
+        thumbnail_path: str,
+    ) -> ThumbnailResult: ...
+
+
 #: The receipt step name that marks "a request may have left". The contract validator looks for
 #: this exact value, so it lives here as the single definition.
 INSERT_SENT_STEP = "insert_sent"

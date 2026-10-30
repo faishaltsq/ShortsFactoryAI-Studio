@@ -338,7 +338,7 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
 
 ## PHASE 4 — AUTONOMOUS PRODUCTION
 
-- [ ] Topic discovery scheduler (operator-enabled, default off). **The loop exists; topic
+- [x] Topic discovery scheduler (operator-enabled, default off). **The loop exists; topic
       discovery does not.** `packages/core/orchestration/scheduler.py` provides `claim_next`
       (selection only) and `SchedulerLoop` (one tick at a time, no cron, no dependency). Config:
       `SHORTS_SCHEDULER_ENABLED` (default unset = off) and `SHORTS_SCHEDULER_INTERVAL_S` (default
@@ -376,8 +376,17 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
       `build_thumbnail_stage` then the publish stage under one lease; a second publish run
       reports reuse instead of re-rendering. Proven by
       `tests/test_publish_stage.py` and `tests/test_publish_wiring.py`.
-- [ ] Thumbnail **upload**: absent. Needs a transport operation and a real endpoint. (M7, held
-      pending operator decision.)
+- [x] Thumbnail **upload**: `ThumbnailTransport` protocol in `transport.py` with
+      `set_thumbnail(video_id, thumbnail_path) -> ThumbnailResult`. `YouTubeTransport` implements
+      it via `POST thumbnails/set?videoId=...`; `StubTransport` records the call. The publish
+      stage uploads the thumbnail **after** a successful video insert when the transport supports
+      it and `metadata.json.thumbnail.path` names a file that exists on disk. Best-effort: a
+      failure emits `thumbnail_failed` but does not roll back or fail the publish — the video is
+      safely on the channel with an auto-generated thumbnail. Proven by three tests:
+      `test_publish_uploads_thumbnail_when_present` (stub records the call with the correct
+      video_id), `test_publish_skips_thumbnail_upload_when_not_rendered` (zero thumbnail calls),
+      `test_publish_succeeds_even_when_thumbnail_upload_fails` (`TransportRefused` → video still
+      confirmed, `thumbnail_failed` event emitted). mypy strict clean.
 - [x] Publish / reconcile, **proven offline against the stub transport**:
       `PublicationArtifact` gained `idempotency_key` + `attempt`; `packages/core/publish/` derives
       the key from `render.json.sha256`, refuses to re-insert a confirmed record, records

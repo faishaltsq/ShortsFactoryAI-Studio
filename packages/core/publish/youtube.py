@@ -44,6 +44,7 @@ from .transport import (
     InsertRequest,
     InsertResult,
     RemoteVideo,
+    ThumbnailResult,
     TransportRefused,
     TransportUncertain,
 )
@@ -257,6 +258,57 @@ class YouTubeTransport:
             return []
         return self._videos_by_id(video_ids)
 
+    # -- thumbnail --------------------------------------------------------------------------
+    def set_thumbnail(self, video_id: str, thumbnail_path: str) -> ThumbnailResult:
+        """Upload one custom thumbnail for an existing video.
+
+        A failure here is always ``TransportRefused``, never ``TransportUncertain``: the video
+        itself is already published and private, and a failed thumbnail upload leaves the video
+        intact on the channel with an auto-generated thumbnail. The operator can retry it.
+        """
+        if not video_id.strip():
+            raise TransportRefused("video_id_missing", "refusing to set thumbnail without a video id")
+        path = Path(thumbnail_path)
+        if not path.is_file():
+            raise TransportRefused(
+                "thumbnail_missing", f"the thumbnail file does not exist: {path.name}"
+            )
+        size = path.stat().st_size
+        if size == 0:
+            raise TransportRefused("thumbnail_empty", "refusing to upload a zero-byte thumbnail")
+        if not self.credentials.access_token:
+            raise TransportRefused("no_credential", "no YouTube access token is configured")
+
+        url = f"{self.upload_root}/thumbnails/set?{urlencode({'videoId': video_id})}"
+        body = UploadBody(
+            path=path,
+            content_length=size,
+            content_type="image/png",
+            chunk_bytes=size,
+        )
+        self.calls.append({"method": "POST", "url": url, "kind": "upload_thumbnail"})
+        try:
+            response = self.http.request(
+                "POST",
+                url,
+                headers=self._headers(),
+                body=body,
+                secrets=self.credentials.secrets,
+                provider="youtube",
+            )
+        except ProviderError as exc:
+            raise TransportRefused(
+                exc.code, f"could not upload thumbnail: {exc.detail}"
+            ) from exc
+
+        payload = _json_body(response)
+        raw_items = payload.get("items")
+        items = raw_items if isinstance(raw_items, list) else []
+        first = items[0] if items and isinstance(items[0], dict) else {}
+        default_entry = first.get("default") if isinstance(first, dict) and isinstance(first.get("default"), dict) else {}
+        thumb_url = str(default_entry.get("url", "")) if isinstance(default_entry, dict) else ""
+        return ThumbnailResult(url=thumb_url, detail=f"thumbnail accepted ({size} bytes)")
+
     def _search_private_ids(self) -> list[str]:
         ids: list[str] = []
         page_token = ""
@@ -303,8 +355,10 @@ class YouTubeTransport:
             for item in payload.get("items") or []:
                 if not isinstance(item, dict):
                     continue
-                snippet = item.get("snippet") if isinstance(item.get("snippet"), dict) else {}
-                status = item.get("status") if isinstance(item.get("status"), dict) else {}
+                raw_snippet = item.get("snippet")
+                snippet: dict[str, object] = raw_snippet if isinstance(raw_snippet, dict) else {}
+                raw_status = item.get("status")
+                status: dict[str, object] = raw_status if isinstance(raw_status, dict) else {}
                 videos.append(
                     RemoteVideo(
                         video_id=str(item.get("id") or ""),
@@ -385,7 +439,8 @@ def _insert_result(response: Any, size: int) -> InsertResult:
             "upload_id_unreadable",
             f"the upload of {size} bytes completed but the response carried no video id",
         )
-    status = payload.get("status") if isinstance(payload.get("status"), dict) else {}
+    raw_status = payload.get("status")
+    status: dict[str, object] = raw_status if isinstance(raw_status, dict) else {}
     privacy = str(status.get("privacyStatus") or "private")
     if privacy != "private":
         # A private-only publisher that received a non-private status has a real problem, and the

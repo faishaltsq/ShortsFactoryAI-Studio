@@ -34,6 +34,7 @@ from ..orchestration.runner import Stage, StageContext, StageError, StageOutcome
 from .transport import (
     InsertRequest,
     PublicationTransport,
+    ThumbnailTransport,
     TransportRefused,
     TransportUncertain,
     sent_receipt,
@@ -234,6 +235,36 @@ def build_publish_stage(state: Any, transport: PublicationTransport) -> Stage:
             ],
         ).to_json()
         ctx.write_artifact(PUBLICATION_NAME, payload)
+        # Upload the thumbnail if the transport supports it and one was rendered.
+        # This is strictly best-effort with respect to the video: a failure here does NOT
+        # invalidate the completed upload or record uncertainty.  The video is safely on
+        # the channel with an auto-generated thumbnail.
+        if isinstance(transport, ThumbnailTransport):
+            try:
+                meta = store.read_artifact(job_id, "metadata.json")
+                thumb_spec = meta.get("thumbnail") if isinstance(meta, dict) else {}
+                thumb_path_rel = str(thumb_spec.get("path") or "") if isinstance(thumb_spec, dict) else ""
+                if thumb_path_rel:
+                    thumb_path = Path(store.job_dir(job_id)) / thumb_path_rel
+                    if thumb_path.is_file():
+                        thumb_result = transport.set_thumbnail(result.video_id, str(thumb_path))
+                        _emit(
+                            state,
+                            job_id,
+                            "PRIVATE_UPLOAD",
+                            "thumbnail_uploaded",
+                            f"thumbnail diunggah: {thumb_result.detail}",
+                            agent="PublisherAgent",
+                        )
+            except Exception as exc:  # noqa: BLE001 - thumbnail failure must not roll back or fail the publish
+                _emit(
+                    state,
+                    job_id,
+                    "PRIVATE_UPLOAD",
+                    "thumbnail_failed",
+                    f"gagal mengunggah thumbnail ({type(exc).__name__}: {exc}); video tetap terbit",
+                    agent="PublisherAgent",
+                )
         _emit(
             state,
             job_id,
