@@ -7,7 +7,7 @@ import hashlib
 import json
 from typing import Any, ClassVar
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 class ArtifactValidationError(ValueError):
@@ -36,6 +36,18 @@ class Artifact(BaseModel):
     kind: ClassVar[str] = "artifact"
 
     schema_version: int = 1
+
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def _coerce_schema_version(cls, v: Any) -> int:
+        if isinstance(v, str):
+            cleaned = v.lstrip("vV").split(".")[0].strip()
+            if cleaned.isdigit():
+                return int(cleaned)
+        if isinstance(v, (int, float)):
+            return int(v)
+        return 1
+
     created_at: str = Field(default_factory=_utc_now)
     #: Locally attached provenance: ``prompt_sha256``, ``producer``, ``provider``, ``model``.
     #: Declared on the base so *every* artifact may carry it, and attached by the code that ran
