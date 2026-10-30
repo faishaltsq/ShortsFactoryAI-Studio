@@ -38,7 +38,8 @@ DEFAULT_SCOPES: tuple[str, ...] = (
 
 #: Where the sealed bundle lives. One id, so an operator has one thing to rotate.
 TOKEN_SECRET_ID = "oauth-youtube"
-
+#: Where the sealed client credentials live.
+CLIENT_SECRET_ID = "oauth-youtube-client"
 
 @dataclass(frozen=True)
 class TokenBundle:
@@ -264,3 +265,46 @@ def load_tokens(store: SecretStore, ref: CredentialRef) -> TokenBundle:
     if not payload:
         raise SecretStoreError(f"no sealed token bundle for {ref.kind}:{ref.name}")
     return TokenBundle.from_payload(payload)
+
+
+@dataclass(frozen=True)
+class ClientCredentials:
+    """OAuth client credentials. ``repr`` never leaks ``client_secret``."""
+
+    client_id: str
+    client_secret: str = field(repr=False)
+
+    def __repr__(self) -> str:
+        return f"ClientCredentials(client_id={self.client_id!r}, client_secret=[redacted])"
+
+    def sealed_payload(self) -> str:
+        return json.dumps({"client_id": self.client_id, "client_secret": self.client_secret}, sort_keys=True)
+
+    @classmethod
+    def from_payload(cls, payload: str) -> ClientCredentials:
+        data = json.loads(payload)
+        if not isinstance(data, dict) or not data.get("client_id") or not data.get("client_secret"):
+            raise SecretStoreError("sealed client payload is not valid ClientCredentials")
+        return cls(client_id=str(data["client_id"]), client_secret=str(data["client_secret"]))
+
+
+def seal_client_credentials(
+    store: SecretStore,
+    credentials: ClientCredentials,
+    *,
+    secret_id: str = CLIENT_SECRET_ID,
+) -> CredentialRef:
+    """Seal OAuth client credentials with DPAPI and return a reference."""
+    return store.put(secret_id, credentials.sealed_payload())
+
+
+def load_client_credentials(
+    store: SecretStore,
+    *,
+    secret_id: str = CLIENT_SECRET_ID,
+) -> ClientCredentials:
+    """Unseal OAuth client credentials."""
+    payload = store.resolve(CredentialRef("dpapi", secret_id))
+    if not payload:
+        raise SecretStoreError(f"no sealed client credentials for dpapi:{secret_id}")
+    return ClientCredentials.from_payload(payload)

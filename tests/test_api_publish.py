@@ -165,6 +165,14 @@ def test_an_unknown_transport_name_is_refused(client, app):
     assert "transport" in response.json()["detail"].lower()
 
 
+def test_youtube_transport_without_configured_credentials_is_refused(client, app):
+    job_id = _approved_live_job(app)
+    response = client.post(
+        f"/api/jobs/{job_id}/publish", json={"transport": "youtube"}
+    )
+    assert response.status_code == 422
+    assert "youtube credentials not configured" in response.json()["detail"].lower()
+
 # -- reconcile ---------------------------------------------------------------------------------
 
 

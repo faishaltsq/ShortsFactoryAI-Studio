@@ -216,3 +216,29 @@ def test_loading_a_bundle_that_does_not_exist_is_an_error(tmp_path):
 def test_a_sealed_payload_that_is_not_a_bundle_is_refused():
     with pytest.raises(SecretStoreError, match="not a token bundle"):
         TokenBundle.from_payload('{"something": "else"}')
+
+@pytest.mark.skipif(sys.platform != "win32", reason="DPAPI is Windows-only")
+def test_client_credentials_round_trip_through_secret_store(tmp_path):
+    from packages.core.publish.oauth import (
+        CLIENT_SECRET_ID,
+        ClientCredentials,
+        load_client_credentials,
+        seal_client_credentials,
+    )
+
+    store = SecretStore(tmp_path)
+    creds = ClientCredentials(client_id="cid-123.apps.googleusercontent.com", client_secret="cs-supersecret")
+    ref = seal_client_credentials(store, creds)
+    assert ref.kind == "dpapi"
+    assert ref.name == CLIENT_SECRET_ID
+
+    # No plaintext on disk
+    blob = (tmp_path / f"{CLIENT_SECRET_ID}.bin").read_bytes()
+    assert b"cs-supersecret" not in blob
+
+    # Repr does not show client_secret
+    assert "cs-supersecret" not in repr(creds)
+
+    loaded = load_client_credentials(store)
+    assert loaded.client_id == "cid-123.apps.googleusercontent.com"
+    assert loaded.client_secret == "cs-supersecret"

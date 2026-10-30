@@ -556,15 +556,42 @@ def create_app(state: AppState | None = None) -> FastAPI:
     def _transport(name: str):
         """Resolve a publication transport by name.
 
-        Only the offline stub exists. A real transport is a later, separate addition; refusing an
-        unknown name here is what stops a typo from silently publishing through the stub and
-        recording an upload that never happened.
+        Supports 'stub' for offline proof and 'youtube' for real YouTube Data API.
+        Refusing an unknown name here is what stops a typo from silently publishing through the
+        stub and recording an upload that never happened.
         """
         from packages.core.publish.stub import StubTransport
 
-        if name != "stub":
-            raise HTTPException(status_code=422, detail=f"unknown transport {name!r}")
-        return StubTransport()
+        if name == "stub":
+            return StubTransport()
+        if name == "youtube":
+            from packages.core.providers.http_base import PinnedHTTP
+            from packages.core.publish.oauth import (
+                TOKEN_SECRET_ID,
+                load_client_credentials,
+                load_tokens,
+            )
+            from packages.core.publish.youtube import YouTubeCredentials, YouTubeTransport
+            from packages.core.security.secretstore import CredentialRef, SecretStoreError
+
+            try:
+                client = load_client_credentials(app_state.secrets)
+                tokens = load_tokens(app_state.secrets, CredentialRef("dpapi", TOKEN_SECRET_ID))
+            except SecretStoreError as exc:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"YouTube credentials not configured: {exc}. Run scripts/setup_youtube.py first.",
+                ) from exc
+
+            credentials = YouTubeCredentials(
+                access_token=tokens.access_token,
+                client_id=client.client_id,
+                client_secret=client.client_secret,
+            )
+            http = PinnedHTTP(timeout_s=120.0, max_retries=0)
+            return YouTubeTransport(credentials=credentials, http=http)
+
+        raise HTTPException(status_code=422, detail=f"unknown transport {name!r}")
 
     @app.post("/api/jobs/{job_id}/publish")
     def publish_job(
