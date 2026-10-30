@@ -27,13 +27,25 @@ class ResearchArtifact(Artifact):
     sources: list[dict[str, Any]] = Field(default_factory=list)
     claims: list[dict[str, Any]] = Field(default_factory=list)
 
+    @field_validator("claims", mode="before")
+    @classmethod
+    def _coerce_claims(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            coerced: list[Any] = []
+            for item in value:
+                if isinstance(item, str):
+                    coerced.append({"text": item})
+                else:
+                    coerced.append(item)
+            return coerced
+        return value
+
     @model_validator(mode="after")
     def _factual_needs_sources(self) -> ResearchArtifact:
         # A factual script with no source cannot be verified later, so it cannot be produced.
         if self.content_kind == "factual" and not self.sources:
             raise ValueError("factual research requires at least one source")
         return self
-
 
 class ScriptArtifact(Artifact):
     kind = "script"

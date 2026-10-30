@@ -75,7 +75,7 @@ class ResearchAgent(Agent):
         "Return ONLY a JSON object with keys: schema_version, topic, content_kind, candidates, "
         "sources, claims. content_kind is 'factual' or 'fictional'. For factual content, sources "
         "must contain at least one object with url and title. Never invent a URL you were not given; "
-        "if you have no source, set content_kind to 'fictional'."
+        "if you have no source, set content_kind to 'fictional'. Each claim in claims must be an object with 'text'."
     )
 
     def build_user_prompt(self, **kwargs: Any) -> str:

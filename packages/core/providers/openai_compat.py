@@ -165,11 +165,15 @@ class OpenAICompatProvider:
         message = choices[0].get("message") or {}
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
-            raise ProviderError(
-                "provider_empty_completion",
-                f"model {payload.get('model', call.model)!r} returned empty content",
-                provider=call.provider,
-            )
+            reasoning = message.get("reasoning_content") or message.get("reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                content = reasoning
+            else:
+                raise ProviderError(
+                    "provider_empty_completion",
+                    f"model {payload.get('model', call.model)!r} returned empty content",
+                    provider=call.provider,
+                )
         raw_usage = payload.get("usage") or {}
         return ProviderResult(
             content=content,
@@ -235,12 +239,15 @@ class OpenAICompatProvider:
         message = choices[0].get("message") or {}
         content = message.get("content")
         if not isinstance(content, str) or not content.strip():
-            raise ProviderError(
-                "provider_empty_completion",
-                f"model {payload.get('model', call.model)!r} returned empty content",
-                provider=call.provider,
-            )
-
+            reasoning = message.get("reasoning_content") or message.get("reasoning")
+            if isinstance(reasoning, str) and reasoning.strip():
+                content = reasoning
+            else:
+                raise ProviderError(
+                    "provider_empty_completion",
+                    f"model {payload.get('model', call.model)!r} returned empty content",
+                    provider=call.provider,
+                )
         raw_usage = payload.get("usage") or {}
         usage = Usage(
             prompt_tokens=int(raw_usage.get("prompt_tokens") or 0),
