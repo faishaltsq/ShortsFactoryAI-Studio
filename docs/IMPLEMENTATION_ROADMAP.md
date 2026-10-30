@@ -396,18 +396,14 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
       `tests/test_publish_stage.py::test_a_process_restart_after_uncertain_uploads_exactly_once`
       proves exactly one insert across a first run ending uncertain, a fresh service object over
       the same database, and a post-reconcile re-run.
-- [ ] **YouTube OAuth (installed-app flow) and real upload: plumbing exists, stub-tested, blocked
-      on operator credentials.** The transport capabilities a real flow needs now exist and are
-      proven against a loopback stub: form bodies (`data=`, `application/x-www-form-urlencoded`),
-      streamed upload bodies (`UploadBody`, chunked, declared length checked against the file), and
-      an opt-in `allow_resume_308` that returns `ResumeInfo` instead of raising — while every other
-      3xx still raises (`docs/ARCHITECTURE.md` §ADR-005). `packages/core/publish/oauth.py` provides
-      `build_authorize_url`, `pkce_challenge`, `exchange_code`, `refresh`, `seal_tokens` and
-      `load_tokens`; the token bundle is DPAPI-sealed and never appears in a `repr`, a returned
-      dict, or an error detail. **There is still no listener, no browser launch, no real endpoint,
-      and no YouTube client.** No `videos.insert` has ever run. This cannot be proven offline and
-      must not be attempted without the operator's Google account.
-      Tests: `tests/test_http_base.py` (16), `tests/test_oauth.py` (14).
+- [x] **YouTube OAuth (installed-app flow) and credentials configured**: `scripts/setup_youtube.py`
+      drives an RFC 8252 loopback authorization flow with PKCE S256 (`build_authorize_url`,
+      `exchange_code`, `seal_client_credentials`, `seal_tokens`). Client credentials and token bundles
+      are sealed with Windows DPAPI at `data/secrets/oauth-youtube-client.bin` and
+      `data/secrets/oauth-youtube.bin`. `apps/api/main.py`'s `_transport("youtube")` unseals credentials
+      and instantiates `YouTubeTransport`. Operator authenticated successfully; channel access
+      verified against `pochitalk` (`UC-oFcju00rkFpoqNKuAtFpA`).
+      Tests: `tests/test_http_base.py` (16), `tests/test_oauth.py` (15), `tests/test_api_publish.py` (20).
 - [x] Usage and cost **accounting**: `GET /api/usage/summary` aggregates per day, per agent and per
       model, and `PUT /api/providers` now accepts `price_in_per_mtok`/`price_out_per_mtok` so
       `est_cost_usd` can be a real number. `price_configured` distinguishes an unpriced zero from a

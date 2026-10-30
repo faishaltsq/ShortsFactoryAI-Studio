@@ -78,7 +78,7 @@ class CallbackServer:
 
             def do_GET(self) -> None:  # noqa: N802
                 parsed = urllib.parse.urlsplit(self.path)
-                if parsed.path not in {"/callback", "/callback/"}:
+                if parsed.path not in {"/callback", "/callback/", "/", ""}:
                     self.send_response(404)
                     self.end_headers()
                     self.wfile.write(b"Not Found")
@@ -271,7 +271,7 @@ def run_setup(client_secrets_path: Path, port: int = 8765, manual_mode: bool = F
 def main() -> None:
     parser = argparse.ArgumentParser(description="Setup YouTube OAuth credentials for ShortsFactoryAI Studio")
     default_path = Path(
-        r"C:\Users\cubeb\Downloads\client_secret_27698248583-96m1fovdr38gdsfrv0voaqccoqtps9um.apps.googleusercontent.com.json"
+        r"C:\Users\cubeb\Downloads\client_secret_286182396731-6b57hsu58hp3a5oqosmrspn0ksm0rpts.apps.googleusercontent.com.json"
     )
     parser.add_argument(
         "--client-secrets",
