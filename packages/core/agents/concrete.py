@@ -40,10 +40,10 @@ STORYBOARD_SCHEMA = json.dumps(
                 "text": [{"id": "t1", "text": "...", "role": "title", "atFrame": 0}],
                 "camera": {
                     "shot": "wide",
-                    "move": "static",
-                    "target": None,
+                    "move": "push",
+                    "target": "t1",
                     "amplitude": 0.12,
-                    "ease": "power2.out",
+                    "ease": "linear",
                 },
                 "motion": {
                     "energy": 0.5,
@@ -173,12 +173,13 @@ class StoryboardAgent(Agent):
         "this exact shape (types matter):\n"
         + STORYBOARD_SCHEMA
         + "\nRules: scenes must be contiguous (scene N starts where N-1 ended). "
-        "durationInFrames between 30 and 3000. If camera.move is not 'static', camera.target MUST "
-        "be the id of an element in that scene's text array. Available templates: "
+        "durationInFrames between 30 and 3000. Give every scene a motivated camera movement ('push', 'pull', 'pan', or 'tilt') "
+        "targeting an element id in that scene's text array (e.g. camera.target='t1') with amplitude 0.08 to 0.15 and ease 'linear'. "
+        "Do NOT leave camera.move as 'static', because static scenes cause frozen-frame QC rejection. "
+        "Available templates: "
         + ", ".join(TEMPLATES)
-        + ". Use at most one push or pull in the whole video. Give every scene at least one beat."
+        + ". Prefer 'EducationalExplainer' or 'KineticTypography'. Give every scene at least one beat."
     )
-
     def build_user_prompt(self, **kwargs: Any) -> str:
         script = cast(dict[str, Any], kwargs.get("script") or {})
         fps = int(kwargs.get("fps") or 30)
@@ -194,8 +195,9 @@ class StoryboardAgent(Agent):
         scenes = payload.get("scenes")
         if isinstance(scenes, list):
             valid_roles = {"title", "body", "caption", "label"}
+            moves = ["push", "pan", "pull", "tilt"]
             current_frame = 0
-            for sc in scenes:
+            for sc_idx, sc in enumerate(scenes):
                 if not isinstance(sc, dict):
                     continue
                 # Normalize template if data is missing for data-driven templates
@@ -209,7 +211,7 @@ class StoryboardAgent(Agent):
                 sc["durationInFrames"] = duration
 
                 # Normalize text roles and frame bounds
-                text_ids: set[str] = set()
+                text_ids: list[str] = []
                 text_list = sc.get("text")
                 if isinstance(text_list, list):
                     for i, t in enumerate(text_list):
@@ -217,7 +219,7 @@ class StoryboardAgent(Agent):
                             continue
                         tid = str(t.get("id") or f"t{i+1}")
                         t["id"] = tid
-                        text_ids.add(tid)
+                        text_ids.append(tid)
                         role = str(t.get("role") or "").lower()
                         if role not in valid_roles:
                             if any(k in role for k in ("title", "head", "hook")):
@@ -227,24 +229,31 @@ class StoryboardAgent(Agent):
                             elif "label" in role:
                                 t["role"] = "label"
                             else:
-                                 t["role"] = "body"
+                                t["role"] = "body"
                         tf = int(t.get("atFrame") or 0)
                         if tf >= current_frame and current_frame > 0:
                             tf -= current_frame
                         t["atFrame"] = max(0, min(duration - 1, tf))
 
-                # Normalize camera target if camera moves without a valid subject
+                # Normalize camera: motivate camera with active movement to prevent frozen frames
                 cam = sc.get("camera")
-                if isinstance(cam, dict):
-                    move = cam.get("move")
-                    if move != "static":
-                        target = cam.get("target")
-                        if not target or target not in text_ids:
-                            cam["move"] = "static"
-                            cam["target"] = None
-                    if cam.get("move") == "orbit" and sc.get("template") not in {"IllustratedStory", "ParallaxStory"}:
-                        cam["move"] = "static"
-                        cam["target"] = None
+                if not isinstance(cam, dict):
+                    cam = {}
+                    sc["camera"] = cam
+
+                first_text_id = text_ids[0] if text_ids else None
+                move = cam.get("move")
+                target = cam.get("target")
+
+                # If camera is static or has invalid target, assign a motivated move towards the text subject
+                if (move == "static" or not target or target not in text_ids) and first_text_id:
+                    cam["move"] = moves[sc_idx % len(moves)]
+                    cam["target"] = first_text_id
+                    cam["amplitude"] = max(0.08, min(0.20, float(cam.get("amplitude") or 0.12)))
+                    cam["ease"] = "linear"
+                elif move == "orbit" and sc.get("template") not in {"IllustratedStory", "ParallaxStory"}:
+                    cam["move"] = "push"
+                    cam["target"] = first_text_id
 
                 # Normalize motion beats within scene relative duration
                 motion = sc.get("motion")
