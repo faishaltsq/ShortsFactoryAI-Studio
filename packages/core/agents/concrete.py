@@ -18,6 +18,7 @@ from ..contracts import (
     StoryboardArtifact,
 )
 from ..contracts.base import Artifact
+from ..contracts.scene import DATA_DRIVEN_TEMPLATES
 from ..providers.base import Capability
 from . import Agent
 
@@ -31,7 +32,7 @@ STORYBOARD_SCHEMA = json.dumps(
         "scenes": [
             {
                 "sceneId": "sc1",
-                "template": "IllustratedStory",
+                "template": "EducationalExplainer",
                 "segment": "s1",
                 "startFrame": 0,
                 "durationInFrames": 300,
@@ -189,6 +190,36 @@ class StoryboardAgent(Agent):
     def contract(self) -> type[Artifact]:
         return StoryboardArtifact
 
+    def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        scenes = payload.get("scenes")
+        if isinstance(scenes, list):
+            current_frame = 0
+            for sc in scenes:
+                if not isinstance(sc, dict):
+                    continue
+                # Normalize template if data is missing for data-driven templates
+                tmpl = sc.get("template")
+                if tmpl in DATA_DRIVEN_TEMPLATES and not sc.get("data"):
+                    sc["template"] = "EducationalExplainer"
+
+                # Normalize camera target if camera moves without a valid subject
+                cam = sc.get("camera")
+                if isinstance(cam, dict) and cam.get("move") != "static":
+                    text_ids = {
+                        t.get("id")
+                        for t in sc.get("text", [])
+                        if isinstance(t, dict) and t.get("id")
+                    }
+                    if not cam.get("target") or cam.get("target") not in text_ids:
+                        cam["move"] = "static"
+                        cam["target"] = None
+
+                # Ensure contiguous frame progression
+                duration = int(sc.get("durationInFrames") or 300)
+                sc["startFrame"] = current_frame
+                sc["durationInFrames"] = max(30, min(3000, duration))
+                current_frame += sc["durationInFrames"]
+        return payload
 
 class AnimationAgent(Agent):
     name = "AnimationAgent"

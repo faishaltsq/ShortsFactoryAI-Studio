@@ -133,6 +133,9 @@ class Agent:
     def contract(self) -> type[Artifact]:
         raise NotImplementedError
 
+    def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        """Hook for subclasses to normalize minor payload deviations before validation."""
+        return payload
     # -- machinery --------------------------------------------------------------------------
     def call(self, *, task: str, **kwargs: Any) -> str:
         user = self.build_user_prompt(**kwargs)
@@ -148,7 +151,7 @@ class Agent:
         """Call, parse, validate. One repair attempt on a schema violation, then fail."""
         raw = self.call(task=task, **kwargs)
         try:
-            payload = extract_json(raw)
+            payload = self.sanitize_payload(extract_json(raw))
             return validate_artifact(self.contract(), payload)
         except (ModelOutputError, ArtifactValidationError) as first:
             repair_prompt = (
@@ -164,7 +167,8 @@ class Agent:
             except ProviderError as exc:
                 raise ModelOutputError(exc.code, exc.detail, retryable=exc.retryable) from exc
             try:
-                return validate_artifact(self.contract(), extract_json(result.content))
+                payload = self.sanitize_payload(extract_json(result.content))
+                return validate_artifact(self.contract(), payload)
             except (ModelOutputError, ArtifactValidationError) as second:
                 raise ModelOutputError(
                     "schema_violation",
