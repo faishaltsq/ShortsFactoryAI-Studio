@@ -27,9 +27,12 @@ export const DeclaredCameraScope: React.FC<{
   const {width, height} = useVideoConfig();
 
   if (!scene.camera) return <>{children}</>;
-
-  const sceneFrame = frame - scene.startFrame;
-  const anchor = textAnchorOf(scene, scene.camera.target);
+  // In Remotion, useCurrentFrame() inside a <Sequence from={startFrame}> is already scene-local (0 to durationInFrames).
+  // If called without a Sequence context where frame is global, normalize only when frame exceeds duration.
+  const sceneFrame =
+    frame >= scene.startFrame && scene.startFrame > 0 && frame >= scene.durationInFrames
+      ? frame - scene.startFrame
+      : frame;
   let state: CameraTransform;
   try {
     state = declaredCameraAt(scene.camera, sceneFrame, scene.durationInFrames, anchor, {
