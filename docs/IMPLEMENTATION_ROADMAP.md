@@ -439,7 +439,7 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
 | Gate | Command | Pass |
 | --- | --- | --- |
 | Lint | `uv run ruff check .` | 0 findings |
-| Types (py) | `uv run mypy packages/core --strict` | exit 0, 52 files strict-clean |
+| Types (py) | `uv run mypy packages/core --strict` | exit 0, 53 files strict-clean |
 | Types (ts) | `npm --prefix apps/dashboard run typecheck` | 0 errors |
 | Unit | `uv run pytest -q` | all pass |
 | UI unit | `npm --prefix apps/dashboard run test` | all pass |
@@ -452,7 +452,7 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
 **The Types (py) gate runs.** mypy 1.18.2 is in the `dev` dependency group, `[tool.mypy]` sets
 `strict = true` / `python_version = "3.12"` / `packages = ["packages.core"]`, and
 `scripts/check.ps1` + `check.sh` invoke it like every other gate. `uv run mypy packages/core
---strict` exits 0 over all 48 core source files (2026-10-27, after a 93-finding burn-down across
+--strict` exits 0 over all 53 core source files (2026-10-30, after a 93-finding burn-down across
 `media/`, `motion/`, `agents/`, `orchestration/`, `providers/`, `publish/`, `security/`). Rules
 for keeping it green: no blanket `# type: ignore`, no per-module `ignore_errors`; a single
 ignore with a written reason in this file is the only tolerated escape hatch, and the planted
