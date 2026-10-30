@@ -57,6 +57,19 @@ class ScriptArtifact(Artifact):
     #: Provenance (prompt_sha256, producer, provider, model) lives on the Artifact base and is
     #: attached by the code that made the call — never written by the model.
 
+    @field_validator("segments", mode="before")
+    @classmethod
+    def _normalize_segment_ids(cls, segments: Any) -> Any:
+        if isinstance(segments, list):
+            for i, seg in enumerate(segments):
+                if isinstance(seg, dict):
+                    sid = seg.get("id")
+                    if sid is None or sid == "" or isinstance(sid, int) or str(sid).isdigit():
+                        seg["id"] = f"s{i + 1}"
+                    else:
+                        seg["id"] = str(sid)
+        return segments
+
     @model_validator(mode="after")
     def _segments_have_ids(self) -> ScriptArtifact:
         seen: set[str] = set()

@@ -753,7 +753,19 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
             voice = str(job.payload.get("voice") or "")
             script = store.read_artifact(job_id, "script.json")
             storyboard = store.read_artifact(job_id, "storyboard.json")
-            segments = {item.get("id"): item.get("text") for item in script.get("segments", []) if isinstance(item, dict)}
+            script_segs = [item for item in script.get("segments", []) if isinstance(item, dict)]
+            segments: dict[Any, str] = {}
+            for i, item in enumerate(script_segs):
+                sid = item.get("id")
+                t = str(item.get("text") or "")
+                if sid is not None:
+                    segments[sid] = t
+                    segments[str(sid)] = t
+                    if str(sid).isdigit():
+                        segments[f"s{sid}"] = t
+                segments[f"s{i + 1}"] = t
+                segments[str(i + 1)] = t
+                segments[i] = t
             scene_ids: list[str] = []
             trims: list[SceneTrim] = []
             scene_words: list[list[WordBoundary]] = []
@@ -761,6 +773,8 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
                 scene_id = str(scene.get("sceneId") or "")
                 segment_id = scene.get("segment")
                 text = segments.get(segment_id)
+                if (not text or not str(text).strip()) and index < len(script_segs):
+                    text = script_segs[index].get("text")
                 if not scene_id or not isinstance(text, str) or not text.strip():
                     raise RuntimeError(f"scene {scene_id or index!r} has no script text for segment {segment_id!r}")
                 raw_scene = job_dir / f".narration-scene-{index + 1}.raw.wav"
