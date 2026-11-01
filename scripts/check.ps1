@@ -92,8 +92,8 @@ Invoke-Gate -Name 'video-typecheck' -Command 'npm --prefix packages/video run ty
 Invoke-Gate -Name 'video-adapter' -Command 'npm --prefix packages/video run test:adapter' -Action {
     npm --prefix packages/video run test:adapter
 }
-Invoke-Gate -Name 'video-beats' -Command 'npm --prefix packages/video run test:motion-beats' -Action {
-    npm --prefix packages/video run test:motion-beats
+Invoke-Gate -Name 'video-props' -Command 'npm --prefix packages/video run test:render-props' -Action {
+    npm --prefix packages/video run test:render-props
 }
 $browserSkip = if ($Quick) { 'skipped by -Quick: needs a browser' } else { '' }
 Invoke-Gate -Name 'still-smoke' -Command 'npm --prefix packages/video run still-smoke' -Skip $browserSkip -Action {

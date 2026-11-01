@@ -1,18 +1,11 @@
-"""Renderer dispatch: the payload chooses the renderer, and a lie is refused.
+"""Renderer dispatch: one renderer, and a lie is still refused.
 
-Two properties, both cheap to state and expensive to lose:
-
-1. A job created with ``renderer: "bang-motion"`` records ``renderer: "bang-motion"`` in
-   ``render.json``. Before this test the field was accepted by the API schema, ignored by the
-   pipeline, and the artifact said ``"remotion"`` — a silent lie in a contract that a downstream
-   approval gate reads.
-2. An unknown renderer value raises **before any process starts**. A typo must not silently fall
-   back to the primary renderer, because the operator would then be looking at a Remotion video
-   while believing they were comparing a second one.
+The second renderer (``bang-motion``) existed to capture character SVG frames and was removed with
+the character engine. What remains is the property that mattered: the payload cannot name a
+renderer the repository does not ship, and the artifact records the renderer that actually ran.
 
 The stage is built and driven with a fake renderer, so nothing here needs Node, ffmpeg, or a
-browser. The real subprocess paths are covered by ``tests/test_bang_motion.py`` and the parity
-module.
+browser.
 """
 
 from __future__ import annotations
@@ -68,7 +61,7 @@ class _FakeStore:
                 "scenes": [
                     {
                         "sceneId": "sc1",
-                        "template": "IllustratedStory",
+                        "template": "ObjectExplainer",
                         "segment": "s1",
                         "startFrame": 0,
                         "durationInFrames": 30,
@@ -76,7 +69,7 @@ class _FakeStore:
                         "camera": {"move": "static"},
                         "motion": {"beats": []},
                         "transition": {"kind": "cut", "frames": 0},
-                        "data": {"actors": [], "setting": "desert"},
+                        "data": {"environment": "dataCenter", "objects": [{"kind": "serverRack", "x": 0.5, "y": 0.4, "size": 0.4}]},
                     }
                 ],
                 "subtitles": [],
@@ -126,7 +119,11 @@ def _stub_video_dir(root: Path) -> Path:
     """
     video = root / "video"
     (video / "scripts").mkdir(parents=True, exist_ok=True)
-    (video / "scripts" / "bang-render.mjs").write_text("// stub\n", encoding="utf-8")
+    # The version recorded in render.json is read from this file; a stub without it would make the
+    # artifact claim an empty renderer version.
+    (video / "package.json").write_text(
+        json.dumps({"dependencies": {"remotion": "4.0.537"}}), encoding="utf-8"
+    )
     chrome = (
         video / "node_modules" / ".remotion" / "chrome-headless-shell" / "win64"
         / "chrome-headless-shell-win64" / "chrome-headless-shell.exe"
@@ -145,8 +142,8 @@ def _payload(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
-def test_known_renderers_are_exactly_two() -> None:
-    assert RENDERERS == ("remotion", "bang-motion")
+def test_the_repository_ships_one_renderer() -> None:
+    assert RENDERERS == ("remotion",)
 
 
 def test_renderer_kind_defaults_to_remotion() -> None:
@@ -155,8 +152,13 @@ def test_renderer_kind_defaults_to_remotion() -> None:
 
 
 def test_renderer_kind_reads_the_payload() -> None:
-    assert renderer_kind({"renderer": "bang-motion"}) == "bang-motion"
     assert renderer_kind({"renderer": "remotion"}) == "remotion"
+
+
+def test_the_retired_character_renderer_is_not_accepted() -> None:
+    """A stored payload naming the removed renderer must fail, not silently re-render."""
+    with pytest.raises(ValueError, match="renderer"):
+        renderer_kind({"renderer": "bang-motion"})
 
 
 @pytest.mark.parametrize("value", ["BangMotion", "bang_motion", "ffmpeg", "", " ", 7, None, True])
@@ -176,7 +178,6 @@ def test_an_unknown_renderer_raises_before_any_process_starts(
         raise AssertionError("no renderer may be invoked for an unknown renderer value")
 
     monkeypatch.setattr(render_mod, "render_storyboard", boom)
-    monkeypatch.setattr(render_mod, "render_bang_motion", boom)
     store = _FakeStore(tmp_path, payload=_payload(renderer="nope"))
     with pytest.raises(ValueError, match="renderer"):
         build_render_stage(_State(store), video_dir=tmp_path, renderer="nope")
@@ -187,11 +188,11 @@ def test_the_stage_records_the_payload_renderer(tmp_path: Path, monkeypatch: pyt
     """The core regression: the artifact must say what actually rendered it."""
     import packages.core.media.render as render_mod
 
-    store = _FakeStore(tmp_path, payload=_payload(renderer="bang-motion"))
+    store = _FakeStore(tmp_path, payload=_payload(renderer="remotion"))
     calls: list[str] = []
 
-    def fake_bang(**kwargs: Any) -> dict[str, Any]:
-        calls.append("bang-motion")
+    def fake_render(**kwargs: Any) -> dict[str, Any]:
+        calls.append("remotion")
         Path(kwargs["out_path"]).write_bytes(b"fake-video-bytes")
         return {"elapsed_ms": 1}
 
@@ -206,21 +207,21 @@ def test_the_stage_records_the_payload_renderer(tmp_path: Path, monkeypatch: pyt
             "format": {"duration": "1.0"},
         }
 
-    monkeypatch.setattr(render_mod, "render_bang_motion", fake_bang)
+    monkeypatch.setattr(render_mod, "render_storyboard", fake_render)
     monkeypatch.setattr(render_mod, "mux_narration", _fake_mux)
     monkeypatch.setattr(render_mod, "probe_media", fake_probe)
     monkeypatch.setattr(render_mod, "sha256_file", lambda path: "0" * 64)
 
     stage = build_render_stage(
-        _State(store), video_dir=_stub_video_dir(tmp_path), renderer="bang-motion"
+        _State(store), video_dir=_stub_video_dir(tmp_path), renderer="remotion"
     )
     ctx = stage_ctx(store, "job1")
     outcome = stage.run(ctx)
 
     assert outcome.ok
-    assert calls == ["bang-motion"], "the bang-motion path must be the one that ran"
+    assert calls == ["remotion"], "the remotion path must be the one that ran"
     written = dict(ctx.json_pending)[RENDER_NAME]
-    assert written["renderer"] == "bang-motion"
+    assert written["renderer"] == "remotion"
     assert written["renderer_version"], "a renderer must record its version"
     assert written["frames"] == 30
     assert written["width"] == 1080 and written["height"] == 1920
@@ -273,11 +274,11 @@ def test_a_renderer_that_writes_nothing_fails_the_stage(
     """No unverified success: an absent file is a stage failure, not an empty artifact."""
     import packages.core.media.render as render_mod
 
-    store = _FakeStore(tmp_path, payload=_payload(renderer="bang-motion"))
-    monkeypatch.setattr(render_mod, "render_bang_motion", lambda **kwargs: {"elapsed_ms": 1})
+    store = _FakeStore(tmp_path, payload=_payload(renderer="remotion"))
+    monkeypatch.setattr(render_mod, "render_storyboard", lambda **kwargs: {"elapsed_ms": 1})
 
     stage = build_render_stage(
-        _State(store), video_dir=_stub_video_dir(tmp_path), renderer="bang-motion"
+        _State(store), video_dir=_stub_video_dir(tmp_path), renderer="remotion"
     )
     with pytest.raises(Exception, match="produced no file|render"):
         stage.run(stage_ctx(store, "job1"))

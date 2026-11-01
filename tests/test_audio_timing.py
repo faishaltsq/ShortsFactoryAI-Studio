@@ -100,7 +100,7 @@ def _job(store: JobStore, *, voice: str = "system-default") -> str:
             "scenes": [
                 {
                     "sceneId": f"sc{i + 1}",
-                    "template": "IllustratedStory",
+                    "template": "ObjectExplainer",
                     "segment": f"s{i + 1}",
                     "startFrame": 0,
                     "durationInFrames": 90,

@@ -62,7 +62,7 @@ def _props(scenes: int = SCENES, frames: int = SCENE_FRAMES) -> dict:
                     "sceneId": f"sc{index}",
                     "startFrame": index * frames,
                     "durationInFrames": frames,
-                    "template": "IllustratedStory",
+                    "template": "ObjectExplainer",
                     "segment": f"s{index}",
                     "text": [{"id": f"t{index}", "text": "Halo", "role": "title", "atFrame": 0}],
                     "data": {

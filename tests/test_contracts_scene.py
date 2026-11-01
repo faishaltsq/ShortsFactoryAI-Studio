@@ -5,18 +5,18 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from packages.core.contracts import CameraSpec, SceneSpec, StoryboardArtifact
+from packages.core.contracts import CameraSpec, SceneSpec, StoryboardArtifact, WordTimestamp
 
 
 def _scene(**overrides):
     base = dict(
         sceneId="sc1",
-        template="IllustratedStory",
+        template="ObjectExplainer",
         segment="s1",
         startFrame=0,
         durationInFrames=300,
         text=[{"id": "t1", "text": "Halo", "role": "title"}],
-        # IllustratedStory is data-driven, so the fixture carries a minimal valid payload.
+        # ObjectExplainer is data-driven, so the fixture carries a minimal valid payload.
         data={
             "setting": "desert",
             "timeOfDay": "dusk",
@@ -123,7 +123,7 @@ def test_storyboard_total_frames_sums_scenes():
 
 
 DATA_DRIVEN = ("MotionComic", "HistoricalTimeline", "ParallaxStory", "InfographicMotion",
-               "IllustratedStory")
+               "ObjectExplainer")
 
 
 @pytest.mark.parametrize("template", DATA_DRIVEN)
@@ -143,5 +143,19 @@ def test_a_text_template_without_data_is_accepted():
 
 def test_empty_data_is_not_presence():
     with pytest.raises(ValidationError) as exc:
-        SceneSpec.model_validate(_scene(template="IllustratedStory", data={}))
+        SceneSpec.model_validate(_scene(template="ObjectExplainer", data={}))
     assert "requires scene.data" in str(exc.value)
+
+
+def test_word_timestamp_valid():
+    wt = WordTimestamp(word="Remotion", startMs=100, endMs=450)
+    assert wt.word == "Remotion"
+    assert wt.startMs == 100
+    assert wt.endMs == 450
+
+
+def test_word_timestamp_rejected_when_unordered():
+    with pytest.raises(ValidationError) as exc:
+        WordTimestamp(word="Test", startMs=500, endMs=300)
+    assert "endMs must be greater than startMs" in str(exc.value)
+

@@ -48,7 +48,7 @@ def _storyboard(text_scene2: str = "second") -> dict[str, Any]:
     def scene(scene_id: str, start: int, text: str) -> dict[str, Any]:
         return {
             "sceneId": scene_id,
-            "template": "IllustratedStory",
+            "template": "ObjectExplainer",
             "segment": f"seg-{scene_id}",
             "startFrame": start,
             "durationInFrames": SCENE_FRAMES,

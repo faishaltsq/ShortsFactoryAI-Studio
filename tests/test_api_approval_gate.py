@@ -100,7 +100,7 @@ def _ready_job(client, app, *, provider_mode: str = "mock") -> tuple[str, dict]:
         "scenes": [
             {
                 "sceneId": "sc1",
-                "template": "IllustratedStory",
+                "template": "ObjectExplainer",
                 "segment": "s1",
                 "startFrame": 0,
                 "durationInFrames": 90,

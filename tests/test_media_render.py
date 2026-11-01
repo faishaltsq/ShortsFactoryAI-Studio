@@ -260,6 +260,19 @@ def test_absent_speech_stays_absent_rather_than_becoming_a_synthetic_clock():
     assert all("speech" not in scene for scene in timed["scenes"])
 
 
+def test_audio_words_forwarded_to_timed_captions():
+    storyboard, audio = _timeline()
+    audio["words"] = [
+        {"word": "Halo", "startMs": 0, "endMs": 400},
+        {"word": "dunia", "startMs": 410, "endMs": 900},
+    ]
+    timed = update_storyboard_from_audio(storyboard, audio)
+    assert "captions" in timed
+    assert len(timed["captions"]) == 2
+    assert timed["captions"][0]["word"] == "Halo"
+
+
+
 @pytest.mark.parametrize(
     ("speech", "problem"),
     [

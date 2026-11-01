@@ -66,9 +66,15 @@ def test_create_rejects_unknown_fields(client):
     assert response.status_code == 422
 
 
-def test_create_requires_at_least_one_character(client):
-    response = client.post("/api/jobs", json={"title": "x", "characters": []})
+def test_create_no_longer_accepts_a_character_list(client):
+    """The retired character engine's request field must be refused, not silently ignored."""
+    response = client.post("/api/jobs", json={"title": "x", "characters": ["maya"]})
     assert response.status_code == 422
+
+
+def test_create_accepts_a_characterless_job(client):
+    response = client.post("/api/jobs", json={"title": "Jaringan GPU"})
+    assert response.status_code == 201
 
 
 def test_artifact_route_refuses_traversal(client):

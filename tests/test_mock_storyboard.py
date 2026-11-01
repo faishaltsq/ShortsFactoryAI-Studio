@@ -1,12 +1,8 @@
 """The mock storyboard must be able to pass an honest creative gate.
 
-The previous fixture was three identical scenes: one template, one setting, one `data.shots`
-entry with `camera: "static"`, and no character cue. That is a slideshow, and the QC gate is
-right to reject it — so the fixture, not the gate, is what changes.
-
-These tests are deliberately written against the *rendered* vocabulary (`data.shots[]`,
-`data.actors[]`), because that is the only thing the adapter forwards and the only thing a pixel
-can contradict.
+These tests are written against the *rendered* vocabulary (`data.environment`, `data.objects[]`
+and the declared camera), because that is the only thing the renderer draws and the only thing a
+pixel can contradict. There are no actors here: the informative engine has no characters.
 """
 
 from __future__ import annotations
@@ -17,17 +13,14 @@ from packages.core.contracts.artifacts import StoryboardArtifact
 from packages.core.contracts.base import validate_artifact
 from packages.core.providers.mock import MockProvider, mock_storyboard
 
-#: Mirrors `packages/video/src/scene-data.ts` and `character/ids.ts`. A cue outside these lists
-#: throws in `validateSceneData`, so the fixture would fail at render time, not at QC time.
-SETTINGS = {"space", "desert", "city", "ocean", "forest", "interior", "abstract"}
-TIMES_OF_DAY = {"dawn", "day", "dusk", "night"}
-FRAMINGS = {"wide", "medium", "close"}
-CAMERA_MOVES = {"static", "pushIn", "pullOut", "panLeft", "panRight", "tiltUp", "handheld"}
-POSES = {"stand", "point", "reach", "walk", "lookUp", "shrug", "sit"}
-EXPRESSIONS = {"neutral", "curious", "happy", "surprised", "concerned", "determined", "thinking", "sad"}
-GESTURES = {"none", "pointForward", "openPalm", "bothOpen", "wave", "think", "shrug"}
-MOTION_PRESETS = {"idle", "talk", "walk", "gesture", "react", "enter", "poseChange"}
-
+#: Mirrors `packages/video/src/art/object-kinds.ts` and `art/palette.ts`. A value outside these
+#: lists throws in `validateSceneData`, so the fixture would fail at render time.
+ENVIRONMENTS = {"dataCenter", "circuit", "space", "lab", "city", "grid", "abstract"}
+OBJECT_KINDS = {
+    "gpu", "wafer", "serverRack", "dataCenter", "neuralNet", "database", "satellite",
+    "antenna", "turbine", "solarPanel", "coolingFan", "phone", "drone", "rocket", "building",
+}
+CAMERA_MOVES = {"static", "push", "pull", "pan", "tilt", "orbit"}
 
 def _payload(seed: str = "demo") -> dict:
     """The dict the provider serialises. ``_payload`` is the one definition of the fixture."""
@@ -39,22 +32,24 @@ def test_the_mock_storyboard_validates_as_a_storyboard_artifact():
     assert len(art.scenes) >= 3
 
 
+def _hero(scene: dict) -> str:
+    objects = scene["data"]["objects"]
+    return objects[0]["kind"] if objects else ""
+
+
 def test_the_mock_storyboard_has_three_distinct_rendered_worlds():
     storyboard = mock_storyboard()
     worlds = {
-        (scene["template"], scene["data"]["setting"], scene["data"]["timeOfDay"])
+        (scene["template"], scene["data"]["environment"], _hero(scene))
         for scene in storyboard["scenes"]
     }
     assert len(worlds) == len(storyboard["scenes"]), f"worlds must differ per scene: {worlds}"
 
 
 def test_the_mock_storyboard_has_distinct_rendered_shots():
+    """The compositions draw the declared camera, so that is what a shot is."""
     storyboard = mock_storyboard()
-    shots = [
-        (shot["framing"], shot["camera"])
-        for scene in storyboard["scenes"]
-        for shot in scene["data"]["shots"]
-    ]
+    shots = [(scene["camera"]["shot"], scene["camera"]["move"]) for scene in storyboard["scenes"]]
     assert len(set(shots)) == len(shots), f"every rendered shot must differ: {shots}"
     assert len(set(shots)) / len(shots) >= 0.5
 
@@ -62,44 +57,31 @@ def test_the_mock_storyboard_has_distinct_rendered_shots():
 def test_every_scene_cue_uses_the_renderer_vocabulary():
     for scene in mock_storyboard()["scenes"]:
         data = scene["data"]
-        assert data["setting"] in SETTINGS, data["setting"]
-        assert data["timeOfDay"] in TIMES_OF_DAY, data["timeOfDay"]
-        for shot in data["shots"]:
-            assert shot["framing"] in FRAMINGS, shot
-            assert shot["camera"] in CAMERA_MOVES, shot
-            assert 0.5 <= shot["weight"] <= 3.0, shot
-        for actor in data["actors"]:
-            assert actor["pose"] in POSES, actor
-            if "expression" in actor:
-                assert actor["expression"] in EXPRESSIONS, actor
-            if "gesture" in actor:
-                assert actor["gesture"] in GESTURES, actor
-            if "motion" in actor:
-                assert actor["motion"]["preset"] in MOTION_PRESETS, actor
+        assert data["environment"] in ENVIRONMENTS, data["environment"]
+        assert data["objects"], scene["sceneId"]
+        for item in data["objects"]:
+            assert item["kind"] in OBJECT_KINDS, item
+            assert 0.0 <= item["x"] <= 1.0 and 0.0 <= item["y"] <= 1.0, item
+            assert 0.1 <= item["size"] <= 1.2, item
+        for flow in data["flows"]:
+            assert 0 <= flow["from"] < len(data["objects"]), flow
+            assert 0 <= flow["to"] < len(data["objects"]), flow
+            assert flow["from"] != flow["to"], flow
 
 
-def test_at_least_one_scene_renders_the_character():
-    characters = [
-        actor.get("character")
-        for scene in mock_storyboard()["scenes"]
-        for actor in scene["data"]["actors"]
+def test_at_least_one_scene_composes_more_than_one_object():
+    """A single icon on a backdrop is a logo; a scene has to show a relationship."""
+    composed = [
+        scene["sceneId"] for scene in mock_storyboard()["scenes"] if len(scene["data"]["objects"]) > 1
     ]
-    assert "maya" in characters, "the character-driven scene is the Phase 2 exit requirement"
+    assert composed, "at least one scene must place more than one object"
 
 
-def test_at_least_one_scene_shows_a_meaningful_action():
-    """A pose change plus a gesture is an action; a static `stand` is a placeholder."""
-    acted = [
-        scene["sceneId"]
-        for scene in mock_storyboard()["scenes"]
-        if any(
-            actor.get("gesture") not in (None, "none")
-            or actor.get("motion", {}).get("preset") in {"gesture", "react", "walk", "poseChange"}
-            or actor.get("pose") in {"point", "reach", "walk"}
-            for actor in scene["data"]["actors"]
-        )
-    ]
-    assert acted, "at least one scene must show a visible action"
+def test_no_scene_renders_a_character():
+    """The retired engine must leave no trace in what the pipeline writes."""
+    text = repr(mock_storyboard())
+    for retired in ("maya", '"actors"', '"pose"', '"expression"', "character:"):
+        assert retired not in text, f"retired character vocabulary survived: {retired}"
 
 
 def test_the_storyboard_carries_no_camera_move_that_the_renderer_cannot_honour():
@@ -124,13 +106,10 @@ def test_every_beat_subject_names_something_real():
     that relies on that fallback is not proving the resolution path works."""
     for scene in mock_storyboard()["scenes"]:
         ids = {element["id"] for element in scene["text"]}
-        actors = len(scene["data"]["actors"])
         for beat in scene["motion"]["beats"]:
             subject = beat["subject"]
-            selector = subject.startswith("actor:") and subject[6:].isdigit()
-            assert subject in ids or selector, f"{scene['sceneId']}: {subject}"
-            if selector:
-                assert int(subject[6:]) < actors, f"{scene['sceneId']}: {subject} out of range"
+            assert subject in ids, f"{scene['sceneId']}: {subject} names nothing on screen"
+            assert not subject.startswith("actor:"), f"{scene['sceneId']}: retired selector {subject}"
 
 
 def test_at_least_one_beat_lands_mid_scene_after_the_entrance():
@@ -256,8 +235,8 @@ def test_the_renderer_adapter_consumes_every_cue(tmp_path):
         "const adapted = adaptProductStoryboard(JSON.parse(readFileSync(process.argv[2], 'utf8')));\n"
         "for (const scene of adapted.scenes) validateSceneData(scene);\n"
         "console.log(JSON.stringify(adapted.scenes.map((s) => ({id: s.sceneId,"
-        " shots: s.data.shots, setting: s.data.setting,"
-        " actor: s.data.actors[0]?.character}))));\n",
+        " environment: s.data.environment, hero: s.data.objects[0]?.kind,"
+        " objects: s.data.objects.length}))));\n",
         encoding="utf-8",
     )
     try:
@@ -274,6 +253,7 @@ def test_the_renderer_adapter_consumes_every_cue(tmp_path):
         script.unlink(missing_ok=True)
     assert proc.returncode == 0, (proc.stderr or "")[-800:]
     payload = json.loads(proc.stdout.strip().splitlines()[-1])
-    assert [item["setting"] for item in payload] == ["desert", "city", "ocean"]
-    assert [item["actor"] for item in payload] == ["maya", "maya", "maya"]
-    assert len({item["shots"][0]["camera"] for item in payload}) == 3
+    assert [item["environment"] for item in payload] == ["dataCenter", "circuit", "grid"]
+    assert [item["hero"] for item in payload] == ["serverRack", "gpu", "database"]
+    assert all(item["objects"] > 1 for item in payload), "every scene composes a stage"
+    assert len({item["environment"] for item in payload}) == 3

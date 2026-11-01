@@ -37,7 +37,7 @@ PROPS = {
         "scenes": [
             {
                 "sceneId": "sc1",
-                "template": "IllustratedStory",
+                "template": "ObjectExplainer",
                 "segment": "s1",
                 "startFrame": 0,
                 "durationInFrames": 100,
@@ -47,28 +47,18 @@ PROPS = {
                 "motion": {"energy": 0.5, "continuity": "cut", "beats": []},
                 "transition": {"kind": "cut", "frames": 0},
                 "data": {
-                    "setting": "desert",
-                    "timeOfDay": "dusk",
-                    "actors": [
-                        {
-                            "pose": "stand",
-                            "x": 0.5,
-                            "ground": 0.72,
-                            "scale": 1,
-                            "facing": "right",
-                            "tone": "primary",
-                            "silhouette": False,
-                            "character": "maya",
-                        }
+                    "environment": "dataCenter",
+                    "objects": [
+                        {"kind": "serverRack", "x": 0.5, "y": 0.36, "size": 0.4, "at": 0},
+                        {"kind": "coolingFan", "x": 0.26, "y": 0.66, "size": 0.22, "at": 12},
                     ],
-                    "props": [],
-                    "fx": [],
-                    "shots": [{"framing": "wide", "camera": "pushIn", "weight": 1}],
+                    "callouts": [],
+                    "flows": [{"from": 1, "to": 0, "at": 30}],
                 },
             },
             {
                 "sceneId": "sc2",
-                "template": "IllustratedStory",
+                "template": "ObjectExplainer",
                 "segment": "s2",
                 "startFrame": 100,
                 "durationInFrames": 100,
@@ -78,28 +68,18 @@ PROPS = {
                 "motion": {"energy": 0.6, "continuity": "cut", "beats": []},
                 "transition": {"kind": "cut", "frames": 0},
                 "data": {
-                    "setting": "city",
-                    "timeOfDay": "night",
-                    "actors": [
-                        {
-                            "pose": "point",
-                            "x": 0.4,
-                            "ground": 0.72,
-                            "scale": 1,
-                            "facing": "left",
-                            "tone": "primary",
-                            "silhouette": False,
-                            "character": "maya",
-                        }
+                    "environment": "circuit",
+                    "objects": [
+                        {"kind": "gpu", "x": 0.5, "y": 0.36, "size": 0.4, "at": 0},
+                        {"kind": "coolingFan", "x": 0.26, "y": 0.66, "size": 0.22, "at": 12},
                     ],
-                    "props": [],
-                    "fx": [],
-                    "shots": [{"framing": "medium", "camera": "panLeft", "weight": 1}],
+                    "callouts": [],
+                    "flows": [{"from": 1, "to": 0, "at": 30}],
                 },
             },
             {
                 "sceneId": "sc3",
-                "template": "IllustratedStory",
+                "template": "ObjectExplainer",
                 "segment": "s3",
                 "startFrame": 200,
                 "durationInFrames": 100,
@@ -109,23 +89,13 @@ PROPS = {
                 "motion": {"energy": 0.5, "continuity": "cut", "beats": []},
                 "transition": {"kind": "cut", "frames": 0},
                 "data": {
-                    "setting": "ocean",
-                    "timeOfDay": "dawn",
-                    "actors": [
-                        {
-                            "pose": "reach",
-                            "x": 0.6,
-                            "ground": 0.72,
-                            "scale": 1,
-                            "facing": "right",
-                            "tone": "primary",
-                            "silhouette": False,
-                            "character": "maya",
-                        }
+                    "environment": "grid",
+                    "objects": [
+                        {"kind": "database", "x": 0.5, "y": 0.36, "size": 0.4, "at": 0},
+                        {"kind": "coolingFan", "x": 0.26, "y": 0.66, "size": 0.22, "at": 12},
                     ],
-                    "props": [],
-                    "fx": [],
-                    "shots": [{"framing": "close", "camera": "pullOut", "weight": 1}],
+                    "callouts": [],
+                    "flows": [{"from": 1, "to": 0, "at": 30}],
                 },
             },
         ],
@@ -532,8 +502,8 @@ def test_shot_variety_is_read_from_rendered_data_shots():
 def test_one_world_across_three_scenes_fails_repeated_world():
     props = json.loads(json.dumps(PROPS))
     for scene in props["storyboard"]["scenes"]:
-        scene["data"]["setting"] = "desert"
-        scene["data"]["timeOfDay"] = "dusk"
+        scene["data"]["environment"] = "dataCenter"
+        scene["data"]["objects"] = [{"kind": "serverRack", "x": 0.5, "y": 0.4, "size": 0.4}]
     result = _creative(props=props)
     assert "repeated_world" in result.failed
     assert result.metrics["repeated_world"] == pytest.approx(1 / 3)
@@ -572,33 +542,36 @@ def test_an_unmapped_script_segment_also_fails_mapping():
     assert "segment_mapping" in _creative(script=script).failed
 
 
-def test_character_consistency_requires_a_rendered_actor():
+def test_object_consistency_requires_a_drawn_object():
+    """A scene with nothing on its stage is the blank-frame failure this gate exists to catch."""
     props = json.loads(json.dumps(PROPS))
     for scene in props["storyboard"]["scenes"]:
-        for actor in scene["data"]["actors"]:
-            actor.pop("character", None)
+        scene["data"]["objects"] = []
     result = _creative(props=props)
-    assert "character_consistency" in result.failed
-    assert result.metrics["character_ids"] == []
+    assert "object_consistency" in result.failed
+    assert result.metrics["object_kinds"] == []
 
 
-def test_an_unknown_character_id_fails_consistency():
+def test_an_unknown_object_kind_fails_consistency():
+    """The storyboard cannot ask for a drawing the renderer does not ship."""
     props = json.loads(json.dumps(PROPS))
-    props["storyboard"]["scenes"][0]["data"]["actors"][0]["character"] = "nobody"
+    props["storyboard"]["scenes"][0]["data"]["objects"][0]["kind"] = "hologram"
     result = _creative(props=props)
-    assert "character_consistency" in result.failed
-    assert "nobody" in result.metrics["unresolved_characters"]
+    assert "object_consistency" in result.failed
+    assert "hologram" in result.metrics["unknown_objects"]
 
 
-def test_two_characters_with_different_rigs_fail_consistency():
+def test_every_shipped_object_kind_passes_consistency():
+    """The mirror list and the renderer's library agree, kind by kind."""
+    from packages.core.media.qc import SHIPPED_OBJECT_KINDS
+
     props = json.loads(json.dumps(PROPS))
-    props["storyboard"]["scenes"][1]["data"]["actors"][0]["character"] = "maya2"
-    assets = json.loads(json.dumps(ASSETS))
-    assets["characters"].append(
-        {"id": "maya2", "rig_hash": "9" * 64, "palette_hash": "8" * 64, "poses": ["point"], "expressions": ["neutral"]}
-    )
-    result = _creative(props=props, assets=assets)
-    assert "character_consistency" in result.failed
+    kinds = sorted(SHIPPED_OBJECT_KINDS)
+    for index, scene in enumerate(props["storyboard"]["scenes"]):
+        scene["data"]["objects"][0]["kind"] = kinds[index]
+    result = _creative(props=props)
+    assert "object_consistency" not in result.failed
+    assert result.metrics["unknown_objects"] == []
 
 
 def test_pacing_fails_when_one_scene_dominates_the_timeline():
@@ -621,9 +594,9 @@ def test_repetition_fails_above_0_8_jaccard_against_history():
     """The prior job is the same video with different words: same worlds, same shots."""
     same = {
         "scenes": [
-            {"template": "IllustratedStory", "setting": "desert", "timeOfDay": "dusk", "shot": "wide/pushIn"},
-            {"template": "IllustratedStory", "setting": "city", "timeOfDay": "night", "shot": "medium/panLeft"},
-            {"template": "IllustratedStory", "setting": "ocean", "timeOfDay": "dawn", "shot": "close/pullOut"},
+            {"template": "ObjectExplainer", "environment": "dataCenter", "hero": "serverRack", "shot": "wide/static"},
+            {"template": "ObjectExplainer", "environment": "circuit", "hero": "gpu", "shot": "medium/static"},
+            {"template": "ObjectExplainer", "environment": "grid", "hero": "database", "shot": "close/static"},
         ]
     }
     result = _creative(history=[same])
@@ -635,7 +608,7 @@ def test_a_partially_shared_style_stays_below_the_repetition_threshold():
     """One shared world out of three is 1/5 Jaccard, not a repetition verdict."""
     partial = {
         "scenes": [
-            {"template": "IllustratedStory", "setting": "desert", "timeOfDay": "dusk", "shot": "wide/pushIn"},
+            {"template": "ObjectExplainer", "environment": "dataCenter", "hero": "serverRack", "shot": "wide/static"},
         ]
     }
     result = _creative(history=[partial])
@@ -646,7 +619,7 @@ def test_a_partially_shared_style_stays_below_the_repetition_threshold():
 def test_repetition_passes_against_a_different_world():
     other = {
         "scenes": [
-            {"template": "KineticTypography", "setting": "space", "timeOfDay": "night", "shot": "close/pushIn"}
+            {"template": "KineticTypography", "environment": "space", "hero": "", "shot": "close/pushIn"}
         ]
     }
     result = _creative(history=[other])
@@ -657,7 +630,7 @@ def test_repetition_passes_against_a_different_world():
 def test_history_is_capped_at_ten_jobs():
     other = {
         "scenes": [
-            {"template": "KineticTypography", "setting": "space", "timeOfDay": "night", "shot": "close/pushIn"}
+            {"template": "KineticTypography", "environment": "space", "hero": "", "shot": "close/pushIn"}
         ]
     }
     result = _creative(history=[other] * 25)
@@ -674,7 +647,8 @@ def test_every_creative_metric_and_threshold_is_returned():
         "shot_variety",
         "repeated_world",
         "mapped_segments",
-        "character_ids",
+        "object_kinds",
+        "unknown_objects",
         "pacing_max_scene_share",
         "repetition",
     }

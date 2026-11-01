@@ -50,7 +50,7 @@ def _props(scenes: int = 3, frames: int = 30) -> dict:
                     "sceneId": f"sc{index}",
                     "startFrame": index * frames,
                     "durationInFrames": frames,
-                    "template": "IllustratedStory",
+                    "template": "ObjectExplainer",
                     "segment": f"s{index}",
                 }
                 for index in range(scenes)

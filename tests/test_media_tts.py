@@ -6,12 +6,17 @@ from pathlib import Path
 
 import pytest
 
+from packages.core.media.qc import verify_voice_locale
 from packages.core.media.tts import (
+    EdgeTTSProvider,
     WordBoundary,
     build_mix_argv,
     group_subtitles,
+    list_available_voices,
+    normalize_indonesian_pronunciation,
     parse_boundaries,
     parse_loudness_lufs,
+    resolve_tts,
     synthesize_sapi,
 )
 
@@ -189,3 +194,47 @@ def test_sapi_uses_noninteractive_profile_free_powershell(tmp_path: Path, monkey
 def test_loudness_parser_reports_measured_not_target_value():
     log = 'prefix\n{\n  "input_i" : "-17.23",\n  "target_offset" : "1.20"\n}\nsuffix'
     assert parse_loudness_lufs(log) == -17.23
+
+
+def test_resolve_tts_indonesian_neural_defaults():
+    provider, voice = resolve_tts(language="id", requested_voice=None)
+    assert isinstance(provider, EdgeTTSProvider)
+    assert voice.id == "id-ID-ArdiNeural"
+
+    provider, voice = resolve_tts(language="id-ID", requested_voice="id-ID-GadisNeural")
+    assert isinstance(provider, EdgeTTSProvider)
+    assert voice.id == "id-ID-GadisNeural"
+
+
+def test_resolve_tts_english_voice():
+    provider, voice = resolve_tts(language="en", requested_voice="en-US-GuyNeural")
+    assert isinstance(provider, EdgeTTSProvider)
+    assert voice.id == "en-US-GuyNeural"
+
+
+def test_list_available_voices_filters_by_locale():
+    voices_id = list_available_voices(locale="id")
+    assert len(voices_id) >= 2
+    assert all(v.locale.startswith("id") for v in voices_id)
+    assert any(v.id == "id-ID-ArdiNeural" for v in voices_id)
+    assert any(v.id == "id-ID-GadisNeural" for v in voices_id)
+
+
+def test_normalize_indonesian_pronunciation():
+    text = "Prof. Budi meneliti 50% data di lab."
+    normalized = normalize_indonesian_pronunciation(text)
+    assert "Profesor" in normalized
+    assert "50 persen" in normalized
+
+def test_verify_voice_locale():
+    ok, msg = verify_voice_locale({"narration": {"voice": "id-ID-ArdiNeural", "locale": "id-ID"}}, "id")
+    assert ok is True
+
+    # English voice for Indonesian job must fail
+    ok, msg = verify_voice_locale({"narration": {"voice": "Microsoft David Desktop", "locale": "en-US"}}, "id")
+    assert ok is False
+    assert "does not match Indonesian" in msg
+
+    # Missing narration fails
+    ok, msg = verify_voice_locale({}, "id")
+    assert ok is False

@@ -54,7 +54,7 @@ gate schemas     "uv run python scripts/export_schemas.py --check"
 gate secrets     "uv run python scripts/scan_secrets.py"
 gate video-tsc   "npm --prefix packages/video run typecheck"
 gate video-adptr "npm --prefix packages/video run test:adapter"
-gate video-beats "npm --prefix packages/video run test:motion-beats"
+gate video-props "npm --prefix packages/video run test:render-props"
 
 browser_skip=""
 [ "$quick" -eq 1 ] && browser_skip="skipped by --quick: needs a browser"

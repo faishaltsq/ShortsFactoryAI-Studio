@@ -315,7 +315,7 @@ def _rendered_job(root, name: str, *, setting: str, camera: str) -> None:
             "scenes": [
                 {
                     "sceneId": "sc1",
-                    "template": "IllustratedStory",
+                    "template": "ObjectExplainer",
                     "startFrame": 0,
                     "durationInFrames": 90,
                     "data": {
@@ -350,7 +350,7 @@ def test_history_uses_the_same_signature_shape_the_comparison_reads(tmp_path):
     assert len(history) == 1
     assert _signature_tokens(history[0]) == _signature_tokens(_style_signature(
         {"storyboard": {"fps": 30, "scenes": [
-            {"sceneId": "sc1", "template": "IllustratedStory", "startFrame": 0,
+            {"sceneId": "sc1", "template": "ObjectExplainer", "startFrame": 0,
              "durationInFrames": 90,
              "data": {"setting": "desert", "timeOfDay": "dusk",
                       "shots": [{"framing": "wide", "camera": "pushIn", "weight": 1}]}}

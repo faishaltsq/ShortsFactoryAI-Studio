@@ -7,6 +7,7 @@ graph and fails.
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -58,3 +59,64 @@ def test_contracts_import_nothing_from_the_project():
                     if alias.name.split(".")[0] == "packages":
                         offenders.append(f"{path.name} imports {alias.name}")
     assert not offenders, "\n".join(offenders)
+
+
+# -- the 3D agent office is a separate application feature -------------------------------------
+
+THREE_STUDIO = ROOT / "apps" / "dashboard" / "src" / "three"
+
+
+def _ts_imports(path: Path) -> set[str]:
+    text = path.read_text(encoding="utf-8")
+    return set(re.findall(r"from\s+['\"]([^'\"]+)['\"]", text)) | set(
+        re.findall(r"import\(\s*['\"]([^'\"]+)['\"]\s*\)", text)
+    )
+
+
+def test_the_3d_office_imports_nothing_from_the_video_engine():
+    """The virtual office must outlive the video engine.
+
+    It is a React Three Fiber application with its own agents, animation and event wiring. It
+    shares no module with `packages/video`, so retiring the video character system cannot reach it.
+    This fails the day someone imports a renderer helper into the studio.
+    """
+    offenders: list[str] = []
+    for path in THREE_STUDIO.rglob("*.ts*"):
+        for specifier in _ts_imports(path):
+            if "packages/video" in specifier or "packages/core" in specifier:
+                offenders.append(f"{path.relative_to(ROOT)} imports {specifier}")
+    assert not offenders, offenders
+
+
+def test_the_video_engine_imports_nothing_from_the_dashboard():
+    """The exported film is produced by Remotion alone; a dashboard import would couple the two."""
+    video = ROOT / "packages" / "video" / "src"
+    offenders: list[str] = []
+    for path in video.rglob("*.ts*"):
+        for specifier in _ts_imports(path):
+            if "apps/dashboard" in specifier or specifier.startswith("@/"):
+                offenders.append(f"{path.relative_to(ROOT)} imports {specifier}")
+    assert not offenders, offenders
+
+
+def test_the_object_vocabulary_agrees_across_languages():
+    """`OBJECT_KINDS` is the only thing stopping a blank box on screen.
+
+    The TypeScript library draws; the Python contract validates. If the two lists drift, the
+    storyboard can name an object the renderer cannot draw and the QC gate would still pass.
+    """
+    from packages.core.contracts.scene import OBJECT_KINDS
+
+    source = (ROOT / "packages" / "video" / "src" / "art" / "object-kinds.ts").read_text(encoding="utf-8")
+    block = source[source.index("export const OBJECT_KINDS") : source.index("] as const;")]
+    shipped = tuple(re.findall(r"'([a-zA-Z]+)'", block))
+    assert shipped == OBJECT_KINDS, (shipped, OBJECT_KINDS)
+
+
+def test_the_environment_vocabulary_agrees_across_languages():
+    from packages.core.contracts.scene import ENVIRONMENTS
+
+    source = (ROOT / "packages" / "video" / "src" / "art" / "palette.ts").read_text(encoding="utf-8")
+    block = source[source.index("export const ENVIRONMENTS") : source.index("] as const;")]
+    shipped = tuple(re.findall(r"'([a-zA-Z]+)'", block))
+    assert shipped == ENVIRONMENTS, (shipped, ENVIRONMENTS)

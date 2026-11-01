@@ -29,7 +29,7 @@ def _storyboard(**overrides) -> dict:
         "scenes": [
             {
                 "sceneId": "sc1",
-                "template": "IllustratedStory",
+                "template": "ObjectExplainer",
                 "segment": "s1",
                 "startFrame": 0,
                 "durationInFrames": 90,
