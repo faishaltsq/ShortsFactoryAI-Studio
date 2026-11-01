@@ -1,6 +1,6 @@
 # ADR-0012 — Bang Motion emits its own HTML
 
-**Status:** accepted
+**Status:** superseded by ADR 0013 (secondary renderer retired with character system)
 
 **Supersedes:** ADR-0007, **only** the clause "motion-skill HTML/CSS/GSAP" and the vendoring
 paragraph that depends on it ("We vendor GSAP and the needed font files into the motion package

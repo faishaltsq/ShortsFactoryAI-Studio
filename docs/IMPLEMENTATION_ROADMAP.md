@@ -133,6 +133,25 @@ exits non-zero on any violation and removes its temporary data directory unless 
 
 ## PHASE 2 — PRODUCTION ENGINE
 
+### 2.0 Informative-engine migration (ADR 0013)
+- [x] Character engine retired from the exported video: `packages/video/src/character/**`,
+      `art/Figure.tsx`, `motion-beats.ts`, `speech.ts`, `CharacterSheet`, `CharacterReel` and the
+      `IllustratedStory` composition are deleted, along with `config/characters.json` and the
+      `bang-motion` renderer (`packages/core/motion/`, `scripts/bang-render.mjs`).
+- [x] Object library shipping fifteen animated objects (`packages/video/src/art/objects.tsx`) over
+      seven backdrops, with `OBJECT_KINDS` as the single cross-language vocabulary
+      (`tests/test_architecture.py` proves the TypeScript library and the Python contract agree).
+- [x] Three informative templates replace the presenter: `ObjectExplainer` (objects + callouts +
+      flows, beats drive highlights), `ProcessFlow` (an ordered chain whose motion *is* the
+      explanation) and `MetricShift` (bars grow as their numbers count).
+- [x] Evidence: `evidence/topic-ai.mp4` and `evidence/topic-space.mp4`, both real 1080×1920 /
+      30 FPS / 180-frame renders with different objects, backdrops, themes and templates;
+      `packages/video/scripts/verify-template-stills.mjs` proves all nine templates mount, answer a
+      declared `push` camera, and only `ObjectExplainer` reacts to beats.
+- [x] The 3D agent office is untouched and now protected by an architecture test that fails if
+      `apps/dashboard/src/three/**` ever imports the video engine.
+
+
 ### 2.1 Agents
 - [x] Research (with source retrieval + claim verification), TopicSelection, Script, CreativeDirector,
       Storyboard, Asset, Animation, Audio, Editor, Quality, Metadata.

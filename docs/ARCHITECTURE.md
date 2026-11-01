@@ -13,8 +13,8 @@ was measured. It is not a prototype:
 | TypeScript | 11,281 LOC under `apps/dashboard/src`, `packages/video/src` |
 | Tests | 735 collected, 735 passing (one observed flake, see RISK_REGISTER R-02) |
 | Video | real 1080×1920 / 30 FPS / H.264+AAC MP4, 1098 frames, −16.01 LUFS |
-| Renderers | 11 Remotion compositions, 7 wired into `SCENE_RENDERERS` |
-| Character engine | one rigged character (`maya`), 7 poses, 9 expressions, 7 motion presets |
+| Renderers | one (Remotion); 9 templates wired into `SCENE_RENDERERS` |
+| Visual engine | 15 animated objects across 7 backdrops; no character rig (ADR 0013) |
 | Orchestration | SQLite WAL, state allow-list, token-owned leases, bounded retries |
 | Publishing | implemented, unit-tested, never exercised against a live account |
 
