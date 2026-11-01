@@ -4,9 +4,19 @@
  * validated with JSON Schema on the Python side before render.
  */
 
-import type {SpeechWindow} from './speech';
-
-export type {SpeechWindow} from './speech';
+/**
+ * A measured word window, scene-local milliseconds.
+ *
+ * The narration is still measured (SAPI reports a boundary per word and the audio stage persists
+ * them). The tongue that used to consume this is gone; the timing remains because subtitles and
+ * scene pacing are built from the same clock.
+ */
+export interface SpeechWindow {
+  /** Scene-local, inclusive. */
+  startMs: number;
+  /** Scene-local, exclusive. */
+  endMs: number;
+}
 
 export const TEMPLATE_IDS = [
   'KineticTypography',
@@ -15,7 +25,9 @@ export const TEMPLATE_IDS = [
   'HistoricalTimeline',
   'ParallaxStory',
   'InfographicMotion',
-  'IllustratedStory',
+  'ObjectExplainer',
+  'ProcessFlow',
+  'MetricShift',
 ] as const;
 
 export type TemplateId = (typeof TEMPLATE_IDS)[number];
@@ -153,6 +165,14 @@ export interface SubtitleCue {
   endMs: number;
 }
 
+export interface WordTimestamp {
+  word: string;
+  startMs: number;
+  endMs: number;
+  start: number; // in seconds
+  end: number;   // in seconds
+}
+
 export interface ThemeSpec {
   id: string;
   background: string;
@@ -173,6 +193,7 @@ export interface StoryboardSpec {
   theme: ThemeSpec;
   scenes: SceneSpec[];
   subtitles: SubtitleCue[];
+  captions?: WordTimestamp[];
   narration?: {src: string; durationMs: number; volume?: number};
   backgroundMusic?: {src: string; volume?: number};
   watermark?: {text: string; opacity?: number};

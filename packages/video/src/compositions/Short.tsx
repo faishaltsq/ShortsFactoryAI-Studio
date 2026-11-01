@@ -5,6 +5,9 @@ import {SCENE_RENDERERS} from './registry';
 import {validateSceneData} from '../scene-data';
 import {resolveTheme} from '../themes/brand';
 import {Subtitles} from '../components/Subtitles';
+import {TiktokCaptions} from '../components/TiktokCaptions';
+import {KenBurnsContainer} from '../components/KenBurnsContainer';
+import {SafeZoneOverlay} from '../components/SafeZoneOverlay';
 import {DeclaredCameraScope} from '../components/DeclaredCameraScope';
 
 
@@ -12,12 +15,9 @@ const renderScene = (scene: SceneSpec, theme: StoryboardSpec['theme'], watermark
   validateSceneData(scene);
   const Component = SCENE_RENDERERS[scene.template];
   if (!Component) throw new Error(`Template not implemented: ${scene.template}`);
-  // A declared camera wraps every template, not only `IllustratedStory`: the transform is a pure
-  // function of the declared camera, the frame and the named text anchor, none of which is
-  // template-specific. A scene with no declared camera renders byte-identically.
-  if (scene.template === 'IllustratedStory') {
-    return <Component scene={scene} theme={theme} watermark={watermark} />;
-  }
+  // A declared camera wraps every template: the transform is a pure function of the declared
+  // camera, the frame and the named text anchor, none of which is template-specific. A scene with
+  // no declared camera renders byte-identically.
   return (
     <DeclaredCameraScope scene={scene}>
       <Component scene={scene} theme={theme} watermark={watermark} />
@@ -66,7 +66,11 @@ export const Short: React.FC<{storyboard: StoryboardSpec}> = ({storyboard}) => {
     <AbsoluteFill style={{backgroundColor: theme.background}}>
       {scenes.map((scene) => (
         <Sequence key={scene.sceneId} from={scene.startFrame} durationInFrames={scene.durationInFrames} layout="none">
-          <TransitionedScene scene={scene}>{renderScene(scene, theme, storyboard.watermark?.text)}</TransitionedScene>
+          <TransitionedScene scene={scene}>
+            <KenBurnsContainer durationInFrames={scene.durationInFrames}>
+              {renderScene(scene, theme, storyboard.watermark?.text)}
+            </KenBurnsContainer>
+          </TransitionedScene>
         </Sequence>
       ))}
 
@@ -74,10 +78,18 @@ export const Short: React.FC<{storyboard: StoryboardSpec}> = ({storyboard}) => {
         <Audio src={staticFile(storyboard.narration.src)} volume={storyboard.narration.volume ?? 1} />
       ) : null}
 
-
-      <Subtitles cues={storyboard.subtitles ?? []} theme={theme} currentFrame={frame} fps={fps} />
+      {storyboard.captions && storyboard.captions.length > 0 ? (
+        <TiktokCaptions
+          words={storyboard.captions}
+          highlightColor={theme.accent}
+          fontFamily={theme.fontHeading || theme.fontBody}
+        />
+      ) : (
+        <Subtitles cues={storyboard.subtitles ?? []} theme={theme} currentFrame={frame} fps={fps} />
+      )}
       <div style={{position: 'absolute', left: 0, right: 0, top: 0, height: 4, backgroundColor: theme.accent, opacity: 0.9}} />
       <ProgressBar theme={theme} totalFrames={totalFrames} />
+      <SafeZoneOverlay visible={Boolean((storyboard as {showSafeZone?: boolean}).showSafeZone)} />
     </AbsoluteFill>
   );
 };

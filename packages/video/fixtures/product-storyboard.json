@@ -8,24 +8,21 @@
   "scenes": [
     {
       "sceneId": "sc1",
-      "template": "IllustratedStory",
-      "segment": "s1",
+      "template": "ObjectExplainer",
+      "segment": "Modern AI berjalan di atas jaringan GPU yang saling terhubung.",
       "startFrame": 0,
       "durationInFrames": 300,
-      "assetRefs": [
-        "character:maya",
-        "bg:desert-dusk"
-      ],
+      "assetRefs": [],
       "text": [
         {
           "id": "t1",
-          "text": "Gurun menyimpan cerita",
+          "text": "Jaringan GPU",
           "role": "title",
           "atFrame": 0
         },
         {
           "id": "t2",
-          "text": "Pasir bergerak pelan di bawah matahari.",
+          "text": "Satu model butuh ribuan akselerator.",
           "role": "body",
           "atFrame": 30
         }
@@ -36,29 +33,59 @@
       },
       "audio": null,
       "data": {
-        "title": "Gurun menyimpan cerita",
-        "caption": "Pasir bergerak pelan di bawah matahari.",
-        "setting": "desert",
-        "timeOfDay": "dusk",
-        "actors": [
+        "title": "Jaringan GPU",
+        "caption": "Satu model butuh ribuan akselerator.",
+        "environment": "dataCenter",
+        "objects": [
           {
-            "character": "maya",
-            "pose": "stand",
+            "kind": "gpu",
+            "x": 0.36,
+            "y": 0.32,
+            "size": 0.34,
+            "at": 0,
+            "label": "GPU",
+            "highlight": [
+              40,
+              90
+            ]
+          },
+          {
+            "kind": "serverRack",
+            "x": 0.7,
+            "y": 0.34,
+            "size": 0.26,
+            "at": 16,
+            "label": "Rak"
+          },
+          {
+            "kind": "dataCenter",
             "x": 0.5,
-            "ground": 0.72,
-            "scale": 1,
-            "facing": "right",
-            "tone": "primary",
-            "silhouette": false
+            "y": 0.66,
+            "size": 0.6,
+            "at": 34,
+            "label": "Data center"
           }
         ],
-        "props": [],
-        "fx": [],
-        "shots": [
+        "callouts": [
           {
-            "framing": "wide",
-            "camera": "pushIn",
-            "weight": 1
+            "object": 0,
+            "text": "Ribuan inti paralel",
+            "dx": -0.02,
+            "dy": -0.14,
+            "at": 48
+          }
+        ],
+        "flows": [
+          {
+            "from": 0,
+            "to": 2,
+            "label": "data",
+            "at": 60
+          },
+          {
+            "from": 1,
+            "to": 2,
+            "at": 72
           }
         ]
       },
@@ -88,25 +115,23 @@
     },
     {
       "sceneId": "sc2",
-      "template": "IllustratedStory",
-      "segment": "s2",
+      "template": "ProcessFlow",
+      "segment": "Permintaan masuk, diproses, lalu keluar sebagai jawaban.",
       "startFrame": 300,
       "durationInFrames": 300,
-      "assetRefs": [
-        "character:maya"
-      ],
+      "assetRefs": [],
       "text": [
         {
           "id": "t3",
-          "text": "Ia melangkah ke cahaya",
+          "text": "Tahap pertama: masukan",
           "role": "caption",
           "atFrame": 0
         },
         {
           "id": "t4",
-          "text": "LANGKAH",
+          "text": "Empat tahap",
           "role": "label",
-          "atFrame": 60
+          "atFrame": 12
         }
       ],
       "transition": {
@@ -115,37 +140,34 @@
       },
       "audio": null,
       "data": {
-        "title": "Ia melangkah ke cahaya",
-        "setting": "desert",
-        "timeOfDay": "dusk",
-        "actors": [
+        "title": "Empat tahap inferensi",
+        "caption": "Permintaan masuk, lalu keluar sebagai jawaban.",
+        "environment": "circuit",
+        "steps": [
           {
-            "character": "maya",
-            "pose": "stand",
-            "x": 0.5,
-            "ground": 0.72,
-            "scale": 1,
-            "facing": "right",
-            "tone": "primary",
-            "silhouette": false
-          }
-        ],
-        "props": [],
-        "fx": [],
-        "shots": [
+            "label": "Masukan",
+            "detail": "Teks dari pengguna"
+          },
           {
-            "framing": "medium",
-            "camera": "pushIn",
-            "weight": 1
+            "label": "Tokenisasi",
+            "detail": "Dipecah jadi token"
+          },
+          {
+            "label": "Inferensi",
+            "detail": "Bobot model dijalankan"
+          },
+          {
+            "label": "Keluaran",
+            "detail": "Token dirangkai ulang"
           }
         ]
       },
       "camera": {
         "shot": "medium",
-        "move": "pan",
+        "move": "push",
         "target": "t3",
-        "amplitude": 0.12,
-        "ease": "sine.inOut"
+        "amplitude": 0.08,
+        "ease": "power2.out"
       },
       "motion": {
         "energy": 0.55,
@@ -157,7 +179,7 @@
             "subject": "t3"
           },
           {
-            "atFrame": 72,
+            "atFrame": 80,
             "kind": "reveal",
             "subject": "t3"
           }
@@ -166,58 +188,62 @@
     },
     {
       "sceneId": "sc3",
-      "template": "IllustratedStory",
-      "segment": "s3",
+      "template": "MetricShift",
+      "segment": "Konsumsi daya pelatihan naik tajam setiap generasi model.",
       "startFrame": 600,
       "durationInFrames": 300,
       "assetRefs": [],
       "text": [
         {
           "id": "t5",
-          "text": "Cerita berakhir di kaki bukit.",
-          "role": "body",
+          "text": "Biaya daya pelatihan",
+          "role": "title",
           "atFrame": 0
+        },
+        {
+          "id": "t6",
+          "text": "Setiap generasi menuntut daya jauh lebih besar.",
+          "role": "body",
+          "atFrame": 30
         }
       ],
       "transition": {
         "kind": "wipe",
-        "frames": 20
+        "frames": 8
       },
       "audio": null,
       "data": {
-        "caption": "Cerita berakhir di kaki bukit.",
-        "setting": "desert",
-        "timeOfDay": "dusk",
-        "actors": [
+        "title": "Biaya daya pelatihan",
+        "caption": "Setiap generasi menuntut daya jauh lebih besar.",
+        "environment": "grid",
+        "metrics": [
           {
-            "character": "maya",
-            "pose": "stand",
-            "x": 0.5,
-            "ground": 0.72,
-            "scale": 1,
-            "facing": "right",
-            "tone": "primary",
-            "silhouette": false
+            "label": "Model kecil",
+            "value": 1.2,
+            "unit": "MW"
+          },
+          {
+            "label": "Model dasar",
+            "value": 8.5,
+            "unit": "MW"
+          },
+          {
+            "label": "Model batas",
+            "value": 21.4,
+            "unit": "MW"
           }
         ],
-        "props": [],
-        "fx": [],
-        "shots": [
-          {
-            "framing": "close",
-            "camera": "pushIn",
-            "weight": 1
-          }
-        ]
+        "maxValue": 24,
+        "decimals": 1
       },
       "camera": {
         "shot": "close",
         "move": "static",
-        "amplitude": 0.08,
-        "ease": "power1.out"
+        "amplitude": 0.0,
+        "ease": "linear"
       },
       "motion": {
-        "energy": 0.55,
+        "energy": 0.6,
         "continuity": "cut",
         "beats": [
           {
@@ -226,7 +252,7 @@
             "subject": "t5"
           },
           {
-            "atFrame": 78,
+            "atFrame": 90,
             "kind": "emphasis",
             "subject": "t5"
           }
@@ -236,14 +262,16 @@
   ],
   "subtitles": [
     {
+      "id": "s1",
+      "text": "Satu model butuh ribuan akselerator.",
       "startMs": 0,
-      "endMs": 2000,
-      "text": "Gurun menyimpan cerita."
+      "endMs": 4200
     },
     {
-      "startMs": 2000,
-      "endMs": 4500,
-      "text": "Pasir bergerak pelan."
+      "id": "s2",
+      "text": "Empat tahap, satu arah.",
+      "startMs": 10000,
+      "endMs": 14200
     }
   ]
 }

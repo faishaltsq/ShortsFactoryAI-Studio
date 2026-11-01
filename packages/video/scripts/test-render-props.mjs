@@ -105,19 +105,19 @@ check(donorMeta.props.storyboard === DONOR, 'a donor storyboard passes through b
 // --- Per-template compositions --------------------------------------------------------------
 const sceneMeta = await tick(
   calculateSceneMetadata({
-    props: {scene: DONOR.scenes.find((s) => s.template === 'IllustratedStory'), theme: {}, storyboard: PRODUCT},
+    props: {scene: DONOR.scenes.find((s) => s.template === 'ObjectExplainer'), theme: {}, storyboard: PRODUCT},
     defaultProps: {},
-    compositionId: 'IllustratedStory',
+    compositionId: 'ObjectExplainer',
     isRendering: true,
   }),
 );
 check(
   sceneMeta.props.scene.sceneId === 'sc1',
-  `IllustratedStory metadata picks the adapted scene from the carried storyboard (${sceneMeta.props.scene.sceneId})`,
+  `ObjectExplainer metadata picks the adapted scene from the carried storyboard (${sceneMeta.props.scene.sceneId})`,
 );
 check(
   sceneMeta.props.scene.text.every((t) => t.style && typeof t.style.role === 'string'),
-  'IllustratedStory metadata hands the composition an adapted scene',
+  'ObjectExplainer metadata hands the composition an adapted scene',
 );
 check(
   sceneMeta.durationInFrames === sceneMeta.props.scene.durationInFrames,
@@ -125,9 +125,9 @@ check(
 );
 
 // Without a carried storyboard the already-adapted default scene is kept.
-const donorScene = DONOR.scenes.find((s) => s.template === 'IllustratedStory');
+const donorScene = DONOR.scenes.find((s) => s.template === 'ObjectExplainer');
 const plainSceneMeta = await tick(
-  calculateSceneMetadata({props: {scene: donorScene, theme: {}}, defaultProps: {}, compositionId: 'IllustratedStory', isRendering: true}),
+  calculateSceneMetadata({props: {scene: donorScene, theme: {}}, defaultProps: {}, compositionId: 'ObjectExplainer', isRendering: true}),
 );
 check(plainSceneMeta.props.scene === donorScene, 'no storyboard prop -> the default scene is preserved by identity');
 

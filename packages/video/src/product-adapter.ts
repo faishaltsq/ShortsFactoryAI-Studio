@@ -158,7 +158,7 @@ export function isProductStoryboard(raw: unknown): boolean {
       isObject(scene) &&
       typeof scene.sceneId === 'string' &&
       Array.isArray(scene.text) &&
-      isObject(scene.transition),
+      (scene.transition === undefined || isObject(scene.transition)),
   );
 }
 
@@ -233,7 +233,7 @@ const adaptCamera = (raw: unknown, where: string, textIds: readonly string[]): C
  * Forward the declared motion. `beats` are carried verbatim in frame order; nothing is synthesised,
  * so a scene that declares no beats stays a scene with no beats.
  */
-const adaptMotion = (raw: unknown, where: string): MotionSpec | undefined => {
+const adaptMotion = (raw: unknown, where: string, durationInFrames?: number): MotionSpec | undefined => {
   if (raw === undefined || raw === null) return undefined;
   if (!isObject(raw)) fail(`${where}: motion must be an object`);
   const motion = raw as Record<string, unknown>;
@@ -251,8 +251,10 @@ const adaptMotion = (raw: unknown, where: string): MotionSpec | undefined => {
     const beatWhere = `${where} motion.beats[${i}]`;
     if (!isObject(item)) fail(`${beatWhere} must be an object`);
     const beat = item as Record<string, unknown>;
+    const rawAtFrame = requireInteger(beat.atFrame, 'atFrame', beatWhere);
+    const atFrame = durationInFrames !== undefined ? Math.max(0, Math.min(durationInFrames - 1, rawAtFrame)) : rawAtFrame;
     return {
-      atFrame: requireInteger(beat.atFrame, 'atFrame', beatWhere),
+      atFrame,
       kind: requireOneOf(BEAT_KINDS, beat.kind, 'kind', beatWhere) as BeatKind,
       subject: requireString(beat.subject, 'subject', beatWhere),
     };
@@ -308,7 +310,7 @@ const adaptScene = (raw: unknown, index: number): SceneSpec => {
   const startFrame = requireInteger(scene.startFrame, 'startFrame', where);
   const durationInFrames = requireInteger(scene.durationInFrames, 'durationInFrames', where);
 
-  const transitionRaw = scene.transition;
+  const transitionRaw = scene.transition ?? {kind: 'cut', frames: 0};
   if (!isObject(transitionRaw)) fail(`${where}: transition must be an object`);
   const transition = transitionRaw as Record<string, unknown>;
   const kind = requireString(transition.kind, 'transition.kind', where);
@@ -322,7 +324,7 @@ const adaptScene = (raw: unknown, index: number): SceneSpec => {
   const textRaw = requireArray(scene.text, 'text', where);
   const text = textRaw.map((element, i) => adaptText(element, sceneId, i));
 
-  // Non-content-addressed refs (`character:maya`, `bg:desert-dusk`) cannot become image
+  // Non-content-addressed refs (`bg:desert-dusk`, or the retired `character:maya`) cannot become image
   // requests. Dropping one renders as no image; inventing a path would render a broken one.
   const assetRefsRaw = requireArray(scene.assetRefs, 'assetRefs', where);
   const assetRefs = assetRefsRaw
@@ -347,7 +349,7 @@ const adaptScene = (raw: unknown, index: number): SceneSpec => {
   // to read the precedence instead of a rule spread across every composition.
   const camera = adaptCamera(scene.camera, where, text.map((element) => element.id));
   if (camera) adapted.camera = camera;
-  const motion = adaptMotion(scene.motion, where);
+  const motion = adaptMotion(scene.motion, where, durationInFrames);
   if (motion) adapted.motion = motion;
 
   // Measured speech windows are forwarded when present. They are written by the audio stage, not
@@ -377,6 +379,32 @@ const adaptSubtitles = (raw: unknown): StoryboardSpec['subtitles'] => {
       text: requireString(value.text, 'text', where),
       startMs: requireInteger(value.startMs, 'startMs', where),
       endMs: requireInteger(value.endMs, 'endMs', where),
+    };
+  });
+};
+
+const adaptCaptions = (raw: unknown): StoryboardSpec['captions'] => {
+  if (raw === undefined || raw === null) return undefined;
+  const items = requireArray(raw, 'captions', 'storyboard');
+  return items.map((item, index) => {
+    const where = `captions[${index}]`;
+    if (!isObject(item)) fail(`${where} must be an object`);
+    const value = item as Record<string, unknown>;
+    const word = requireString(value.word ?? value.text, 'word', where);
+    const startMs =
+      typeof value.startMs === 'number'
+        ? requireInteger(value.startMs, 'startMs', where)
+        : Math.round(requireNumber(value.start, 'start', where) * 1000);
+    const endMs =
+      typeof value.endMs === 'number'
+        ? requireInteger(value.endMs, 'endMs', where)
+        : Math.round(requireNumber(value.end, 'end', where) * 1000);
+    return {
+      word,
+      startMs,
+      endMs,
+      start: Number((startMs / 1000).toFixed(3)),
+      end: Number((endMs / 1000).toFixed(3)),
     };
   });
 };
@@ -411,5 +439,6 @@ export function adaptProductStoryboard(raw: unknown): StoryboardSpec {
     theme: resolveTheme({id: theme}),
     scenes,
     subtitles: adaptSubtitles(storyboard.subtitles),
+    captions: adaptCaptions(storyboard.captions ?? storyboard.words),
   };
 }

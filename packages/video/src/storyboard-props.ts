@@ -77,7 +77,7 @@ export function resolveStoryboard(raw: unknown): StoryboardSpec {
  * Pick the scene a per-template composition should render.
  *
  * The composition id is the template id, so a storyboard carried in the props wins: that is the
- * only way a direct render of `IllustratedStory` with `{storyboard: <product>}` gets the adapted
+ * only way a direct render of a template composition with `{storyboard: <product>}` gets the adapted
  * scene instead of the default one. Without a storyboard prop the scene already came from the
  * adapted `defaultProps`.
  */
@@ -94,8 +94,20 @@ export function resolveSceneProps<T extends {scene: SceneSpec}>(
   return storyboard.scenes.find((scene) => scene.template === compositionId) ?? props.scene;
 }
 
-const totalFramesOf = (sb: StoryboardSpec): number =>
-  Math.max(...sb.scenes.map((scene) => scene.startFrame + scene.durationInFrames));
+export const totalFramesOf = (sb: StoryboardSpec): number => {
+  const sceneEnd =
+    sb.scenes.length > 0
+      ? Math.max(...sb.scenes.map((scene) => scene.startFrame + scene.durationInFrames))
+      : 0;
+  const narrationEnd = sb.narration?.durationMs
+    ? Math.ceil((sb.narration.durationMs / 1000) * sb.fps)
+    : 0;
+  const lastCaptionEnd =
+    sb.captions && sb.captions.length > 0
+      ? Math.ceil(Math.max(...sb.captions.map((c) => c.end)) * sb.fps)
+      : 0;
+  return Math.max(30, sceneEnd, narrationEnd, lastCaptionEnd);
+};
 
 /**
  * `Short` metadata. Adapts here because the props a metadata function returns replace the merged

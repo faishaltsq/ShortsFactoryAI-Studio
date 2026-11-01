@@ -138,6 +138,23 @@ check(
   'absent subtitles become an empty list',
 );
 
+// Rule 5b: word-level captions are adapted to normalized seconds and milliseconds.
+const withCaptions = adaptProductStoryboard({
+  ...clone(PRODUCT),
+  captions: [
+    {word: 'Halo', startMs: 100, endMs: 500},
+    {word: 'Teman', startMs: 520, endMs: 950},
+  ],
+});
+check(Array.isArray(withCaptions.captions), 'adapted.captions must be an array');
+check(withCaptions.captions.length === 2, 'two word captions carried');
+check(withCaptions.captions[0].word === 'Halo', 'caption[0].word preserved');
+check(withCaptions.captions[0].startMs === 100, 'caption[0].startMs preserved');
+check(withCaptions.captions[0].endMs === 500, 'caption[0].endMs preserved');
+check(withCaptions.captions[0].start === 0.1, 'caption[0].start converted to seconds');
+check(withCaptions.captions[0].end === 0.5, 'caption[0].end converted to seconds');
+
+
 // Rule 6: animation is a constant the contract requires.
 check(
   adapted.scenes.every((scene) => scene.animation.preset === 'fadeIn'),
@@ -309,7 +326,7 @@ const missingData = adaptProductStoryboard({
   scenes: [{...clone(PRODUCT.scenes[0]), data: null}],
 });
 checkThrowsNaming(
-  'IllustratedStory with no data',
+  'ObjectExplainer with no data',
   () => validateSceneData(missingData.scenes[0]),
   'data',
 );
@@ -361,7 +378,10 @@ check(
   isProductStoryboard(readJson('../fixtures/all-templates.json')) === false,
   'isProductStoryboard rejects the donor fixture (donor behaviour is preserved)',
 );
-check(TEMPLATE_IDS.includes('IllustratedStory'), 'TEMPLATE_IDS still exports IllustratedStory');
+check(TEMPLATE_IDS.includes('ObjectExplainer'), 'TEMPLATE_IDS exports ObjectExplainer');
+check(TEMPLATE_IDS.includes('ProcessFlow'), 'TEMPLATE_IDS exports ProcessFlow');
+check(TEMPLATE_IDS.includes('MetricShift'), 'TEMPLATE_IDS exports MetricShift');
+check(!TEMPLATE_IDS.includes('IllustratedStory'), 'the retired character template is gone');
 
 console.log(`\n${failures === 0 ? 'PASS' : 'FAIL'} adapter test: ${failures} failure(s)`);
 process.exit(failures === 0 ? 0 : 1);

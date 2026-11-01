@@ -71,7 +71,7 @@ export const SAMPLE_STORYBOARD: StoryboardSpec = {
     },
     {
       sceneId: 'scene-04',
-      template: 'IllustratedStory',
+      template: 'ObjectExplainer',
       segment: 'Malam ini, lihat bulan. Cahayanya butuh satu koma tiga detik untuk sampai ke matamu.',
       assetRefs: [],
       text: [{id: 't4', text: '1,3 Detik dari Bulan', style: {role: 'title'}}],
@@ -82,12 +82,13 @@ export const SAMPLE_STORYBOARD: StoryboardSpec = {
       data: {
         title: '1,3 Detik dari Bulan',
         caption: 'Cahaya bulan selalu terlambat',
-        setting: 'ocean',
-        timeOfDay: 'night',
-        actors: [{pose: 'stand', x: 0.68, ground: 0.88, scale: 1.05, facing: 'right', tone: 'secondary', silhouette: false}],
-        props: [{kind: 'moon', x: 0.5, y: 0.2, scale: 1.4}],
-        fx: ['stars', 'vignette'],
-        shots: [{framing: 'wide', camera: 'pullOut', weight: 1.2}, {framing: 'close', camera: 'handheld', weight: 1}],
+        environment: 'space',
+        objects: [
+          {kind: 'satellite', x: 0.5, y: 0.44, size: 0.56, at: 0, label: 'Orbit'},
+          {kind: 'antenna', x: 0.5, y: 0.72, size: 0.3, at: 18, label: 'Stasiun Bumi'},
+        ],
+        callouts: [{object: 0, text: 'Jarak 384.400 km', dx: 0, dy: -0.13, at: 34}],
+        flows: [{from: 0, to: 1, label: '1,3 detik', at: 40}],
       },
     },
   ],

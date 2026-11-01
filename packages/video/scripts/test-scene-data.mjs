@@ -3,7 +3,7 @@ import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
 import ts from 'typescript';
 import vm from 'node:vm';
-// `scene-data.ts` imports the character id vocabulary, so this loader resolves local
+// `scene-data.ts` imports the object vocabulary, so this loader resolves local
 // modules instead of assuming a single file. Keeping the suite dependency-free (no
 // test runner, no bundler) is the convention in this package.
 const base = new URL('../src/', import.meta.url);

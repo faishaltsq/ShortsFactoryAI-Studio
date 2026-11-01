@@ -1,210 +1,246 @@
+/**
+ * Backdrops for informative scenes.
+ *
+ * An environment is not decoration: it establishes *where* the object lives, which is half of what
+ * makes an illustration informative. A GPU on a cosmic gradient says nothing; the same GPU in a
+ * data hall with a grid floor and a cable tray says "inference cluster".
+ *
+ * Every environment is drawn from the palette, so a theme change recolours the whole film
+ * consistently and no environment introduces a colour the theme does not own.
+ */
+
 import React from 'react';
-import type {Setting, TimeOfDay} from '../scene-data';
-import {alpha, mix, shade, type ArtPalette} from './palette';
-import {rand} from './rng';
+import {alpha, shade, tint, type ArtPalette, type EnvironmentKind} from './palette';
 
 const W = 1080;
 const H = 1920;
-const HORIZON = 1180;
 
-const Stars: React.FC<{palette: ArtPalette; count: number; seed?: number}> = ({palette, count, seed = 0}) => (
-  <g>
-    {Array.from({length: count}, (_, i) => {
-      const x = rand(seed + i * 3 + 1) * W;
-      const y = rand(seed + i * 3 + 2) * HORIZON * 0.92;
-      const r = 1 + rand(seed + i * 3 + 3) * 2.6;
-      return <circle key={i} cx={x} cy={y} r={r} fill={palette.figure} opacity={0.25 + rand(seed + i) * 0.55} />;
+/** Perspective floor: lines converging on a horizon, the cheapest honest depth cue. */
+const Floor: React.FC<{palette: ArtPalette; horizon: number; rows?: number; opacity?: number}> = ({
+  palette: p,
+  horizon,
+  rows = 9,
+  opacity = 0.5,
+}) => (
+  <g opacity={opacity}>
+    {Array.from({length: rows}, (_, i) => {
+      const t = i / (rows - 1);
+      // Rows compress toward the horizon, which is what makes a flat grid read as a plane.
+      const y = horizon + (H - horizon) * t * t;
+      return <line key={`r-${i}`} x1={0} y1={y} x2={W} y2={y} stroke={tint(p.ground, 0.35)} strokeWidth={2} />;
+    })}
+    {Array.from({length: 13}, (_, i) => {
+      const x = (i / 12) * W;
+      return (
+        <line
+          key={`c-${i}`}
+          x1={W / 2 + (x - W / 2) * 0.08}
+          y1={horizon}
+          x2={x}
+          y2={H}
+          stroke={tint(p.ground, 0.35)}
+          strokeWidth={2}
+        />
+      );
     })}
   </g>
 );
 
-const Celestial: React.FC<{palette: ArtPalette; cx: number; cy: number; r: number; crescent?: boolean; glow?: boolean}> = ({
-  palette,
-  cx,
-  cy,
-  r,
-  crescent,
-  glow = true,
-}) => (
-  <g>
-    {glow ? <circle cx={cx} cy={cy} r={r * 2.6} fill={palette.glow} opacity={0.16} /> : null}
-    <circle cx={cx} cy={cy} r={r} fill={palette.prop} />
-    {crescent ? <circle cx={cx + r * 0.42} cy={cy - r * 0.18} r={r * 0.92} fill={palette.skyTop} /> : null}
-  </g>
-);
-
-const Ridge: React.FC<{fill: string; opacity: number; y: number; amplitude: number; seed: number; drift: number}> = ({
-  fill,
-  opacity,
-  y,
-  amplitude,
-  seed,
-  drift,
-}) => {
-  const points = Array.from({length: 9}, (_, i) => {
-    const x = (i / 8) * W;
-    const height = amplitude * (0.45 + rand(seed + i) * 0.55);
-    return `${x.toFixed(0)},${(y - height).toFixed(0)}`;
-  });
+/** A wall of racks receding into the dark: the data-centre establishing shot. */
+const DataCenterEnv: React.FC<{palette: ArtPalette; frame: number}> = ({palette: p, frame}) => {
+  const horizon = 980;
   return (
-    <path
-      d={`M0,${H} L0,${y} L${points.join(' L')} L${W},${y} L${W},${H} Z`}
-      fill={fill}
-      opacity={opacity}
-      transform={`translate(${drift} 0)`}
-    />
-  );
-};
-
-const City: React.FC<{palette: ArtPalette; drift: number}> = ({palette, drift}) => {
-  const blocks = [
-    {x: -60, w: 180, h: 540}, {x: 96, w: 140, h: 700}, {x: 210, w: 200, h: 460},
-    {x: 386, w: 160, h: 640}, {x: 522, w: 210, h: 520}, {x: 706, w: 150, h: 720},
-    {x: 836, w: 190, h: 480}, {x: 1000, w: 160, h: 600},
-  ];
-  return (
-    <g transform={`translate(${drift} 0)`}>
-      {blocks.map((b, bi) => {
-        const top = HORIZON - b.h;
-        const cols = Math.max(1, Math.floor((b.w - 24) / 34));
-        const rows = Math.max(1, Math.floor((b.h - 40) / 44));
+    <g>
+      <rect width={W} height={H} fill={shade(p.skyTop, 0.35)} />
+      <rect width={W} height={horizon} fill={shade(p.ink, 0.25)} />
+      {/* far wall of racks */}
+      {Array.from({length: 9}, (_, i) => {
+        const x = 40 + i * 118;
+        const height = 300 + ((i * 37) % 90);
         return (
-          <g key={bi}>
-            <rect x={b.x} y={top} width={b.w} height={b.h} fill={shade(palette.ground, 0.35)} />
-            {Array.from({length: cols * rows}, (_, ci) => {
-              const cx = b.x + 16 + (ci % cols) * 34;
-              const cy = top + 26 + Math.floor(ci / cols) * 44;
-              const lit = rand(bi * 1000 + ci) > 0.45;
-              return <rect key={ci} x={cx} y={cy} width={16} height={22} fill={lit ? palette.figureAccent : palette.ink} opacity={lit ? 0.72 : 0.5} />;
-            })}
+          <g key={`wall-${i}`}>
+            <rect x={x} y={horizon - height} width={96} height={height} fill={shade(p.primary, 0.78)} />
+            {Array.from({length: Math.floor(height / 26)}, (_, r) => (
+              <rect
+                key={r}
+                x={x + 8}
+                y={horizon - height + 12 + r * 26}
+                width={80}
+                height={5}
+                fill={alpha(p.accent, ((frame / 20 + r + i) % 3 < 1 ? 0.34 : 0.08))}
+              />
+            ))}
           </g>
         );
       })}
+      <Floor palette={p} horizon={horizon} opacity={0.4} />
+      <rect y={horizon} width={W} height={H - horizon} fill={shade(p.ground, 0.2)} opacity={0.35} />
+      {/* overhead cable tray */}
+      <path d={`M0 240 Q${W / 2} 150 ${W} 240`} fill="none" stroke={shade(p.prop, 0.2)} strokeWidth={18} opacity={0.75} />
     </g>
   );
 };
 
-const Body: React.FC<{setting: Setting; palette: ArtPalette; progress: number; drift: number}> = ({setting, palette, progress, drift}) => {
-  switch (setting) {
+/** A PCB: traces at right angles, pads, and a slow pulse running along them. */
+const CircuitEnv: React.FC<{palette: ArtPalette; frame: number}> = ({palette: p, frame}) => {
+  const pulse = (frame / 60) % 1;
+  return (
+    <g>
+      <rect width={W} height={H} fill={shade(p.skyTop, 0.45)} />
+      <g opacity={0.5}>
+      {Array.from({length: 22}, (_, i) => {
+        const y = 80 + i * 82;
+        const turn = 200 + ((i * 137) % 620);
+        const lit = Math.abs((i / 22) - pulse) < 0.06;
+        return (
+          <g key={`trace-${i}`}>
+            <path
+              d={`M-40 ${y} H${turn} V${y + 60} H${turn + 220}`}
+              fill="none"
+              stroke={shade(p.prop, 0.1)}
+              strokeWidth={5}
+              strokeLinecap="square"
+            />
+            <path
+              d={`M-40 ${y} H${turn} V${y + 60} H${turn + 220}`}
+              fill="none"
+              stroke={p.accent}
+              strokeWidth={7}
+              strokeLinecap="square"
+              opacity={lit ? 0.85 : 0}
+            />
+          </g>
+        );
+      })}
+      </g>
+      {Array.from({length: 14}, (_, i) => (
+        <circle key={`pad-${i}`} cx={120 + ((i * 211) % 840)} cy={140 + ((i * 333) % 1600)} r={9} fill={alpha(p.accent, 0.35)} />
+      ))}
+    </g>
+  );
+};
+
+/** Space: a star field with a faint nebula wash. */
+const SpaceEnv: React.FC<{palette: ArtPalette; frame: number}> = ({palette: p, frame}) => (
+  <g>
+    <rect width={W} height={H} fill={shade(p.skyTop, 0.55)} />
+    <ellipse cx={W * 0.7} cy={H * 0.3} rx={620} ry={480} fill={alpha(p.accent, 0.09)} />
+    <ellipse cx={W * 0.25} cy={H * 0.7} rx={520} ry={400} fill={alpha(p.prop, 0.08)} />
+    {Array.from({length: 140}, (_, i) => {
+      const x = (i * 613) % W;
+      const y = (i * 947) % H;
+      const twinkle = 0.35 + 0.65 * Math.abs(Math.sin(frame / 40 + i));
+      return <circle key={`s-${i}`} cx={x} cy={y} r={i % 7 === 0 ? 3 : 1.6} fill={tint(p.accent, 0.8)} opacity={twinkle * 0.8} />;
+    })}
+  </g>
+);
+
+/** A clean lab: bright, tiled floor, soft panel light from above. */
+const LabEnv: React.FC<{palette: ArtPalette}> = ({palette: p}) => (
+  <g>
+    <rect width={W} height={H} fill={tint(p.skyTop, 0.28)} />
+    <rect y={1100} width={W} height={H - 1100} fill={tint(p.ground, 0.35)} />
+    {Array.from({length: 8}, (_, i) => (
+      <line key={`f-${i}`} x1={0} y1={1100 + i * 110} x2={W} y2={1100 + i * 110} stroke={tint(p.ground, 0.15)} strokeWidth={2} />
+    ))}
+    {Array.from({length: 7}, (_, i) => (
+      <rect key={`lamp-${i}`} x={80 + i * 140} y={90} width={86} height={14} rx={7} fill={tint(p.accent, 0.65)} opacity={0.8} />
+    ))}
+    <rect width={W} height={H} fill={tint(p.accent, 0.1)} opacity={0.35} />
+  </g>
+);
+
+/** A skyline: the corporate-story backdrop. */
+const CityEnv: React.FC<{palette: ArtPalette; frame: number}> = ({palette: p, frame}) => (
+  <g>
+    <rect width={W} height={H} fill={p.skyTop} />
+    {Array.from({length: 26}, (_, i) => {
+      const w = 60 + ((i * 71) % 90);
+      const x = i * 44 - 30;
+      const height = 320 + ((i * 193) % 700);
+      return (
+        <g key={`b-${i}`}>
+          <rect x={x} y={H - height} width={w} height={height} fill={shade(p.skyTop, 0.45)} />
+          {Array.from({length: Math.floor(height / 46)}, (_, r) =>
+            Array.from({length: Math.max(1, Math.floor(w / 26))}, (_, c) => {
+              const on = (frame / 22 + r + c + i) % 5 < 2;
+              return (
+                <rect
+                  key={`${r}-${c}`}
+                  x={x + 10 + c * 26}
+                  y={H - height + 20 + r * 46}
+                  width={12}
+                  height={16}
+                  fill={on ? tint(p.accent, 0.4) : shade(p.primary, 0.5)}
+                  opacity={on ? 0.85 : 0.5}
+                />
+              );
+            }),
+          )}
+        </g>
+      );
+    })}
+    <rect y={H - 160} width={W} height={160} fill={shade(p.ink, 0.4)} />
+  </g>
+);
+
+/** An abstract grid: nothing but structure, for a diagram with no place. */
+const GridEnv: React.FC<{palette: ArtPalette; frame: number}> = ({palette: p, frame}) => {
+  const drift = (frame / 3) % 80;
+  return (
+    <g>
+      <rect width={W} height={H} fill={shade(p.skyTop, 0.3)} />
+      {Array.from({length: 26}, (_, i) => (
+        <line key={`gv-${i}`} x1={i * 44} y1={0} x2={i * 44} y2={H} stroke={alpha(p.accent, 0.09)} strokeWidth={1.6} />
+      ))}
+      {Array.from({length: 46}, (_, i) => (
+        <line
+          key={`gh-${i}`}
+          x1={0}
+          y1={(i * 44 + drift) % H}
+          x2={W}
+          y2={(i * 44 + drift) % H}
+          stroke={alpha(p.accent, 0.09)}
+          strokeWidth={1.6}
+        />
+      ))}
+      <ellipse cx={W / 2} cy={H * 0.45} rx={520} ry={620} fill={alpha(p.accent, 0.1)} />
+    </g>
+  );
+};
+
+const AbstractEnv: React.FC<{palette: ArtPalette}> = ({palette: p}) => (
+  <g>
+    <rect width={W} height={H} fill={p.skyTop} />
+    <ellipse cx={W * 0.2} cy={H * 0.25} rx={560} ry={520} fill={alpha(p.skyBottom, 0.55)} />
+    <ellipse cx={W * 0.85} cy={H * 0.75} rx={620} ry={560} fill={alpha(p.accent, 0.12)} />
+    <rect y={H * 0.72} width={W} height={H * 0.28} fill={alpha(p.ground, 0.35)} />
+  </g>
+);
+
+export const Environment: React.FC<{
+  kind: EnvironmentKind;
+  palette: ArtPalette;
+  frame: number;
+}> = ({kind, palette, frame}) => {
+  switch (kind) {
+    case 'dataCenter':
+      return <DataCenterEnv palette={palette} frame={frame} />;
+    case 'circuit':
+      return <CircuitEnv palette={palette} frame={frame} />;
     case 'space':
-      return (
-        <g>
-          <ellipse cx={W * 0.76} cy={H * 0.3} rx={320} ry={220} fill={palette.figureAccent} opacity={0.07} />
-          <ellipse cx={W * 0.24} cy={H * 0.52} rx={260} ry={180} fill={palette.prop} opacity={0.06} />
-          <path d={`M0,${H} Q${W * 0.5},${HORIZON - 180} ${W},${H} L${W},${H} Z`} fill={palette.ground} opacity={0.85} transform={`translate(${drift * 0.4} 0)`} />
-        </g>
-      );
-    case 'desert':
-      return (
-        <g>
-          <Celestial palette={palette} cx={W * 0.72} cy={H * 0.24} r={96} />
-          <Ridge fill={palette.groundFar} opacity={0.55} y={HORIZON} amplitude={190} seed={11} drift={drift * 0.3} />
-          <Ridge fill={palette.ground} opacity={0.95} y={HORIZON + 90} amplitude={140} seed={29} drift={drift * 0.7} />
-          {[0, 1, 2].map((i) => (
-            <path
-              key={i}
-              d={`M${120 + i * 300},${HORIZON + 210 + i * 90} q120,-26 240,0`}
-              stroke={alpha(palette.figure, 0.12)}
-              strokeWidth={4}
-              fill="none"
-            />
-          ))}
-        </g>
-      );
+      return <SpaceEnv palette={palette} frame={frame} />;
+    case 'lab':
+      return <LabEnv palette={palette} />;
     case 'city':
-      return (
-        <g>
-          <Celestial palette={palette} cx={W * 0.78} cy={H * 0.2} r={64} crescent />
-          <City palette={palette} drift={drift * 0.4} />
-          <rect x={0} y={HORIZON} width={W} height={H - HORIZON} fill={shade(palette.ground, 0.5)} />
-          <path d={`M0,${HORIZON + 120} L${W},${HORIZON + 40}`} stroke={alpha(palette.figure, 0.14)} strokeWidth={6} />
-        </g>
-      );
-    case 'ocean':
-      return (
-        <g>
-          <Celestial palette={palette} cx={W * 0.5} cy={H * 0.22} r={92} crescent />
-          <rect x={0} y={HORIZON} width={W} height={H - HORIZON} fill={shade(palette.ground, 0.15)} />
-          {[0, 1, 2, 3, 4].map((i) => (
-            <path
-              key={i}
-              d={`M0,${HORIZON + 60 + i * 120} q270,-48 540,0 t540,0`}
-              stroke={alpha(palette.prop, 0.28 - i * 0.04)}
-              strokeWidth={8 + i * 3}
-              fill="none"
-              transform={`translate(${drift * (0.2 + i * 0.15)} 0)`}
-            />
-          ))}
-          <rect x={W * 0.46} y={HORIZON} width={70} height={H - HORIZON} fill={alpha(palette.figureAccent, 0.16)} />
-        </g>
-      );
-    case 'forest':
-      return (
-        <g>
-          <Ridge fill={palette.groundFar} opacity={0.5} y={HORIZON + 40} amplitude={90} seed={41} drift={drift * 0.25} />
-          {[0, 1, 2, 3, 4, 5].map((i) => {
-            const x = 60 + i * 190 + rand(70 + i) * 60;
-            const height = 260 + rand(90 + i) * 220;
-            return (
-              <g key={i} transform={`translate(${x + drift * 0.5} 0)`}>
-                <rect x={-12} y={HORIZON - height * 0.32} width={24} height={height * 0.4} fill={shade(palette.ground, 0.45)} />
-                <circle cx={0} cy={HORIZON - height * 0.62} r={height * 0.3} fill={shade(palette.groundFar, 0.2)} opacity={0.92} />
-              </g>
-            );
-          })}
-          <rect x={0} y={HORIZON + 60} width={W} height={H - HORIZON} fill={shade(palette.ground, 0.3)} />
-        </g>
-      );
-    case 'interior':
-      return (
-        <g>
-          <rect x={0} y={0} width={W} height={HORIZON} fill={mix(palette.skyBottom, palette.ground, 0.4)} />
-          <rect x={0} y={HORIZON} width={W} height={H - HORIZON} fill={shade(palette.ground, 0.28)} />
-          <rect x={W * 0.6} y={H * 0.16} width={W * 0.3} height={H * 0.3} fill={alpha(palette.figureAccent, 0.5)} />
-          <path d={`M${W * 0.6},${H * 0.46} L${W * 0.2},${H} L${W * 0.9},${H} Z`} fill={alpha(palette.figureAccent, 0.12)} />
-          <rect x={W * 0.06} y={H * 0.66} width={W * 0.28} height={H * 0.12} rx={18} fill={shade(palette.ground, 0.42)} />
-        </g>
-      );
+      return <CityEnv palette={palette} frame={frame} />;
+    case 'grid':
+      return <GridEnv palette={palette} frame={frame} />;
+    case 'abstract':
+      return <AbstractEnv palette={palette} />;
     default:
-      return (
-        <g opacity={0.75}>
-          {[0, 1, 2, 3].map((i) => (
-            <circle
-              key={i}
-              cx={W * 0.5}
-              cy={H * 0.46}
-              r={180 + i * 150 + progress * 40}
-              fill="none"
-              stroke={alpha(palette.figureAccent, 0.16 - i * 0.03)}
-              strokeWidth={6}
-            />
-          ))}
-          <rect x={0} y={HORIZON + 180} width={W} height={H} fill={alpha(palette.ink, 0.35)} />
-        </g>
-      );
+      return <AbstractEnv palette={palette} />;
   }
 };
 
-export const Environment: React.FC<{
-  setting: Setting;
-  timeOfDay: TimeOfDay;
-  palette: ArtPalette;
-  progress: number;
-}> = ({setting, timeOfDay, palette, progress}) => {
-  const drift = (progress - 0.5) * 46;
-  const gradientId = `sky-${setting}`;
-  return (
-    <svg viewBox={`0 0 ${W} ${H}`} preserveAspectRatio="xMidYMid slice" style={{position: 'absolute', inset: 0, width: '100%', height: '100%'}} aria-hidden="true">
-      <defs>
-        <linearGradient id={gradientId} x1="0" y1="0" x2="0" y2="1">
-          <stop offset="0%" stopColor={palette.skyTop} />
-          <stop offset="62%" stopColor={mix(palette.skyTop, palette.skyBottom, 0.72)} />
-          <stop offset="100%" stopColor={palette.skyBottom} />
-        </linearGradient>
-      </defs>
-      <rect x={0} y={0} width={W} height={H} fill={`url(#${gradientId})`} />
-      {timeOfDay === 'night' ? <Stars palette={palette} count={90} /> : null}
-      <Body setting={setting} palette={palette} progress={progress} drift={drift} />
-    </svg>
-  );
-};
+export const ENVIRONMENT_SIZE = {width: W, height: H};

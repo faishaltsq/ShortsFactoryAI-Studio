@@ -5,12 +5,11 @@ import {declaredCameraAt, textAnchorOf, type CameraTransform} from '../camera';
 import {DeclaredCamera} from '../art/DeclaredCamera';
 
 /**
- * Declared camera for any template, not just `IllustratedStory`.
+ * Declared camera for every template.
  *
- * `IllustratedStory` consumes `scene.camera` inline because it also blends it with the per-shot
- * legacy path. Every other composition has no such legacy: their content components were written
- * before `SceneSpec.camera` existed, so wiring the declared camera there meant either editing six
- * components identically or wrapping them once. The wrapper is the one place to read the rule.
+ * No composition reads `scene.camera` itself: wiring the transform into each of them meant editing
+ * nine components identically and hoping they stayed in step. The wrapper is the one place that
+ * reads the rule, and `tests/test_renderer_dispatch.py` proves a declared `push` reaches pixels.
  *
  * Precedence lives in `src/camera.ts` and is unchanged: a scene that declares no camera renders its
  * children untouched, byte-identically — this component must never invent a move the model did not
@@ -35,6 +34,7 @@ export const DeclaredCameraScope: React.FC<{
       : frame;
   let state: CameraTransform;
   try {
+    const anchor = textAnchorOf(scene, scene.camera.target);
     state = declaredCameraAt(scene.camera, sceneFrame, scene.durationInFrames, anchor, {
       width,
       height,

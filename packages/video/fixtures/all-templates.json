@@ -244,13 +244,13 @@
     },
     {
       "sceneId": "demo-7",
-      "template": "IllustratedStory",
+      "template": "ObjectExplainer",
       "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
       "assetRefs": [],
       "text": [
         {
           "id": "t-6",
-          "text": "Cahaya yang tertunda",
+          "text": "Isi satu rak, satu kota",
           "style": {
             "role": "title"
           }
@@ -267,52 +267,158 @@
       "startFrame": 900,
       "durationInFrames": 150,
       "data": {
-        "title": "Cahaya yang tertunda",
-        "caption": "8 menit 20 detik dari Matahari",
-        "setting": "space",
-        "timeOfDay": "night",
-        "actors": [
+        "title": "Dari chip ke data center",
+        "caption": "Satu akselerator, sepuluh ribu rak, satu jaringan",
+        "environment": "dataCenter",
+        "objects": [
           {
-            "pose": "point",
-            "x": 0.3,
-            "ground": 0.74,
-            "scale": 1,
-            "facing": "right",
-            "tone": "accent",
-            "silhouette": false
-          }
-        ],
-        "props": [
-          {
-            "kind": "sun",
-            "x": 0.74,
-            "y": 0.26,
-            "scale": 1.3
+            "kind": "gpu",
+            "x": 0.34,
+            "y": 0.34,
+            "size": 0.34,
+            "at": 0,
+            "label": "GPU"
           },
           {
-            "kind": "planet",
-            "x": 0.18,
-            "y": 0.2,
-            "scale": 0.7
-          }
-        ],
-        "fx": [
-          "lightRays",
-          "dust",
-          "vignette"
-        ],
-        "shots": [
-          {
-            "framing": "wide",
-            "camera": "pushIn",
-            "weight": 1
+            "kind": "serverRack",
+            "x": 0.66,
+            "y": 0.36,
+            "size": 0.26,
+            "at": 14,
+            "label": "Rak server"
           },
           {
-            "framing": "close",
-            "camera": "handheld",
-            "weight": 1.2
+            "kind": "dataCenter",
+            "x": 0.5,
+            "y": 0.66,
+            "size": 0.62,
+            "at": 30,
+            "label": "Data center",
+            "highlight": [
+              70,
+              120
+            ]
+          }
+        ],
+        "callouts": [
+          {
+            "object": 0,
+            "text": "Ribuan inti paralel",
+            "dx": 0.0,
+            "dy": -0.14,
+            "at": 44
+          }
+        ],
+        "flows": [
+          {
+            "from": 0,
+            "to": 2,
+            "label": "data",
+            "at": 52
+          },
+          {
+            "from": 1,
+            "to": 2,
+            "at": 60
           }
         ]
+      }
+    },
+    {
+      "sceneId": "demo-8",
+      "template": "ProcessFlow",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-7",
+          "text": "Bagaimana satu permintaan diproses",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 1050,
+      "durationInFrames": 150,
+      "data": {
+        "title": "Bagaimana inferensi berjalan",
+        "caption": "Empat tahap, satu arah",
+        "environment": "circuit",
+        "steps": [
+          {
+            "label": "Masukan",
+            "detail": "Teks dari pengguna"
+          },
+          {
+            "label": "Tokenisasi",
+            "detail": "Dipecah jadi token"
+          },
+          {
+            "label": "Inferensi",
+            "detail": "Bobot model dijalankan"
+          },
+          {
+            "label": "Keluaran",
+            "detail": "Token dirangkai ulang"
+          }
+        ]
+      }
+    },
+    {
+      "sceneId": "demo-9",
+      "template": "MetricShift",
+      "segment": "Adegan demonstrasi fiksi untuk pengujian lokal.",
+      "assetRefs": [],
+      "text": [
+        {
+          "id": "t-8",
+          "text": "Biaya listrik pelatihan",
+          "style": {
+            "role": "title"
+          }
+        }
+      ],
+      "animation": {
+        "preset": "slideUp",
+        "durationInFrames": 20
+      },
+      "transition": {
+        "type": "none",
+        "durationInFrames": 0
+      },
+      "startFrame": 1200,
+      "durationInFrames": 150,
+      "data": {
+        "title": "Biaya listrik pelatihan",
+        "caption": "Perbandingan konsumsi daya, dalam megawatt",
+        "environment": "grid",
+        "metrics": [
+          {
+            "label": "Model kecil",
+            "value": 1.2,
+            "unit": "MW"
+          },
+          {
+            "label": "Model dasar",
+            "value": 8.5,
+            "unit": "MW"
+          },
+          {
+            "label": "Model batas",
+            "value": 21.4,
+            "unit": "MW"
+          }
+        ],
+        "maxValue": 24,
+        "decimals": 1
       }
     }
   ],

@@ -7,7 +7,9 @@ import {MotionComicScene} from './MotionComic';
 import {HistoricalTimelineScene} from './HistoricalTimeline';
 import {ParallaxStoryScene} from './ParallaxStory';
 import {InfographicMotionScene} from './InfographicMotion';
-import {IllustratedStoryScene} from './IllustratedStory';
+import {ObjectExplainerScene} from './ObjectExplainer';
+import {ProcessFlowScene} from './ProcessFlow';
+import {MetricShiftScene} from './MetricShift';
 
 export const SCENE_RENDERERS: Record<TemplateId, React.FC<SceneProps>> = {
   KineticTypography: KineticTypographyScene,
@@ -16,5 +18,7 @@ export const SCENE_RENDERERS: Record<TemplateId, React.FC<SceneProps>> = {
   HistoricalTimeline: HistoricalTimelineScene,
   ParallaxStory: ParallaxStoryScene,
   InfographicMotion: InfographicMotionScene,
-  IllustratedStory: IllustratedStoryScene,
+  ObjectExplainer: ObjectExplainerScene,
+  ProcessFlow: ProcessFlowScene,
+  MetricShift: MetricShiftScene,
 };

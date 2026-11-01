@@ -30,5 +30,5 @@ for (const scene of storyboard.scenes) {
   writeFileSync(path.join(outputDir, 'stills.json'), JSON.stringify(results, null, 2));
   console.log(`PASS ${scene.template} 1080x1920`);
 }
-if (results.length !== 7 || new Set(results.map(r => r.template)).size !== 7) throw new Error('Expected all seven templates');
-console.log('7/7 real Remotion stills verified');
+if (results.length !== 9 || new Set(results.map(r => r.template)).size !== 9) throw new Error('Expected all nine templates');
+console.log('9/9 real Remotion stills verified');

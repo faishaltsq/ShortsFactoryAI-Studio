@@ -10,14 +10,12 @@
     "typecheck": "tsc --noEmit",
     "test:adapter": "node scripts/test-adapter.mjs",
     "test:render-props": "node scripts/test-render-props.mjs",
+    "test:scene-data": "node scripts/test-scene-data.mjs",
+    "test:captions": "node scripts/test-captions.mjs",
+    "test:motion-utils": "node scripts/test-motion-utils.mjs",
     "still-smoke": "node scripts/still-smoke.mjs",
     "still-templates": "node scripts/verify-template-stills.mjs",
-    "build": "remotion bundle src/index.ts",
-    "test:camera-beats": "node scripts/verify-camera-beats.mjs",
-    "test:render-beats": "node scripts/verify-render-beats.mjs",
-    "test:motion-beats": "node scripts/test-motion-beats.mjs",
-    "test:speech-sync": "node scripts/test-speech-sync.mjs",
-    "test:mouth-sync": "node scripts/verify-mouth-sync.mjs"
+    "build": "remotion bundle src/index.ts"
   },
   "dependencies": {
     "@remotion/cli": "4.0.537",

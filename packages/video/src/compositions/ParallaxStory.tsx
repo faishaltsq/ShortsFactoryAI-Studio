@@ -19,11 +19,11 @@ export const ParallaxStoryScene: React.FC<SceneProps> = (props) => {
         {layer.assetRef ? <Img src={staticFile(localImage(layer.assetRef))} style={{width: '100%', height: '100%', objectFit: 'cover'}} /> : (
           // Prop renders a positioned div, so it must live in HTML, not inside <svg>.
           <div style={{position: 'absolute', inset: 0}}>
-            {layer.shape === 'circle' ? <Prop prop={{kind: 'moon', x: 0.7, y: 0.26, scale: 1.1}} palette={paletteFor(theme, 'night')} frame={frame} index={i} fit="box" /> : null}
+            {layer.shape === 'circle' ? <Prop shape="circle" palette={paletteFor(theme, 'space')} /> : null}
             {/* Dusk, not night: the ground palette responds to time of day, so the ridge
                 stays a shade of the theme's own ground instead of vanishing into the card. */}
-            {layer.shape === 'ridge' ? <Prop prop={{kind: 'mountain', x: 0.5, y: 0.78, scale: 3.2}} palette={paletteFor(theme, 'dusk')} frame={frame} index={i} fit="box" /> : null}
-            {layer.shape === 'city' ? <Prop prop={{kind: 'tower', x: 0.5, y: 0.72, scale: 3.4}} palette={paletteFor(theme, 'night')} frame={frame} index={i} fit="box" /> : null}
+            {layer.shape === 'ridge' ? <Prop shape="ridge" palette={paletteFor(theme, 'abstract')} /> : null}
+            {layer.shape === 'city' ? <Prop shape="city" palette={paletteFor(theme, 'city')} /> : null}
           </div>
         )}
       </div>)}

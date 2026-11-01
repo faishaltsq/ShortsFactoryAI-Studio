@@ -11,11 +11,10 @@
  *    that stopped rendering (a broken import, a throw in `validateSceneData`) fails here instead
  *    of shipping an empty segment.
  * 3. A declared `push` camera changes the frame: the declared camera must reach every template
- *    through `DeclaredCameraScope` (short of `IllustratedStory`, which owns its legacy path and
- *    is already covered by `verify-camera-beats.mjs`).
- * 4. A declared action beat either moves the template's figure (MotionComic panel figures,
- *    IllustratedStory rig) or, on text-only templates, changes nothing at all — beats on a
- *    template without a rig are director's notes, and invented motion would be a contract lie.
+ *    through `DeclaredCameraScope`.
+ * 4. A declared action beat either moves the object it names (`ObjectExplainer` turns beats into
+ *    highlights) or, on templates that read no beats, changes nothing at all — invented motion
+ *    would be a contract lie, and so would a beat that is recorded and ignored.
  *
  * Scenes come from `fixtures/all-templates.json`, the same fixture `Root.tsx` falls back to, so
  * each template renders with data that validates under its own branch of `validateSceneData`.
@@ -49,7 +48,9 @@ const TEMPLATE_IDS = [
   'HistoricalTimeline',
   'ParallaxStory',
   'InfographicMotion',
-  'IllustratedStory',
+  'ObjectExplainer',
+  'ProcessFlow',
+  'MetricShift',
 ];
 
 /** Template-specific declared cameras. `static` renders untouched; `push` must move pixels. */
@@ -59,7 +60,7 @@ const CAMERA = {
 };
 
 /** Templates whose renderer consumes motion beats. All others must leave beats pixels untouched. */
-const FIGURED_TEMPLATES = new Set(['MotionComic', 'IllustratedStory']);
+const BEAT_DRIVEN = new Set(['ObjectExplainer']);
 
 const templateScene = (template) => {
   const scene = structuredClone(fixture.scenes.find((s) => s.template === template));
@@ -148,18 +149,21 @@ for (const template of TEMPLATE_IDS) {
     // cross-frame diff would read as invented motion.
     const target = templateScene(template);
     delete target.camera;
-    target.motion = {energy: 0.7, continuity: 'cut', beats: [{atFrame: 40, kind: 'action', subject: 'actor:0'}]};
+    // `object:0` is the hero object of an explainer scene. On any other template the subject names
+    // nothing, which is exactly the case a beat must leave pixels untouched on.
+    // The beat lands at 55, not 40: both stills are taken at frame 60, and an object highlight is
+    // a window (`atFrame .. atFrame + 14`). A beat at 40 would have expired before the frame this
+    // comparison measures, which would look like a renderer ignoring the beat.
+    target.motion = {energy: 0.7, continuity: 'cut', beats: [{atFrame: 55, kind: 'action', subject: 'object:0'}]};
     const calm = still(`${template}-calm`, template, {...target, motion: undefined}, 60);
     const acted = still(`${template}-beat`, template, target, 60);
     const beatPsnr = frameDifference(calm, acted);
-    if (FIGURED_TEMPLATES.has(template)) {
-      // Measured full-frame floors with the beat acting: MotionComic 32.8 dB (a small panel
-      // figure moves inside a 1080x1920 frame), IllustratedStory 22.4 dB (body-scale rig). A
-      // figure that stood still scores inf here, exactly like the text-only templates above, so
-      // 35 dB only has to separate "small figure moved" from "nothing moved".
-      if (beatPsnr > 35) throw new Error(`beat did not move the figure (PSNR ${beatPsnr.toFixed(1)} dB)`);
+    if (BEAT_DRIVEN.has(template)) {
+      // A highlight ring plus a 3% scale on one object is a real change but a small one inside a
+      // 1080x1920 frame, so the floor only has to separate "something moved" from "nothing moved".
+      if (beatPsnr > 45) throw new Error(`beat did not move the object (PSNR ${beatPsnr.toFixed(1)} dB)`);
     } else if (beatPsnr !== Number.POSITIVE_INFINITY) {
-      throw new Error(`text-only template invented motion from beats (PSNR ${beatPsnr.toFixed(1)} dB)`);
+      throw new Error(`template that reads no beats invented motion (PSNR ${beatPsnr.toFixed(1)} dB)`);
     }
 
     console.log(

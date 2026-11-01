@@ -7,19 +7,16 @@ import {Short} from './compositions/Short';
 import {Thumbnail} from './compositions/Thumbnail';
 import {SCENE_RENDERERS} from './compositions/registry';
 import {DeclaredCameraScope} from './components/DeclaredCameraScope';
-import {CharacterSheet} from './compositions/CharacterSheet';
-import {CharacterReel, REEL_DURATION} from './compositions/CharacterReel';
 import {SAMPLE_STORYBOARD} from './sample/storyboard';
 import {
   calculateSceneMetadata,
   calculateShortMetadata,
   resolveStoryboard,
+  totalFramesOf,
 } from './storyboard-props';
 import fixture from '../fixtures/all-templates.json';
 
 export {calculateSceneMetadata};
-
-const totalFramesOf = (sb: StoryboardSpec): number => Math.max(...sb.scenes.map(s => s.startFrame + s.durationInFrames));
 
 export const RemotionRoot: React.FC = () => {
   const input = getInputProps() as {storyboard?: unknown} | null;
@@ -34,12 +31,6 @@ export const RemotionRoot: React.FC = () => {
       defaultProps={{scene: storyboard.scenes[0], theme: resolveTheme(storyboard.theme), headline: 'DEMO', watermark: storyboard.watermark?.text}}
       calculateMetadata={({props}) => ({durationInFrames: props.scene.durationInFrames})} durationInFrames={storyboard.scenes[0].durationInFrames}
       fps={30} width={1080} height={1920} />
-    <Composition id="CharacterSheet" component={CharacterSheet} defaultProps={{theme: resolveTheme(storyboard.theme)}}
-      durationInFrames={300} fps={30} width={1080} height={1920} />
-    <Composition id="CharacterReel" component={CharacterReel} defaultProps={{theme: resolveTheme(storyboard.theme)}}
-      durationInFrames={REEL_DURATION} fps={30} width={1080} height={1920} />
-    <Composition id="CharacterReelBefore" component={CharacterReel} defaultProps={{theme: resolveTheme(storyboard.theme), compare: true}}
-      durationInFrames={REEL_DURATION} fps={30} width={1080} height={1920} />
     {TEMPLATE_IDS.map(id => {
       const scene = storyboard.scenes.find(s => s.template === id) ?? defaults.scenes.find(s => s.template === id)!;
       // The declared camera must reach every template in every composition context (a per-template
