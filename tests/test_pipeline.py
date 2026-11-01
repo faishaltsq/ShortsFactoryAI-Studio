@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
@@ -142,7 +143,8 @@ def test_a_second_run_reuses_artifacts_without_repeating_work(state, client):
     assert state.store.event_count(job["id"]) == before, "a reuse writes no state transition"
 
 
-def test_live_mode_without_a_provider_fails_rather_than_mocking(state, client):
+def test_live_mode_without_a_provider_fails_rather_than_mocking(state, client, monkeypatch):
+    monkeypatch.setattr(state.secrets, "resolve", lambda name: None)
     job = client.post("/api/jobs", json={"title": "Uji", "provider_mode": "live"}).json()
     client.post(f"/api/jobs/{job['id']}/run")
     deadline = time.time() + 60
@@ -163,6 +165,7 @@ def test_stages_target_reachable_states(state, client):
         JobState.TOPIC_SELECTED,
         JobState.RESEARCH_COMPLETE,
         JobState.SCRIPT_GENERATED,
+        JobState.CREATIVE_REVIEW,
         JobState.CREATIVE_REVIEW,
         JobState.STORYBOARD_READY,
         # MetadataAgent has no state of its own in the allow-list; it targets the state the job is
@@ -186,6 +189,7 @@ def test_render_stages_are_absent_unless_the_job_asks_for_video(state, client):
         "ResearchAgent",
         "TopicSelectionAgent",
         "ScriptAgent",
+        "CreativeDirectorAgent",
         "CreativeDirectorAgent",
         "StoryboardAgent",
         # Metadata is a provider call, not a render: it belongs in the agent-only chain, and the
@@ -244,3 +248,141 @@ def test_the_render_chain_is_reachable_without_an_illegal_transition(state, clie
     stages = build_stages(state, job["id"])
     _validate_chain(JobState.STORYBOARD_READY, stages[5:])
     assert stages[-1].state is JobState.READY_FOR_APPROVAL
+
+
+def test_pipeline_stops_or_revises_on_static_scene_qc_failure(state: Any) -> None:
+    from packages.core.contracts.artifacts import StoryboardArtifact
+    from packages.core.orchestration.leases import LeaseKeeper
+    from packages.core.orchestration.pipeline import (
+        MAX_SCENE_REPAIRS,
+        apply_scene_repairs,
+        run_job,
+    )
+
+    storyboard = {
+        "schema_version": "1.0",
+        "fps": 30,
+        "width": 1080,
+        "height": 1920,
+        "scenes": [
+            {
+                "sceneId": "sc1",
+                "template": "ObjectExplainer",
+                "segment": "s1",
+                "startFrame": 0,
+                "durationInFrames": 60,
+                "text": [{"id": "t1", "text": "Intro", "role": "title", "atFrame": 0}],
+                "camera": {"shot": "wide", "move": "static", "amplitude": 0.12},
+                "motion": {"energy": 0.2, "continuity": "cut", "beats": []},
+                "transition": {"kind": "cut", "frames": 0},
+                "data": {"layout_mode": "DefaultHero", "objects": []},
+            }
+        ],
+    }
+
+    # Verify apply_scene_repairs upgrades failing scene and validates against contract
+    revised = apply_scene_repairs(storyboard, ["sc1"], attempt=1)
+    validated = StoryboardArtifact.model_validate(revised)
+    assert validated is not None
+    repaired_sc1 = revised["scenes"][0]
+    assert repaired_sc1["camera"]["move"] in ("pan", "push")
+    assert repaired_sc1["camera"]["target"] == "t1"
+    assert repaired_sc1["motion"]["energy"] > 0.3
+    assert repaired_sc1["motion"]["continuity"] in ("carry", "cut")
+    assert len(repaired_sc1["motion"]["beats"]) >= 2
+    assert repaired_sc1["data"]["layout_mode"] != "DefaultHero"
+    assert "causal_action" in repaired_sc1["data"]
+
+    # Verify run_job bounded loop stops after MAX_SCENE_REPAIRS attempts
+    job = state.store.create(title="Uji Bounded Revision", payload={"provider_mode": "mock"}, state=JobState.BLOCKED)
+    job_id = job.id
+    state.store.write_artifact(job_id, "storyboard.json", storyboard)
+    state.store.write_artifact(
+        job_id,
+        "qc.json",
+        {
+            "schema_version": 1,
+            "technical": {"passed": True},
+            "creative": {
+                "passed": False,
+                "metrics": {
+                    "bme_dynamics": {
+                        "passed": False,
+                        "static_scenes": ["sc1"],
+                        "scene_metrics": [{"sceneId": "sc1", "delta_bm": 0.0, "delta_me": 0.0, "static": True}],
+                    }
+                },
+            },
+            "visual": {"status": "passed", "frames_inspected": 1},
+            "repairs": [],
+        },
+    )
+    keeper = LeaseKeeper(state.settings.db_path, owner="test-worker")
+    keeper.acquire(job_id)
+
+    # 1. First attempt: qa_repair_required applies repair and resets to STORYBOARD_READY
+    import packages.core.orchestration.pipeline as pipeline_mod
+
+    call_count = 0
+
+    def fake_run_stages(*args: Any, **kwargs: Any) -> dict[str, Any]:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return {"ok": False, "stopped": "qa_repair_required", "stages": []}
+        # Second call returns ok=True to finish
+        return {"ok": True, "stages": []}
+
+    orig_run_stages = pipeline_mod.run_stages
+    pipeline_mod.run_stages = fake_run_stages
+    try:
+        report = run_job(state, job_id, keeper=keeper)
+        assert report["ok"] is True
+        assert call_count == 2
+        # Check scene_repairs.json recorded attempt 1
+        repairs_art = state.store.read_artifact(job_id, "scene_repairs.json")
+        assert repairs_art["attempts"]["sc1"] == 1
+    finally:
+        pipeline_mod.run_stages = orig_run_stages
+
+    # 2. Exceeded attempts: stops at qa_repair_limit
+    job2 = state.store.create(title="Uji Cap", payload={"provider_mode": "mock"}, state=JobState.BLOCKED)
+    job2_id = job2.id
+    state.store.write_artifact(job2_id, "storyboard.json", storyboard)
+    state.store.write_artifact(
+        job2_id,
+        "qc.json",
+        {
+            "schema_version": 1,
+            "technical": {"passed": True},
+            "creative": {
+                "passed": False,
+                "metrics": {
+                    "bme_dynamics": {
+                        "passed": False,
+                        "static_scenes": ["sc1"],
+                        "scene_metrics": [{"sceneId": "sc1", "delta_bm": 0.0, "delta_me": 0.0, "static": True}],
+                    }
+                },
+            },
+            "visual": {"status": "passed", "frames_inspected": 1},
+            "repairs": [],
+        },
+    )
+    state.store.write_artifact(
+        job2_id,
+        "scene_repairs.json",
+        {"attempts": {"sc1": MAX_SCENE_REPAIRS}, "history": []},
+    )
+    keeper2 = LeaseKeeper(state.settings.db_path, owner="test-worker")
+    keeper2.acquire(job2_id)
+
+    pipeline_mod.run_stages = lambda *args, **kwargs: {"ok": False, "stopped": "qa_repair_required", "stages": []}
+    try:
+        report2 = run_job(state, job2_id, keeper=keeper2)
+        assert report2["ok"] is False
+        assert report2["stopped"] == "qa_repair_limit"
+        assert "repair limit" in (state.store.get(job2_id).last_error or "").lower()
+    finally:
+        pipeline_mod.run_stages = orig_run_stages
+

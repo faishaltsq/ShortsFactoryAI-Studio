@@ -12,6 +12,7 @@ end to end in mock mode with no credential.
 
 from __future__ import annotations
 
+import time
 from collections.abc import Callable
 from dataclasses import replace
 from typing import Any
@@ -47,6 +48,7 @@ from .runner import (
 #: How many times the creative director may send a script back. A revision loop with no ceiling is
 #: how a job spends an afternoon and a budget without producing anything.
 MAX_REVISIONS = 2
+MAX_SCENE_REPAIRS = 2
 
 
 def mock_pipeline_supported() -> bool:
@@ -845,6 +847,49 @@ def run_job(
             store=state.store, job_id=job_id, stages=build_stages(state, job_id),
             keeper=keeper, cancel=cancel,
         )
+        if report.get("stopped") == "qa_repair_required":
+            qc = state.store.read_artifact(job_id, "qc.json") if state.store.has_artifact(job_id, "qc.json") else {}
+            bme = (qc.get("creative") or {}).get("metrics", {}).get("bme_dynamics", {})
+            static_scenes = bme.get("static_scenes", [])
+            if not static_scenes and "technical" in qc:
+                static_scenes = (qc.get("technical") or {}).get("metrics", {}).get("bme_dynamics", {}).get("static_scenes", [])
+            repairs = _load_scene_repairs(state.store, job_id)
+            attempts = repairs.get("attempts", {})
+            exceeded = [sc for sc in static_scenes if int(attempts.get(sc, 0)) >= MAX_SCENE_REPAIRS]
+            if exceeded or not static_scenes:
+                return _revision_block(
+                    state, job_id, keeper, "qa_repair_limit",
+                    f"QC static scene repair limit reached after {MAX_SCENE_REPAIRS} attempts for {exceeded or static_scenes}. "
+                    "Manual rework required.",
+                )
+
+            storyboard = state.store.read_artifact(job_id, "storyboard.json")
+            next_attempt = max(int(attempts.get(sc, 0)) for sc in static_scenes) + 1
+            revised_storyboard = apply_scene_repairs(storyboard, static_scenes, attempt=next_attempt)
+
+            for sc in static_scenes:
+                attempts[sc] = int(attempts.get(sc, 0)) + 1
+            repairs["attempts"] = attempts
+            repairs.setdefault("history", []).append({
+                "static_scenes": list(static_scenes),
+                "attempt": next_attempt,
+                "repaired_at": time.time(),
+            })
+
+            remove_list = ["motion-plan.json", "render.json", "output.mp4", "technical-qc.json", "qc.json", "readiness.json"]
+            state.store.commit_stage(
+                job_id,
+                token=keeper.token,
+                json_artifacts=[
+                    ("storyboard.json", revised_storyboard),
+                    ("scene_repairs.json", repairs),
+                ],
+                remove_artifacts=remove_list,
+                target=JobState.STORYBOARD_READY,
+                detail=f"Auto-revising static scenes: {', '.join(static_scenes)} (attempt {next_attempt})",
+            )
+            continue
+
         if report.get("stopped") != "revision_required":
             if report["ok"]:
                 if not keeper.renew():
@@ -874,6 +919,93 @@ def _load_revisions(store: JobStore, job_id: str) -> RevisionArtifact:
     if not store.has_artifact(job_id, "revisions.json"):
         return RevisionArtifact()
     return RevisionArtifact.model_validate(store.read_artifact(job_id, "revisions.json"))
+
+
+def _load_scene_repairs(store: JobStore, job_id: str) -> dict[str, Any]:
+    if not store.has_artifact(job_id, "scene_repairs.json"):
+        return {"attempts": {}, "history": []}
+    try:
+        data = store.read_artifact(job_id, "scene_repairs.json")
+        return data if isinstance(data, dict) else {"attempts": {}, "history": []}
+    except Exception:
+        return {"attempts": {}, "history": []}
+
+
+def apply_scene_repairs(
+    storyboard: dict[str, Any],
+    static_scene_ids: list[str],
+    *,
+    attempt: int = 1,
+) -> dict[str, Any]:
+    """Revise failing static scenes in a storyboard to add active causal motion and dynamic layout."""
+    import copy
+
+    revised = copy.deepcopy(storyboard)
+    scenes = revised.get("scenes", [])
+    layout_modes = ["SplitComparison", "RadialNetwork", "LeftRailProcess", "FullBleedFocus"]
+
+    for scene in scenes:
+        if not isinstance(scene, dict):
+            continue
+        sc_id = str(scene.get("sceneId") or "")
+        if sc_id not in static_scene_ids:
+            continue
+
+        # 1. Update camera motion (validating against CameraSpec / SceneSpec)
+        cam = scene.get("camera")
+        if not isinstance(cam, dict):
+            cam = {}
+        text_elements = scene.get("text", [])
+        target_id = (
+            text_elements[0].get("id")
+            if text_elements and isinstance(text_elements[0], dict)
+            else None
+        )
+        if target_id:
+            cam["move"] = "push" if attempt % 2 == 1 else "pan"
+            cam["target"] = target_id
+            cam["amplitude"] = min(0.35, max(0.2, float(cam.get("amplitude", 0.12)) * 1.5))
+        else:
+            cam["move"] = "static"
+            cam["target"] = None
+            cam["amplitude"] = 0.30
+        scene["camera"] = cam
+
+        # 2. Update motion energy and beats (validating against MotionSpec)
+        mot = scene.get("motion")
+        if not isinstance(mot, dict):
+            mot = {}
+        mot["energy"] = min(0.70, float(mot.get("energy", 0.4)) + 0.2)
+        mot["continuity"] = "carry" if attempt % 2 == 1 else "cut"
+        duration = int(scene.get("durationInFrames") or 60)
+        mot["beats"] = [
+            {"atFrame": max(1, duration // 4), "kind": "action", "subject": "hero"},
+            {"atFrame": max(2, duration // 2), "kind": "emphasis", "subject": "hero"},
+        ]
+        scene["motion"] = mot
+
+        # 3. Update data: layout mode and causal action
+        data = scene.get("data")
+        if not isinstance(data, dict):
+            data = {}
+        current_layout = data.get("layout_mode") or "DefaultHero"
+        next_mode = layout_modes[(attempt - 1) % len(layout_modes)]
+        if next_mode == current_layout:
+            next_mode = layout_modes[attempt % len(layout_modes)]
+        data["layout_mode"] = next_mode
+        scene["layout_mode"] = next_mode
+        data["causal_action"] = (
+            f"Active causal transformation with continuous motion (repair attempt {attempt})"
+        )
+        data["resulting_state"] = (
+            f"Dynamic resulting state with distinct visual change (repair attempt {attempt})"
+        )
+        scene["data"] = data
+        if "causal_state" in scene and isinstance(scene["causal_state"], dict):
+            scene["causal_state"]["causal_action"] = data["causal_action"]
+            scene["causal_state"]["resulting_state"] = data["resulting_state"]
+
+    return revised
 
 
 def _revision_block(

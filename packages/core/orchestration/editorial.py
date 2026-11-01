@@ -398,6 +398,35 @@ def build_editorial_qc_stage(state: Any) -> Stage:
             raise StageError("qa_blocked", detail, retryable=False) from exc
 
         if not readiness["ready"]:
+            static_scenes = (
+                (creative.get("metrics") or {})
+                .get("bme_dynamics", {})
+                .get("static_scenes", [])
+            )
+            if not static_scenes and technical:
+                static_scenes = (
+                    (technical.get("metrics") or {})
+                    .get("bme_dynamics", {})
+                    .get("static_scenes", [])
+                )
+            if static_scenes:
+                reason = f"editorial QC flagged static scenes for repair: {', '.join(static_scenes)}"
+                _emit(
+                    state,
+                    job_id,
+                    JobState.EDITORIAL_QC.value,
+                    "qa_repair_required",
+                    reason,
+                    agent=QC_AGENT,
+                )
+                if sheet_path.is_file():
+                    ctx.stage_file(SHEET_NAME, sheet_path)
+                return StageOutcome(
+                    ok=True,
+                    control="qa_repair_required",
+                    artifacts=[QA_NAME, SHEET_NAME] if sheet_path.is_file() else [QA_NAME],
+                    detail=reason,
+                )
             reason = "editorial QC failed: " + ", ".join(readiness["blockers"])
             _emit(state, job_id, JobState.EDITORIAL_QC.value, "blocked", reason, agent=QC_AGENT)
             raise StageError("qa_blocked", reason, retryable=False)
