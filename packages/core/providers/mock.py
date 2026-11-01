@@ -27,7 +27,7 @@ MOCK_BEAT_CEILING_FRAMES = 90
 #: Three scenes, three worlds, three distinct rendered shots, one character with a visible
 #: action. The previous fixture was three copies of one static desert scene, which is a slideshow:
 #: a creative gate that accepted it would be measuring nothing. Every cue below is from the
-#: renderer's own vocabulary (`packages/video/src/scene-data.ts`, `character/ids.ts`) because
+#: renderer's own vocabulary (`packages/video/src/scene-data.ts`, `art/object-kinds.ts`) because
 #: `validateSceneData` throws on anything else at render time.
 #:
 #: Each world also declares a **camera** and **beats**, which are no longer decorative: the adapter
@@ -40,26 +40,13 @@ MOCK_BEAT_CEILING_FRAMES = 90
 #: that line) and `sc3` names the actor selector `actor:0`, which is the explicit form.
 _MOCK_WORLDS: tuple[dict[str, Any], ...] = (
     {
-        "setting": "desert",
-        "timeOfDay": "dusk",
-        "shot": {"framing": "wide", "camera": "pushIn", "weight": 1},
-        "pose": "stand",
-        "facing": "right",
-        "expression": "curious",
-        "motion": {"preset": "enter", "durationInFrames": 24, "intensity": 0.5},
+        "environment": "dataCenter",
+        "objects": [
+            {"kind": "serverRack", "x": 0.5, "y": 0.36, "size": 0.4, "at": 0, "label": "Rak Server"},
+            {"kind": "coolingFan", "x": 0.26, "y": 0.64, "size": 0.24, "at": 18},
+            {"kind": "gpu", "x": 0.74, "y": 0.64, "size": 0.24, "at": 30},
+        ],
         "camera": {"shot": "wide", "move": "push", "amplitude": 0.1, "ease": "power2.out"},
-        # Mid-scene `action`: the character goes from `stand` to `point` and the pose change is
-        # visible for the rest of the scene. This is the Phase 2 exit criterion.
-        #
-        # Beat frames are absolute and must survive the audio re-time. `update_storyboard_from_audio`
-        # rewrites every scene's `durationInFrames` from measured narration, and the mock script's
-        # segments are 21-23 characters — 3.7-4.3 s, i.e. 111-128 frames at 30 fps, against the 300
-        # the storyboard declares. A beat authored against the declared timeline (the old fixture had
-        # one at 150) is past the retimed end and disappears without a word.
-        #
-        # So every beat here sits inside `MOCK_BEAT_CEILING_FRAMES`, the shortest scene this script
-        # can produce at SAPI's default rate. `tests/test_mock_storyboard.py` asserts that, and
-        # `planBeats` reports anything past the end in `BeatPlan.dropped` instead of dropping it.
         "beats": [
             {"atFrame": 0, "kind": "enter", "subject": "TITLE"},
             {"atFrame": 30, "kind": "action", "subject": "TITLE"},
@@ -67,14 +54,12 @@ _MOCK_WORLDS: tuple[dict[str, Any], ...] = (
         ],
     },
     {
-        "setting": "city",
-        "timeOfDay": "night",
-        "shot": {"framing": "medium", "camera": "panLeft", "weight": 1},
-        "pose": "point",
-        "facing": "left",
-        "expression": "determined",
-        "gesture": "pointForward",
-        "motion": {"preset": "gesture", "durationInFrames": 30, "intensity": 0.7},
+        "environment": "circuit",
+        "objects": [
+            {"kind": "gpu", "x": 0.5, "y": 0.34, "size": 0.44, "at": 0, "label": "Akselerator"},
+            {"kind": "wafer", "x": 0.3, "y": 0.66, "size": 0.24, "at": 16},
+            {"kind": "neuralNet", "x": 0.72, "y": 0.66, "size": 0.26, "at": 28},
+        ],
         "camera": {"shot": "medium", "move": "pan", "amplitude": 0.12, "ease": "sine.inOut"},
         "beats": [
             {"atFrame": 0, "kind": "enter", "subject": "TITLE"},
@@ -82,18 +67,16 @@ _MOCK_WORLDS: tuple[dict[str, Any], ...] = (
         ],
     },
     {
-        "setting": "ocean",
-        "timeOfDay": "dawn",
-        "shot": {"framing": "close", "camera": "pullOut", "weight": 1},
-        "pose": "reach",
-        "facing": "right",
-        "expression": "happy",
-        "gesture": "openPalm",
-        "motion": {"preset": "react", "durationInFrames": 20, "intensity": 0.6},
+        "environment": "grid",
+        "objects": [
+            {"kind": "database", "x": 0.5, "y": 0.36, "size": 0.38, "at": 0, "label": "Data"},
+            {"kind": "antenna", "x": 0.26, "y": 0.66, "size": 0.24, "at": 14},
+            {"kind": "neuralNet", "x": 0.74, "y": 0.66, "size": 0.26, "at": 26},
+        ],
         "camera": {"shot": "close", "move": "pull", "amplitude": 0.08, "ease": "power1.out"},
         "beats": [
-            {"atFrame": 0, "kind": "enter", "subject": "actor:0"},
-            {"atFrame": 42, "kind": "emphasis", "subject": "actor:0"},
+            {"atFrame": 0, "kind": "enter", "subject": "TITLE"},
+            {"atFrame": 42, "kind": "emphasis", "subject": "TITLE"},
         ],
     },
 )
@@ -103,38 +86,26 @@ def mock_storyboard(*, seed: str = "demo", frames_per_scene: int = 300) -> dict[
     """The storyboard the mock provider serves, and the one the regression tests assert on.
 
     One definition, so the fixture the pipeline renders and the fixture the tests prove cannot
-    drift apart. Text stays well inside the 42 chars/s budget; the character appears in every
-    scene with the same id so `character_consistency` has something real to resolve.
+    drift apart. Every scene names real objects from the shipped library, so
+    `object_consistency` has something concrete to resolve, and every backdrop differs so
+    `repeated_world` has three distinct worlds to count.
     """
     scenes: list[dict[str, Any]] = []
     cursor = 0
     for index, world in enumerate(_MOCK_WORLDS, start=1):
-        actor: dict[str, Any] = {
-            "character": "maya",
-            "pose": world["pose"],
-            "x": 0.5 if index != 2 else 0.42,
-            "ground": 0.72,
-            "scale": 1,
-            "facing": world["facing"],
-            "tone": "primary",
-            "silhouette": False,
-            "expression": world["expression"],
-            "motion": dict(world["motion"]),
-        }
-        if "gesture" in world:
-            actor["gesture"] = world["gesture"]
         title_id = f"t{index}"
         segment_text = f"Pembuka {seed}." if index == 1 else (
             f"Isi utama {seed}." if index == 2 else f"Penutup {seed}."
         )
+        objects = [dict(item) for item in world["objects"]]
         scenes.append(
             {
                 "sceneId": f"sc{index}",
-                "template": "IllustratedStory",
+                "template": "ObjectExplainer",
                 "segment": f"s{index}",
                 "startFrame": cursor,
                 "durationInFrames": frames_per_scene,
-                "assetRefs": ["character:maya", f"bg:{world['setting']}"],
+                "assetRefs": [],
                 "text": [
                     {
                         "id": title_id,
@@ -144,31 +115,29 @@ def mock_storyboard(*, seed: str = "demo", frames_per_scene: int = 300) -> dict[
                     }
                 ],
                 # Every non-static move names the title element it is about, which is what
-                # `SceneSpec._camera_target_exists` demands. `shot` here and `data.shots[].framing`
-                # agree on purpose: the declared shot sets the base scale, the shot table sets the
-                # cut, and a disagreement would mean two framings for one scene.
+                # `SceneSpec._camera_target_exists` demands.
                 "camera": {**world["camera"], "target": title_id},
                 "motion": {
                     "energy": 0.55,
                     "continuity": "cut",
-                    # Beats are scene-local; `frames_per_scene // 2` is the mid-scene accent that
-                    # a 30 fps render puts at the halfway mark of the picture.
+                    # Beats are scene-local; each one sits inside the shortest scene this mock
+                    # script can produce after the audio stage retimes it.
                     "beats": [
                         {**beat, "subject": title_id if beat["subject"] == "TITLE" else beat["subject"]}
                         for beat in world["beats"]
                     ],
                 },
                 "transition": {"kind": "cut", "frames": 0},
-                # `data` is what the renderer reads: `IllustratedStory` draws from
-                # `setting`/`timeOfDay`/`actors`/`shots`. The declared camera above owns the
-                # movement; `shots[]` still selects the shot and its cut.
+                # `data` is what the renderer reads: the composition draws these objects on this
+                # backdrop, and the declared camera above owns the movement.
                 "data": {
-                    "setting": world["setting"],
-                    "timeOfDay": world["timeOfDay"],
-                    "actors": [actor],
-                    "props": [],
-                    "fx": [],
-                    "shots": [dict(world["shot"])],
+                    "environment": world["environment"],
+                    "objects": objects,
+                    "callouts": [],
+                    "flows": [
+                        {"from": i, "to": 0, "at": 40 + i * 8}
+                        for i in range(1, len(objects))
+                    ],
                 },
             }
         )
@@ -178,11 +147,10 @@ def mock_storyboard(*, seed: str = "demo", frames_per_scene: int = 300) -> dict[
         "fps": 30,
         "width": 1080,
         "height": 1920,
-        "theme": "dusk",
+        "theme": "midnight",
         "scenes": scenes,
         "subtitles": [],
     }
-
 
 
 class MockProvider:

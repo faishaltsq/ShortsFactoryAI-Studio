@@ -207,7 +207,9 @@
             "HistoricalTimeline",
             "ParallaxStory",
             "InfographicMotion",
-            "IllustratedStory"
+            "ObjectExplainer",
+            "ProcessFlow",
+            "MetricShift"
           ],
           "title": "Template",
           "type": "string"

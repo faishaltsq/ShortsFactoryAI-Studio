@@ -11,7 +11,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .base import Artifact
-from .scene import SceneSpec, SubtitleCue
+from .scene import SceneSpec, SubtitleCue, WordTimestamp
 
 ContentKind = Literal["factual", "fictional"]
 ProviderMode = Literal["live", "mock"]
@@ -195,7 +195,8 @@ class MotionPlanArtifact(Artifact):
 class AssetsArtifact(Artifact):
     kind = "assets"
 
-    characters: list[dict[str, Any]] = Field(default_factory=list)
+    #: The drawable objects this job's storyboard names, with the source digest that draws them.
+    objects: list[dict[str, Any]] = Field(default_factory=list)
     backgrounds: list[dict[str, Any]] = Field(default_factory=list)
     audio: list[dict[str, Any]] = Field(default_factory=list)
     manifest_sha256: str = ""
@@ -215,6 +216,7 @@ class AudioArtifact(Artifact):
     narration: dict[str, Any] = Field(default_factory=dict)
     scenes: list[dict[str, Any]] = Field(default_factory=list)
     subtitles: list[SubtitleCue] = Field(default_factory=list)
+    words: list[WordTimestamp] = Field(default_factory=list)
     mix: dict[str, Any] = Field(default_factory=dict)
 
     @model_validator(mode="after")
@@ -241,6 +243,11 @@ class AudioArtifact(Artifact):
             if cue.startMs < cue_end or cue.endMs > duration:
                 raise ValueError("subtitle cues must be ordered and inside narration duration")
             cue_end = cue.endMs
+        word_end = 0
+        for w in self.words:
+            if w.startMs < word_end or w.endMs > duration:
+                raise ValueError("word timestamps must be ordered and inside narration duration")
+            word_end = w.endMs
         return self
 
 

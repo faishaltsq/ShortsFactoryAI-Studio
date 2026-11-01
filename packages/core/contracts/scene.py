@@ -17,7 +17,88 @@ TemplateId = Literal[
     "HistoricalTimeline",
     "ParallaxStory",
     "InfographicMotion",
-    "IllustratedStory",
+    "ObjectExplainer",
+    "ProcessFlow",
+    "MetricShift",
+]
+
+#: The object kinds the renderer can draw, mirrored from
+#: ``packages/video/src/art/object-kinds.ts``. One list, imported by the storyboard sanitizer, the
+#: QC gate and the API catalog: a kind invented in one place is a blank box on screen.
+OBJECT_KINDS: tuple[str, ...] = (
+    "gpu",
+    "wafer",
+    "serverRack",
+    "dataCenter",
+    "neuralNet",
+    "database",
+    "satellite",
+    "antenna",
+    "turbine",
+    "solarPanel",
+    "coolingFan",
+    "phone",
+    "drone",
+    "rocket",
+    "building",
+)
+
+ObjectKind = Literal[
+    "gpu",
+    "wafer",
+    "serverRack",
+    "dataCenter",
+    "neuralNet",
+    "database",
+    "satellite",
+    "antenna",
+    "turbine",
+    "solarPanel",
+    "coolingFan",
+    "phone",
+    "drone",
+    "rocket",
+    "building",
+]
+
+#: Short captions drawn under an object. Long labels collide at 1080px wide.
+OBJECT_LABELS: dict[str, str] = {
+    "gpu": "GPU",
+    "wafer": "Wafer",
+    "serverRack": "Rak Server",
+    "dataCenter": "Data Center",
+    "neuralNet": "Neural Net",
+    "database": "Database",
+    "satellite": "Satelit",
+    "antenna": "Menara Sinyal",
+    "turbine": "Turbin",
+    "solarPanel": "Panel Surya",
+    "coolingFan": "Pendingin",
+    "phone": "Ponsel",
+    "drone": "Drone",
+    "rocket": "Roket",
+    "building": "Kantor",
+}
+
+#: Backdrops the renderer can stand an object in, mirrored from ``art/palette.ts``.
+ENVIRONMENTS: tuple[str, ...] = (
+    "dataCenter",
+    "circuit",
+    "space",
+    "lab",
+    "city",
+    "grid",
+    "abstract",
+)
+
+EnvironmentKind = Literal[
+    "dataCenter",
+    "circuit",
+    "space",
+    "lab",
+    "city",
+    "grid",
+    "abstract",
 ]
 
 #: Templates whose renderer reads ``scene.data``. The ported ``validateSceneData`` throws when
@@ -30,7 +111,9 @@ DATA_DRIVEN_TEMPLATES = frozenset(
         "HistoricalTimeline",
         "ParallaxStory",
         "InfographicMotion",
-        "IllustratedStory",
+        "ObjectExplainer",
+        "ProcessFlow",
+        "MetricShift",
     }
 )
 
@@ -118,6 +201,20 @@ class TransitionSpec(BaseModel):
     frames: int = Field(default=0, ge=0, le=60)
 
 
+class WordTimestamp(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    word: str = Field(min_length=1, max_length=120)
+    startMs: int = Field(ge=0)
+    endMs: int = Field(gt=0)
+
+    @model_validator(mode="after")
+    def _ordered(self) -> WordTimestamp:
+        if self.endMs <= self.startMs:
+            raise ValueError("word timestamp endMs must be greater than startMs")
+        return self
+
+
 class SubtitleCue(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -187,7 +284,7 @@ class SceneSpec(BaseModel):
     @model_validator(mode="after")
     def _orbit_needs_depth(self) -> SceneSpec:
         if self.camera.move == "orbit" and self.template not in {
-            "IllustratedStory",
+            "ObjectExplainer",
             "ParallaxStory",
         }:
             raise ValueError(

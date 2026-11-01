@@ -18,14 +18,6 @@
       "title": "Backgrounds",
       "type": "array"
     },
-    "characters": {
-      "items": {
-        "additionalProperties": true,
-        "type": "object"
-      },
-      "title": "Characters",
-      "type": "array"
-    },
     "created_at": {
       "title": "Created At",
       "type": "string"
@@ -34,6 +26,14 @@
       "default": "",
       "title": "Manifest Sha256",
       "type": "string"
+    },
+    "objects": {
+      "items": {
+        "additionalProperties": true,
+        "type": "object"
+      },
+      "title": "Objects",
+      "type": "array"
     },
     "provenance": {
       "additionalProperties": true,

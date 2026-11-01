@@ -28,6 +28,34 @@
       ],
       "title": "SubtitleCue",
       "type": "object"
+    },
+    "WordTimestamp": {
+      "additionalProperties": false,
+      "properties": {
+        "endMs": {
+          "exclusiveMinimum": 0,
+          "title": "Endms",
+          "type": "integer"
+        },
+        "startMs": {
+          "minimum": 0,
+          "title": "Startms",
+          "type": "integer"
+        },
+        "word": {
+          "maxLength": 120,
+          "minLength": 1,
+          "title": "Word",
+          "type": "string"
+        }
+      },
+      "required": [
+        "word",
+        "startMs",
+        "endMs"
+      ],
+      "title": "WordTimestamp",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -69,6 +97,13 @@
         "$ref": "#/$defs/SubtitleCue"
       },
       "title": "Subtitles",
+      "type": "array"
+    },
+    "words": {
+      "items": {
+        "$ref": "#/$defs/WordTimestamp"
+      },
+      "title": "Words",
       "type": "array"
     }
   },

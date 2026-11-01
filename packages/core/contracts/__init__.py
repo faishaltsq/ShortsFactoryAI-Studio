@@ -20,7 +20,7 @@ from .artifacts import (
     StoryboardArtifact,
 )
 from .base import Artifact, ArtifactValidationError, content_hash, validate_artifact
-from .scene import CameraSpec, MotionSpec, SceneSpec, SubtitleCue, TemplateId
+from .scene import CameraSpec, MotionSpec, SceneSpec, SubtitleCue, TemplateId, WordTimestamp
 from .state import JobState, StudioStatus, allowed_transitions, assert_transition
 
 __all__ = [
@@ -46,6 +46,7 @@ __all__ = [
     "StudioStatus",
     "SubtitleCue",
     "TemplateId",
+    "WordTimestamp",
     "allowed_transitions",
     "assert_transition",
     "content_hash",
