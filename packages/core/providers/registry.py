@@ -30,7 +30,9 @@ class ProviderSpec(BaseModel):
     base_url: str = ""
     model: str = Field(default="", max_length=200)
     credential: dict[str, str] | None = None
-    capabilities: list[Capability] = Field(default_factory=lambda: [Capability.CHAT])
+    capabilities: frozenset[Capability] = Field(
+        default_factory=lambda: frozenset([Capability.CHAT])
+    )
     timeout_s: float = Field(default=90.0, gt=0, le=600)
     max_retries: int = Field(default=2, ge=0, le=5)
     max_tokens: int | None = Field(default=None, ge=1, le=200_000)
@@ -54,10 +56,12 @@ class ProviderSpec(BaseModel):
             # provider's own allow_private_hosts setting.
             raise ValueError(f"base_url invalid: {exc.reason}") from exc
 
-    @field_validator("capabilities")
+    @field_validator("capabilities", mode="before")
     @classmethod
-    def _unique_capabilities(cls, value: list[Capability]) -> list[Capability]:
-        return list(dict.fromkeys(value))
+    def _unique_capabilities(cls, value: Any) -> Any:
+        if isinstance(value, (list, tuple, set, frozenset)):
+            return frozenset(value)
+        return value
 
     @model_validator(mode="after")
     def _no_vision_without_an_image_channel(self) -> ProviderSpec:

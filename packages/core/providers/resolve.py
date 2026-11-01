@@ -32,7 +32,7 @@ class Binding:
     a candidate missing any of it is skipped with a recorded reason.
     """
 
-    agent: str
+    agent: str = "default"
     primary: str | None = None
     fallback: tuple[str, ...] = ()
     requires: frozenset[Capability] = frozenset({Capability.CHAT})
@@ -139,7 +139,10 @@ def resolve_call(
 
         report = health.get(provider_id)
         if report is None:
-            report = transport.health(call)
+            if hasattr(transport, "health"):
+                report = transport.health(call)
+            else:
+                report = Health(ok=True)
         if not report.ok:
             reasons.append(f"{provider_id}: unhealthy ({report.detail})")
             continue
