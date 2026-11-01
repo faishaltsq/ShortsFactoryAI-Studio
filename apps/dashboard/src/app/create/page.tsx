@@ -26,11 +26,63 @@ export default function CreatePage() {
   const [providerMode, setProviderMode] = useState<"mock" | "live">("mock");
   const [renderVideo, setRenderVideo] = useState(false);
   const [priority, setPriority] = useState(5);
+  const [language, setLanguage] = useState("id");
+  const [voice, setVoice] = useState("id-ID-ArdiNeural");
+  const [voices, setVoices] = useState<Array<{ id: string; name: string; locale: string; gender: string }>>([
+    { id: "id-ID-ArdiNeural", name: "Microsoft Ardi (Pria - Neural)", locale: "id-ID", gender: "Male" },
+    { id: "id-ID-GadisNeural", name: "Microsoft Gadis (Wanita - Neural)", locale: "id-ID", gender: "Female" },
+  ]);
+  const [previewingVoice, setPreviewingVoice] = useState(false);
+  const [previewAudio, setPreviewAudio] = useState<HTMLAudioElement | null>(null);
   const [creating, setCreating] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [createdId, setCreatedId] = useState<string | null>(null);
   const [isError, setIsError] = useState(false);
 
+  useEffect(() => {
+    let active = true;
+    void api.getVoices(language).then((res) => {
+      if (active && res.voices && res.voices.length > 0) {
+        setVoices(res.voices);
+        const first = res.voices[0];
+        if (first && !res.voices.some((v) => v.id === voice)) {
+          setVoice(first.id);
+        }
+      }
+    }).catch(() => {
+      // ignore network errors
+    });
+    return () => {
+      active = false;
+    };
+  }, [language]);
+
+  const handlePreviewVoice = async () => {
+    if (previewingVoice) return;
+    setPreviewingVoice(true);
+    try {
+      if (previewAudio) {
+        previewAudio.pause();
+      }
+      const sampleText = language === "id"
+        ? "Halo! Ini adalah contoh suara narasi bahasa Indonesia yang alami dan jernih."
+        : "Hello! This is a preview of the natural narration voice for this video.";
+      const res = await api.previewVoice({
+        text: sampleText,
+        voice,
+        language,
+      });
+      if (res.audio_base64) {
+        const audio = new Audio(res.audio_base64);
+        setPreviewAudio(audio);
+        await audio.play();
+      }
+    } catch (err) {
+      alert(`Gagal memutar contoh suara: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setPreviewingVoice(false);
+    }
+  };
   const discover = useCallback(async () => {
     setDiscovering(true);
     setDiscoverError(null);
@@ -57,10 +109,11 @@ export default function CreatePage() {
       const job = await api.createJob({
         title,
         topic,
+        language,
+        voice,
         provider_mode: providerMode,
         priority,
         render_video: renderVideo,
-        ...(renderVideo ? { voice: "system-default" } : {}),
       });
       setCreatedId(job.id);
       setIsError(false);
@@ -155,6 +208,45 @@ export default function CreatePage() {
         </div>
         <div className="grid gap-4 sm:grid-cols-2">
           <div>
+            <label className="label" htmlFor="create-language">Bahasa narasi</label>
+            <select
+              id="create-language"
+              className="field"
+              value={language}
+              onChange={(event) => setLanguage(event.target.value)}
+            >
+              <option value="id">Bahasa Indonesia (id-ID)</option>
+              <option value="en">English (en-US)</option>
+            </select>
+          </div>
+          <div>
+            <div className="flex items-center justify-between">
+              <label className="label" htmlFor="create-voice">Suara narasi</label>
+              <button
+                type="button"
+                className="text-xs text-accent-400 hover:underline disabled:opacity-50"
+                disabled={previewingVoice}
+                onClick={() => void handlePreviewVoice()}
+              >
+                {previewingVoice ? "Memutar contoh…" : "Dengar contoh"}
+              </button>
+            </div>
+            <select
+              id="create-voice"
+              className="field"
+              value={voice}
+              onChange={(event) => setVoice(event.target.value)}
+            >
+              {voices.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.name} ({v.gender === "Male" ? "Pria" : v.gender === "Female" ? "Wanita" : v.gender})
+                </option>
+              ))}
+            </select>
+          </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-2">
+          <div>
             <label className="label" htmlFor="create-mode">Mode provider</label>
             <select
               id="create-mode"
@@ -186,9 +278,9 @@ export default function CreatePage() {
             onChange={(event) => setRenderVideo(event.target.checked)}
           />
           <span>
-            Render video dengan suara sistem lokal
+            Render video dengan audio & narasi neural
             <span className="block text-xs text-ink-400">
-              Memerlukan renderer dan suara Windows yang tersedia; proses dapat memakan beberapa menit.
+              Membuat audio berkualitas tinggi (-16 LUFS) dan merender video vertikal MP4.
               Tanpa pilihan ini, produksi berhenti setelah storyboard.
             </span>
           </span>

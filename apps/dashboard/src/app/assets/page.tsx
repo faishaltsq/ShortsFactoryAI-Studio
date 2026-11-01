@@ -11,28 +11,28 @@ import styles from "@/components/artifact-workspace/workspace.module.css";
 const ARTIFACTS = ["assets.json", "audio.json", "storyboard.json", "render-props.json"] as const;
 
 export default function AssetsPage() {
-  return <Workspace title="Aset produksi" description="Pisahkan kemampuan karakter terpasang dari manifest aset dan narasi yang benar-benar dihasilkan job. Referensi scene tidak berarti berkas aset sudah diproduksi." library={<InstalledCharacters />}>
+  return <Workspace title="Aset produksi" description="Pisahkan kemampuan karakter terpasang dari manifest aset dan narasi yang benar-benar dihasilkan job. Referensi scene tidak berarti berkas aset sudah diproduksi." library={<InstalledObjects />}>
     {(id) => <JobAssets id={id} />}
   </Workspace>;
 }
 
-function InstalledCharacters() {
+function InstalledObjects() {
   const [catalog, setCatalog] = useState<StudioCatalog | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [revision, setRevision] = useState(0);
   useEffect(() => {
     let active = true;
     api.catalog().then((result) => {
-      if (!Array.isArray(result.characters) || !result.characters.every((character) => isObject(character) && [character.id, character.displayName, character.version, character.artStyle, character.license, character.provenance].every((item) => typeof item === "string") && [character.poses, character.expressions, character.gestures, character.clothingVariants, character.mouthShapes].every((items) => Array.isArray(items) && items.every((item) => typeof item === "string")))) throw new Error("Daftar karakter katalog tidak valid.");
+      if (!Array.isArray(result.objects) || !result.objects.every((entry) => isObject(entry) && [entry.id, entry.label].every((item) => typeof item === "string"))) throw new Error("Daftar objek katalog tidak valid.");
       if (active) { setCatalog(result); setError(null); }
     }).catch((failure: unknown) => { if (active) setError(failureMessage(failure)); });
     return () => { active = false; };
   }, [revision]);
-  return <section className={styles.section} aria-labelledby="installed-characters"><h2 id="installed-characters">Karakter terpasang</h2>
-    <p>Kemampuan dari manifest karakter bawaan. Katalog bukan bukti dependency, render, atau QA telah berhasil.</p>
-    {error ? <Notice error onRetry={() => setRevision((value) => value + 1)}>Katalog tidak dapat dibaca: {error}</Notice> : !catalog ? <p role="status">Memuat manifest karakter…</p> : catalog.characters.length === 0 ? <Notice>Tidak ada karakter dalam katalog terpasang.</Notice> : <div className={styles.cards}>{catalog.characters.map((character) => <article className={styles.card} key={character.id}>
-      <h3>{character.displayName}</h3><p>{character.id} · {character.version} · {character.artStyle}</p>
-      <Metadata value={{ lisensi: character.license || "Tidak dicantumkan", asal: character.provenance || "Tidak dicantumkan", pose: character.poses.join(", ") || "Tidak dicantumkan", ekspresi: character.expressions.join(", ") || "Tidak dicantumkan", gestur: character.gestures.join(", ") || "Tidak dicantumkan", pakaian: character.clothingVariants.join(", ") || "Tidak dicantumkan", bentuk_mulut: character.mouthShapes.join(", ") || "Tidak dicantumkan" }} />
+  return <section className={styles.section} aria-labelledby="installed-objects"><h2 id="installed-objects">Objek terpasang</h2>
+    <p>Pustaka objek yang bisa digambar renderer. Katalog bukan bukti dependency, render, atau QA telah berhasil.</p>
+    {error ? <Notice error onRetry={() => setRevision((value) => value + 1)}>Katalog tidak dapat dibaca: {error}</Notice> : !catalog ? <p role="status">Memuat pustaka objek…</p> : catalog.objects.length === 0 ? <Notice>Tidak ada objek dalam katalog terpasang.</Notice> : <div className={styles.cards}>{catalog.objects.map((entry) => <article className={styles.card} key={entry.id}>
+      <h3>{entry.label}</h3><p>{entry.id}</p>
+      <Metadata value={{ latar: (catalog.environments ?? []).join(", ") || "Tidak dicantumkan" }} />
     </article>)}</div>}
   </section>;
 }
@@ -54,7 +54,7 @@ function JobAssets({ id }: { id: string }) {
       else board = readStoryboard(name === "render-props.json" ? data.storyboard : data);
     } catch (failure) { invalid.push(`${name}: ${failureMessage(failure)}`); }
   }
-  const groups = assets ? [{ name: "Karakter job", prefix: "character", rows: assets.characters }, { name: "Latar job", prefix: "bg", rows: assets.backgrounds }, { name: "Musik dan efek job", prefix: "audio", rows: assets.audio }] : [];
+  const groups = assets ? [{ name: "Objek job", prefix: "object", rows: assets.objects }, { name: "Latar job", prefix: "bg", rows: assets.backgrounds }, { name: "Musik dan efek job", prefix: "audio", rows: assets.audio }] : [];
   return <>
     <JobHeading detail={detail} reload={reload} />
     {ARTIFACTS.map((name) => <ArtifactNotice key={name} name={name} result={artifacts[name]} onRetry={reload} />)}

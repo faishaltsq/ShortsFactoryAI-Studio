@@ -49,6 +49,7 @@ from .schemas import (
     RetryRequestBody,
     SettingsBody,
     TestProviderBody,
+    TTSPreviewBody,
 )
 from .settings import Settings
 from .state import AppState
@@ -810,6 +811,68 @@ def create_app(state: AppState | None = None) -> FastAPI:
                 status_code=503,
                 detail="Katalog lokal tidak dapat dibaca. Periksa manifest karakter instalasi.",
             ) from exc
+
+    # ---------------------------------------------------------------- TTS
+    @app.get("/api/tts/voices")
+    def get_tts_voices(
+        locale: str | None = Query(default=None),
+        provider: str | None = Query(default=None),
+    ) -> dict[str, Any]:
+        from packages.core.media.tts import list_available_voices
+
+        voices = list_available_voices(locale=locale, provider=provider)
+        return {
+            "voices": [
+                {
+                    "id": v.id,
+                    "name": v.name,
+                    "locale": v.locale,
+                    "gender": v.gender,
+                    "provider": v.provider,
+                    "description": v.description,
+                }
+                for v in voices
+            ]
+        }
+
+    @app.post("/api/tts/preview")
+    def post_tts_preview(body: TTSPreviewBody) -> dict[str, Any]:
+        import base64
+        import tempfile
+        from pathlib import Path
+
+        from packages.core.media.tts import resolve_tts
+
+        try:
+            tts_provider, tts_voice = resolve_tts(
+                language=body.language,
+                requested_voice=body.voice,
+                requested_provider=body.provider,
+            )
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp_path = Path(tmp.name)
+            try:
+                words, duration_ms = tts_provider.synthesize(
+                    body.text,
+                    tmp_path,
+                    voice=tts_voice.id,
+                    timeout_s=30,
+                )
+                audio_bytes = tmp_path.read_bytes()
+                b64_audio = base64.b64encode(audio_bytes).decode("ascii")
+                return {
+                    "ok": True,
+                    "voice": tts_voice.id,
+                    "provider": tts_provider.provider_id,
+                    "locale": tts_voice.locale,
+                    "duration_ms": duration_ms,
+                    "audio_base64": f"data:audio/wav;base64,{b64_audio}",
+                    "words_count": len(words),
+                }
+            finally:
+                tmp_path.unlink(missing_ok=True)
+        except Exception as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     # ---------------------------------------------------------------- settings and agents
     @app.get("/api/settings")

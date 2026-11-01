@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class CreateJobBody(BaseModel):
@@ -20,8 +20,7 @@ class CreateJobBody(BaseModel):
     audience: str = Field(default="umum", max_length=80)
     intensity: str = Field(default="sedang", max_length=80)
     music: str = Field(default="none", max_length=80)
-    characters: list[str] = Field(default_factory=lambda: ["maya"])
-    renderer: Literal["remotion", "bang-motion"] = "remotion"
+    renderer: Literal["remotion"] = "remotion"
     provider_mode: Literal["live", "mock"] = "mock"
     #: A job-level request for the Phase 2 render chain. Not a provider setting: it decides
     #: whether the pipeline appends the Remotion + technical-QC stages at all.
@@ -33,13 +32,6 @@ class CreateJobBody(BaseModel):
     #: Earliest production start (ISO-8601 UTC). Production scheduling only — never approval
     #: or publication: the approval gate always waits for a human, scheduled or not.
     scheduled_for: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}")
-
-    @field_validator("characters")
-    @classmethod
-    def _known_characters(cls, value: list[str]) -> list[str]:
-        if not value:
-            raise ValueError("at least one character is required")
-        return value
 
 
 class CancelBody(BaseModel):
@@ -216,3 +208,12 @@ class MetadataBody(BaseModel):
     tags: list[str] | None = Field(default=None, max_length=50)
     category_id: str | None = Field(default=None, max_length=10)
     made_for_kids: bool | None = None
+
+
+class TTSPreviewBody(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    text: str = Field(default="Halo! Ini adalah contoh suara narasi bahasa Indonesia.", min_length=1, max_length=500)
+    voice: str = Field(default="id-ID-ArdiNeural", max_length=80)
+    provider: str = Field(default="edge-tts", max_length=40)
+    language: str = Field(default="id", max_length=16)

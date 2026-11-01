@@ -6,15 +6,13 @@ import { Empty, ErrorState, Loading } from "@/components/states";
 import { api, type StudioCatalog } from "@/lib/api";
 import styles from "./page.module.css";
 
-type Category = "all" | "renderers" | "templates" | "motion" | "characters";
+type Category = "all" | "renderers" | "templates" | "objects" | "visual";
 
-const MOTION_GROUPS: Array<{ key: keyof StudioCatalog["motion"]; label: string }> = [
-  { key: "poses", label: "Pose" },
-  { key: "expressions", label: "Ekspresi" },
-  { key: "presets", label: "Preset gerak" },
+const VISUAL_GROUPS: Array<{ key: keyof StudioCatalog["visual"]; label: string }> = [
   { key: "beat_kinds", label: "Jenis beat" },
   { key: "camera_moves", label: "Gerak kamera" },
   { key: "transitions", label: "Transisi" },
+  { key: "text_roles", label: "Peran teks" },
 ];
 
 function Values({ values, empty = "Tidak dilaporkan katalog." }: { values: string[]; empty?: string }) {
@@ -27,7 +25,6 @@ export default function SkillsPage() {
   const [attempt, setAttempt] = useState(0);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState<Category>("all");
-  const [characterId, setCharacterId] = useState("");
 
   useEffect(() => {
     let cancelled = false;
@@ -49,25 +46,22 @@ export default function SkillsPage() {
   const matches = (...values: string[]) => values.some((value) => value.toLocaleLowerCase().includes(needle));
   const renderers = catalog?.renderers.filter((renderer) => matches(renderer.id, renderer.label, renderer.description)) ?? [];
   const templates = catalog?.templates.filter((template) => matches(template)) ?? [];
-  const motion = MOTION_GROUPS.map((group) => ({ ...group, values: catalog?.motion[group.key].filter((value) => matches(value)) ?? [] }));
-  const characters = catalog?.characters.filter((character) => matches(
-    character.id, character.displayName, character.artStyle, character.version, character.license, character.provenance,
-    ...character.poses, ...character.expressions, ...character.gestures, ...character.clothingVariants, ...character.mouthShapes,
-  )) ?? [];
-  const character = characters.find((candidate) => candidate.id === characterId) ?? characters[0];
+  const objects = catalog?.objects.filter((object) => matches(object.id, object.label)) ?? [];
+  const environments = catalog?.environments.filter((environment) => matches(environment)) ?? [];
+  const visual = VISUAL_GROUPS.map((group) => ({ ...group, values: catalog?.visual[group.key].filter((value) => matches(value)) ?? [] }));
   const show = (value: Category) => category === "all" || category === value;
   const resultCount = (show("renderers") ? renderers.length : 0)
     + (show("templates") ? templates.length : 0)
-    + (show("motion") ? motion.reduce((total, group) => total + group.values.length, 0) : 0)
-    + (show("characters") ? characters.length : 0);
-  const isEmpty = catalog !== null && !catalog.renderers.length && !catalog.templates.length && !catalog.characters.length && MOTION_GROUPS.every((group) => !catalog.motion[group.key].length);
+    + (show("objects") ? objects.length : 0)
+    + (show("visual") ? visual.reduce((total, group) => total + group.values.length, 0) + environments.length : 0);
+  const isEmpty = catalog !== null && !catalog.renderers.length && !catalog.templates.length && !catalog.objects.length;
 
   return (
     <div className={styles.page}>
       <header className={styles.header}>
         <div>
           <h1>Katalog kemampuan bawaan</h1>
-          <p>Referensi kontrak template, gerak, dan manifest karakter yang dikembalikan API lokal.</p>
+          <p>Referensi kontrak template, pustaka objek, dan latar yang dikembalikan API lokal.</p>
         </div>
         <div className={styles.links}>
           <Link className={`btn btn-primary ${styles.button}`} href="/create">Buat job</Link>
@@ -77,13 +71,13 @@ export default function SkillsPage() {
       <p className={styles.boundary} role="note">Ini bukan MotionSkillRegistry atau daftar plugin terpasang. Isi katalog tidak membuktikan dependensi renderer tersedia atau render telah lolos validasi.</p>
 
       {error ? <ErrorState message={error} onRetry={() => setAttempt((value) => value + 1)} /> : !catalog ? <Loading label="Memuat katalog kemampuan bawaan…" /> : isEmpty ? (
-        <Empty title="Katalog bawaan kosong" hint="API tidak melaporkan template, gerak, karakter, atau renderer. Periksa konfigurasi API lokal lalu muat ulang." />
+        <Empty title="Katalog bawaan kosong" hint="API tidak melaporkan template, objek, atau renderer. Periksa konfigurasi API lokal lalu muat ulang." />
       ) : (
         <>
           <div className={styles.filters} role="search" aria-label="Filter katalog">
             <label className={styles.fieldLabel}>
               Cari kemampuan
-              <input className={`field ${styles.input}`} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ID, pose, ekspresi, atau karakter" />
+              <input className={`field ${styles.input}`} type="search" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="ID objek, template, atau latar" />
             </label>
             <label className={styles.fieldLabel}>
               Kelompok
@@ -91,13 +85,13 @@ export default function SkillsPage() {
                 <option value="all">Semua kelompok</option>
                 <option value="renderers">Renderer</option>
                 <option value="templates">Template</option>
-                <option value="motion">Gerak</option>
-                <option value="characters">Karakter</option>
+                <option value="objects">Objek</option>
+                <option value="visual">Kosakata visual</option>
               </select>
             </label>
             <button type="button" className={`btn ${styles.button}`} disabled={!query && category === "all"} onClick={() => { setQuery(""); setCategory("all"); }}>Reset filter</button>
           </div>
-          <p className={styles.result} role="status">{resultCount} entri cocok dengan filter. Entri gerak dihitung per kelompok.</p>
+          <p className={styles.result} role="status">{resultCount} entri cocok dengan filter. Entri visual dihitung per kelompok.</p>
           {!resultCount ? <Empty title="Tidak ada kemampuan yang cocok" hint="Ubah kata pencarian atau reset filter untuk melihat katalog kembali." /> : null}
 
           {show("renderers") && renderers.length ? (
@@ -121,47 +115,34 @@ export default function SkillsPage() {
             </section>
           ) : null}
 
-          {show("motion") && motion.some((group) => group.values.length) ? (
-            <section className={styles.section} aria-labelledby="motion-heading">
-              <h2 id="motion-heading">Kosakata gerak</h2>
-              <p className={styles.hint}>Kemampuan kontrak dan emitter bawaan. Dukungan pose dan ekspresi karakter tertentu tercantum di manifest karakter di bawah.</p>
-              <div className={styles.motion}>{motion.filter((group) => group.values.length).map((group) => (
-                <div key={group.key}>
-                  <h3>{group.label}</h3>
-                  <Values values={group.values} />
+          {show("objects") && objects.length ? (
+            <section className={styles.section} aria-labelledby="objects-heading">
+              <h2 id="objects-heading">Pustaka objek</h2>
+              <p className={styles.hint}>Objek yang bisa digambar renderer. Storyboard memilih dari daftar ini; jenis di luar daftar ditolak gerbang QC.</p>
+              <dl className={styles.renderers}>{objects.map((object) => (
+                <div key={object.id}>
+                  <dt>{object.label} <span className={styles.identifier}>{object.id}</span></dt>
                 </div>
-              ))}</div>
+              ))}</dl>
             </section>
           ) : null}
 
-          {show("characters") && characters.length ? (
-            <section className={styles.section} aria-labelledby="characters-heading">
-              <h2 id="characters-heading">Manifest karakter</h2>
-              <label className={`${styles.fieldLabel} ${styles.characterSelect}`}>
-                Pilih karakter
-                <select className={`field ${styles.input}`} value={character?.id ?? ""} onChange={(event) => setCharacterId(event.target.value)}>
-                  {characters.map((item) => <option key={item.id} value={item.id}>{item.displayName || item.id} ({item.id})</option>)}
-                </select>
-              </label>
-              {character ? (
-                <article aria-label={`Manifest ${character.id}`}>
-                  <h3 className={styles.characterName}>{character.displayName || character.id}</h3>
-                  <dl className={styles.metadata}>
-                    <dt>ID</dt><dd>{character.id}</dd>
-                    <dt>Versi manifest</dt><dd>{character.version || "Tidak dilaporkan"}</dd>
-                    <dt>Gaya</dt><dd>{character.artStyle || "Tidak dilaporkan"}</dd>
-                    <dt>Lisensi</dt><dd>{character.license || "Tidak dilaporkan"}</dd>
-                    <dt>Provenans</dt><dd>{character.provenance || "Tidak dilaporkan"}</dd>
-                  </dl>
-                  <div className={styles.motion}>
-                    <div><h3>Pose karakter</h3><Values values={character.poses} /></div>
-                    <div><h3>Ekspresi karakter</h3><Values values={character.expressions} /></div>
-                    <div><h3>Gestur</h3><Values values={character.gestures} /></div>
-                    <div><h3>Varian pakaian</h3><Values values={character.clothingVariants} /></div>
-                    <div><h3>Bentuk mulut</h3><Values values={character.mouthShapes} /></div>
+          {show("visual") && (visual.some((group) => group.values.length) || environments.length) ? (
+            <section className={styles.section} aria-labelledby="visual-heading">
+              <h2 id="visual-heading">Kosakata visual</h2>
+              <p className={styles.hint}>Kemampuan kontrak scene dan latar yang bisa dipakai objek.</p>
+              <div className={styles.motion}>
+                <div>
+                  <h3>Latar</h3>
+                  <Values values={environments} />
+                </div>
+                {visual.filter((group) => group.values.length).map((group) => (
+                  <div key={group.key}>
+                    <h3>{group.label}</h3>
+                    <Values values={group.values} />
                   </div>
-                </article>
-              ) : null}
+                ))}
+              </div>
             </section>
           ) : null}
         </>

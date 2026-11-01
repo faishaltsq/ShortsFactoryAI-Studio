@@ -9,11 +9,12 @@ const catalog: StudioCatalog = {
     { id: "renderer-a", label: "Renderer A", description: "First test renderer" },
     { id: "renderer-b", label: "Renderer B", description: "Second test renderer" },
   ],
-  motion: { poses: ["test-pose"], expressions: ["test-expression"], presets: ["test-preset"], beat_kinds: ["test-beat"], camera_moves: ["test-camera"], transitions: ["test-transition"] },
-  characters: [
-    { id: "character-a", displayName: "Character A", version: "fixture-a", artStyle: "test-style-a", poses: ["pose-a"], expressions: ["expression-a"], gestures: ["gesture-a"], clothingVariants: ["clothing-a"], mouthShapes: ["mouth-a"], license: "test-license-a", provenance: "test-provenance-a" },
-    { id: "character-b", displayName: "Character B", version: "fixture-b", artStyle: "test-style-b", poses: ["pose-b"], expressions: ["expression-b"], gestures: ["gesture-b"], clothingVariants: ["clothing-b"], mouthShapes: ["mouth-b"], license: "test-license-b", provenance: "test-provenance-b" },
+  objects: [
+    { id: "test-object-a", label: "Object A" },
+    { id: "test-object-b", label: "Object B" },
   ],
+  environments: ["test-environment-a", "test-environment-b"],
+  visual: { beat_kinds: ["test-beat"], camera_moves: ["test-camera"], transitions: ["test-transition"], text_roles: ["test-role"] },
 };
 
 beforeEach(() => { vi.spyOn(api, "catalog").mockResolvedValue(structuredClone(catalog)); });
@@ -36,25 +37,28 @@ test("search and category filters change results and reset restores the returned
   for (const renderer of catalog.renderers) expect(within(renderers).getByText(renderer.description).isConnected).toBe(true);
 });
 
-test("character selection shows that manifest's actual motion and provenance rather than the prior character", async () => {
+test("the object library lists every shipped object and filters by the search box", async () => {
   render(<SkillsPage />);
-  const select = await screen.findByRole("combobox", { name: "Pilih karakter" });
-  expect(screen.getByRole("article", { name: "Manifest character-a" }).isConnected).toBe(true);
-  fireEvent.change(select, { target: { value: "character-b" } });
-  const manifest = screen.getByRole("article", { name: "Manifest character-b" });
-  for (const value of ["pose-b", "expression-b", "gesture-b", "clothing-b", "mouth-b", "test-license-b", "test-provenance-b"]) {
-    expect(within(manifest).getByText(value).isConnected).toBe(true);
+  const objects = await screen.findByRole("region", { name: "Pustaka objek" });
+  for (const object of catalog.objects) expect(within(objects).getByText(object.id).isConnected).toBe(true);
+  fireEvent.change(screen.getByRole("searchbox", { name: "Cari kemampuan" }), { target: { value: "test-object-b" } });
+  const filtered = screen.getByRole("region", { name: "Pustaka objek" });
+  expect(within(filtered).getByText("test-object-b").isConnected).toBe(true);
+  expect(within(filtered).queryByText("test-object-a")).toBeNull();
+});
+
+test("the visual vocabulary and backdrops are reported, and no character list is required", async () => {
+  render(<SkillsPage />);
+  const visual = await screen.findByRole("region", { name: "Kosakata visual" });
+  for (const value of ["test-beat", "test-camera", "test-transition", "test-role", "test-environment-a"]) {
+    expect(within(visual).getByText(value).isConnected).toBe(true);
   }
-  expect(within(manifest).queryByText("pose-a")).toBeNull();
-  fireEvent.change(screen.getByRole("searchbox", { name: "Cari kemampuan" }), { target: { value: "gesture-a" } });
-  const filtered = screen.getByRole("article", { name: "Manifest character-a" });
-  expect(within(filtered).getByText("gesture-a").isConnected).toBe(true);
-  expect(screen.queryByRole("article", { name: "Manifest character-b" })).toBeNull();
+  expect(screen.queryByText(/manifest karakter/i)).toBeNull();
 });
 
 test("load errors retry against the API, and an empty response offers reload without inventing entries", async () => {
   vi.mocked(api.catalog).mockRejectedValueOnce(new Error("Manifest unavailable")).mockResolvedValueOnce({
-    templates: [], renderers: [], characters: [], motion: { poses: [], expressions: [], presets: [], beat_kinds: [], camera_moves: [], transitions: [] },
+    templates: [], renderers: [], objects: [], environments: [], visual: { beat_kinds: [], camera_moves: [], transitions: [], text_roles: [] },
   });
   render(<SkillsPage />);
   await screen.findByRole("alert");

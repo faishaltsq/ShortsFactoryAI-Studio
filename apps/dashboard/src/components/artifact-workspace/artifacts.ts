@@ -33,11 +33,11 @@ export function readStoryboard(value: unknown): Storyboard {
   return { fps: value.fps, scenes, raw: value };
 }
 
-export type AssetsManifest = JsonObject & { characters: JsonObject[]; backgrounds: JsonObject[]; audio: JsonObject[] };
+export type AssetsManifest = JsonObject & { objects: JsonObject[]; backgrounds: JsonObject[]; audio: JsonObject[] };
 export type AudioManifest = JsonObject & { narration: JsonObject; mix: JsonObject; scenes: JsonObject[] };
 export function readAssets(value: unknown): AssetsManifest {
   if (!isObject(value)) throw new Error("Manifest aset harus berupa objek.");
-  for (const field of ["characters", "backgrounds", "audio"]) objectRows(value[field], field);
+  for (const field of ["objects", "backgrounds", "audio"]) objectRows(value[field], field);
   return value as AssetsManifest;
 }
 export function readAudio(value: unknown): AudioManifest {

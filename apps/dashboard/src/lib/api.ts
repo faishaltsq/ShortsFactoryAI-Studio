@@ -186,26 +186,13 @@ export type StudioSettings = {
 
 export type StudioCatalog = {
   templates: string[];
-  characters: Array<{
-    id: string;
-    version: string;
-    displayName: string;
-    artStyle: string;
-    poses: string[];
-    expressions: string[];
-    gestures: string[];
-    clothingVariants: string[];
-    mouthShapes: string[];
-    license: string;
-    provenance: string;
-  }>;
-  motion: {
-    poses: string[];
-    expressions: string[];
-    presets: string[];
+  objects: Array<{ id: string; label: string }>;
+  environments: string[];
+  visual: {
     beat_kinds: string[];
     camera_moves: string[];
     transitions: string[];
+    text_roles: string[];
   };
   renderers: Array<{ id: string; label: string; description: string }>;
 };
@@ -266,6 +253,27 @@ export const api = {
       body: JSON.stringify({ operator, reason }),
     }),
 
+
+  getVoices: (locale?: string) =>
+    request<{
+      voices: Array<{
+        id: string;
+        name: string;
+        locale: string;
+        gender: string;
+        provider: string;
+        description: string;
+      }>;
+    }>(locale ? `/api/tts/voices?locale=${encodeURIComponent(locale)}` : "/api/tts/voices"),
+  previewVoice: (body: { text: string; voice: string; language?: string; provider?: string }) =>
+    request<{
+      ok: boolean;
+      voice: string;
+      provider: string;
+      locale: string;
+      duration_ms: number;
+      audio_base64: string;
+    }>("/api/tts/preview", { method: "POST", body: JSON.stringify(body) }),
   snapshot: (jobId?: string) =>
     request<StudioSnapshot>(`/api/studio/snapshot${jobId ? `?job_id=${encodeURIComponent(jobId)}` : ""}`),
   history: (jobId: string, limit = 100) =>

@@ -65,7 +65,7 @@ test("studio module links preserve job scope and storyboard selection follows br
   await page.getByRole("link", { name: "Periksa aset job" }).first().click();
   await expect(page).toHaveURL(new RegExp(`/assets\\?job_id=${first.id}$`));
   await expect(page.getByRole("region", { name: "Job terpilih" })).toContainText("Workspace storyboard ready");
-  await expect(page.getByRole("heading", { name: "Maya", exact: true })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "GPU", exact: true })).toBeVisible();
   await expect(page.getByText("assets.json belum diproduksi untuk job ini.", { exact: true })).toBeVisible();
 });
 
