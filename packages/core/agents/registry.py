@@ -7,6 +7,7 @@ from .concrete import (
     AnimationAgent,
     CreativeDirectorAgent,
     MetadataAgent,
+    MotionCoderAgent,
     QualityAgent,
     ResearchAgent,
     ScriptAgent,
@@ -21,6 +22,7 @@ AGENTS: dict[str, type[Agent]] = {
     "CreativeDirectorAgent": CreativeDirectorAgent,
     "StoryboardAgent": StoryboardAgent,
     "AnimationAgent": AnimationAgent,
+    "MotionCoderAgent": MotionCoderAgent,
     "QualityAgent": QualityAgent,
     "MetadataAgent": MetadataAgent,
 }
@@ -34,6 +36,7 @@ REQUIRED_CAPABILITIES: dict[str, frozenset[str]] = {
     "CreativeDirectorAgent": frozenset({"chat"}),
     "StoryboardAgent": frozenset({"chat", "json_schema"}),
     "AnimationAgent": frozenset({"chat"}),
+    "MotionCoderAgent": frozenset({"chat"}),
     "QualityAgent": frozenset({"chat"}),
     "MetadataAgent": frozenset({"chat"}),
 }

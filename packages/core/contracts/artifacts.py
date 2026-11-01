@@ -343,6 +343,58 @@ class MotionPlanArtifact(Artifact):
     anti_patterns_checked: list[str] = Field(default_factory=list)
 
 
+class MotionCodeArtifact(Artifact):
+    kind = "motion-code"
+
+    entry_component: str = "RootComposition"
+    files: dict[str, str] = Field(default_factory=dict)
+    dependencies: list[str] = Field(default_factory=list)
+    skill_hashes: list[str] = Field(default_factory=list)
+    validated_by_codeguard: bool = False
+    issues: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _strip_kind(cls, data: Any) -> Any:
+        if isinstance(data, dict) and "kind" in data:
+            data = dict(data)
+            data.pop("kind", None)
+        return data
+
+    @field_validator("files")
+    @classmethod
+    def _validate_filenames(cls, files: dict[str, str]) -> dict[str, str]:
+        for k in files:
+            if not isinstance(k, str) or not k.strip():
+                raise ValueError("Filename must be a non-empty string")
+            clean_k = k.strip().replace("\\", "/")
+            if ".." in clean_k.split("/") or clean_k.startswith("/"):
+                raise ValueError(f"Path traversal not permitted in filename: {k!r}")
+            if any(ch in '<>:"|?*' for ch in clean_k) or (len(clean_k) >= 2 and clean_k[1] == ":"):
+                raise ValueError(f"Illegal character in filename: {k!r}")
+            if not any(clean_k.endswith(ext) for ext in (".tsx", ".ts", ".jsx", ".js", ".css", ".json")):
+                raise ValueError(f"Unsupported file extension: {k!r}")
+        return files
+
+    @model_validator(mode="after")
+    def _validate_entry_and_safety(self) -> MotionCodeArtifact:
+        if self.files:
+            candidates = {
+                self.entry_component,
+                f"{self.entry_component}.tsx",
+                f"{self.entry_component}.ts",
+                f"{self.entry_component}.jsx",
+                f"{self.entry_component}.js",
+            }
+            if not any(c in self.files for c in candidates):
+                raise ValueError(
+                    f"Entry component {self.entry_component!r} not found in files: {list(self.files.keys())}"
+                )
+            if not self.validated_by_codeguard:
+                raise ValueError(f"Motion code failed CodeGuard security validation: {self.issues}")
+        return self
+
+
 class AssetsArtifact(Artifact):
     kind = "assets"
 

@@ -16,7 +16,19 @@ from typing import Any
 
 from .base import Health, ProviderResult, ResolvedCall, Usage, VisionImage, VisionUnsupported, now_ms
 
-_TASKS = ("script", "review", "storyboard", "research", "metadata", "claim", "motion", "vision")
+_TASKS = (
+    "script",
+    "review",
+    "visual_plan",
+    "creative_motion_brief",
+    "storyboard",
+    "research",
+    "metadata",
+    "claim",
+    "motion",
+    "motion_code",
+    "vision",
+)
 
 #: The shortest scene the mock script can produce once the audio stage has re-timed it, in frames.
 #: Derived from a real render: the mock segments are 21-23 characters and SAPI's default voice speaks
@@ -147,7 +159,7 @@ def mock_storyboard(*, seed: str = "demo", frames_per_scene: int = 300) -> dict[
         "fps": 30,
         "width": 1080,
         "height": 1920,
-        "theme": "midnight",
+        "theme": "editorialLight",
         "scenes": scenes,
         "subtitles": [],
     }
@@ -243,6 +255,86 @@ class MockProvider:
                 "scores": {"hook": 4, "coherence": 4, "pacing": 4, "originality": 4, "payoff": 4},
                 "findings": [],
             }
+        if task.startswith("creative_motion_brief") or task.startswith("creative-motion-brief"):
+            return {
+                "schema_version": 1,
+                "visual_thesis": f"Permintaan AI mengalir melalui gateway terpusat yang memilih rute tercepat untuk {seed}.",
+                "art_direction": {
+                    "palette": "editorialLight",
+                    "primary_accent": "#0055FF",
+                    "secondary_accent": "#FF4400",
+                    "background": "#F8FAFC",
+                    "typography_style": "boldSans",
+                },
+                "narrative_arc": f"Input {seed} -> Analisis Beban -> Pemrosesan Model -> Hasil Optimal",
+                "primary_visual_motifs": ["network_packets", "gateway_hub", "model_nodes", "heartbeat_pulses"],
+                "pacing_strategy": "Cepat dan dinamis di awal, stabil saat routing, akselerasi saat resolusi.",
+                "reusable_motifs": ["data_token", "signal_line"],
+                "scene_transitions": ["cut", "wipe", "slideUp", "zoom"],
+                "motion_complexity_budget": "medium",
+            }
+        if task.startswith("visual_plan"):
+            return {
+                "schema_version": 1,
+                "style_intent": {
+                    "style_name": "editorial_technical",
+                    "theme": "editorialLight",
+                    "color_mood": "Clean technical slate with amber accent",
+                    "motion_character": "crisp_editorial",
+                    "lighting_intent": "High contrast studio lighting",
+                },
+                "beats": [
+                    {
+                        "scene_id": "s1",
+                        "concept": f"Introduction to {seed}",
+                        "primary_subject": "serverRack",
+                        "secondary_elements": ["coolingFan"],
+                        "environment": "dataCenter",
+                        "metaphor_grounding": "Physical data center infrastructure",
+                        "camera_intent": {
+                            "movement": "push",
+                            "target": "serverRack",
+                            "motivation": "Focus on the primary hardware core",
+                        },
+                        "mandatory_assets": ["serverRack"],
+                        "visual_density": "clean",
+                        "key_action": "Rack units illuminate sequentially",
+                    },
+                    {
+                        "scene_id": "s2",
+                        "concept": f"Processing mechanics of {seed}",
+                        "primary_subject": "gpu",
+                        "secondary_elements": ["wafer", "neuralNet"],
+                        "environment": "circuit",
+                        "metaphor_grounding": "Parallel silicon acceleration",
+                        "camera_intent": {
+                            "movement": "pan",
+                            "target": "gpu",
+                            "motivation": "Track data flow across circuit traces",
+                        },
+                        "mandatory_assets": ["gpu"],
+                        "visual_density": "medium",
+                        "key_action": "Silicon wafer emits computation pulse",
+                    },
+                    {
+                        "scene_id": "s3",
+                        "concept": f"Conclusion and persistence of {seed}",
+                        "primary_subject": "database",
+                        "secondary_elements": ["antenna"],
+                        "environment": "grid",
+                        "metaphor_grounding": "Global synchronized storage state",
+                        "camera_intent": {
+                            "movement": "pull",
+                            "target": "database",
+                            "motivation": "Reveal the broad distributed network",
+                        },
+                        "mandatory_assets": ["database"],
+                        "visual_density": "clean",
+                        "key_action": "Database clusters settle into steady state",
+                    },
+                ],
+                "reasoning": f"Progression from hardware core to distributed state for {seed}",
+            }
         if task.startswith("research") or task.startswith("topic"):
             return {
                 "topic": f"topik-{seed}",
@@ -262,6 +354,42 @@ class MockProvider:
             }
         if task.startswith("storyboard"):
             return mock_storyboard(seed=seed)
+        if task in ("motion_code", "motion-code") or task.startswith("motion_code") or task.startswith("motion-code"):
+            return {
+                "schema_version": 1,
+                "kind": "motion-code",
+                "entry_component": "RootComposition",
+                "files": {
+                    "RootComposition.tsx": (
+                        "import React from 'react';\n"
+                        "import { Composition } from 'remotion';\n"
+                        "import { Scene01 } from './Scene01';\n\n"
+                        "export const RootComposition: React.FC = () => (\n"
+                        "  <Composition\n"
+                        "    id=\"Short\"\n"
+                        "    component={Scene01}\n"
+                        "    durationInFrames={150}\n"
+                        "    fps={30}\n"
+                        "    width={1080}\n"
+                        "    height={1920}\n"
+                        "  />\n"
+                        ");\n"
+                    ),
+                    "Scene01.tsx": (
+                        "import React from 'react';\n"
+                        "import { AbsoluteFill } from 'remotion';\n\n"
+                        "export const Scene01: React.FC = () => (\n"
+                        "  <AbsoluteFill style={{ backgroundColor: '#111827', justifyContent: 'center', alignItems: 'center' }}>\n"
+                        "    <h1 style={{ color: '#F9FAFB', fontSize: 64 }}>Safe Motion</h1>\n"
+                        "  </AbsoluteFill>\n"
+                        ");\n"
+                    ),
+                },
+                "dependencies": ["react", "remotion"],
+                "skill_hashes": [],
+                "validated_by_codeguard": True,
+                "issues": [],
+            }
         if task.startswith("motion"):
             return {
                 "schema_version": 1,

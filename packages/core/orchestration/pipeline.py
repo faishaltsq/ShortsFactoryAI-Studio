@@ -63,6 +63,9 @@ def _emit(state: Any, job_id: str, stage: str, event_type: str, description: str
     half-truth the studio must never display.
     """
     resolved = agent or STAGE_AGENTS.get(stage, "FactoryOrchestrator")
+    # MotionCoderAgent projects to the AnimationAgent workstation character in the 3D studio layout.
+    if resolved == "MotionCoderAgent":
+        resolved = "AnimationAgent"
     state.events.emit(
         job_id=job_id,
         agent_id=resolved,
@@ -328,6 +331,21 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
             "previous_style": None,
         }
 
+    def motion_code_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
+        storyboard = store.read_artifact(job_id, "storyboard.json") if store.has_artifact(job_id, "storyboard.json") else {}
+        brief = (
+            store.read_artifact(job_id, "creative-motion-brief.json")
+            if store.has_artifact(job_id, "creative-motion-brief.json")
+            else {}
+        )
+        visual_plan = store.read_artifact(job_id, "visual-plan.json") if store.has_artifact(job_id, "visual-plan.json") else {}
+        return {
+            "storyboard": storyboard,
+            "creative_motion_brief": brief,
+            "brief": brief,
+            "visual_plan": visual_plan,
+        }
+
 
     stages = [
         _dynamic_stage(
@@ -393,17 +411,33 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
     ]
 
     if payload.get("render_video") is True:
-        stages.append(
-            _dynamic_stage(
-                state,
-                agent_name="AnimationAgent",
-                stage_state=JobState.STORYBOARD_READY,
-                produces="motion-plan.json",
-                task="motion_plan",
-                kwargs_fn=motion_plan_prompt,
+        if payload.get("renderer") in ("custom-motion", "motion-code"):
+            stages.append(
+                _dynamic_stage(
+                    state,
+                    agent_name="MotionCoderAgent",
+                    stage_state=JobState.STORYBOARD_READY,
+                    produces="motion-code.json",
+                    task="motion_code",
+                    kwargs_fn=motion_code_prompt,
+                )
             )
-        )
-        stages.extend(_render_stages(state, renderer=payload.get("renderer", "remotion")))
+        else:
+            stages.append(
+                _dynamic_stage(
+                    state,
+                    agent_name="AnimationAgent",
+                    stage_state=JobState.STORYBOARD_READY,
+                    produces="motion-plan.json",
+                    task="motion_plan",
+                    kwargs_fn=motion_plan_prompt,
+                )
+            )
+        renderer = payload.get("renderer", "remotion")
+        from ..media.render import RENDERERS
+
+        render_engine = renderer if renderer in RENDERERS else "remotion"
+        stages.extend(_render_stages(state, renderer=render_engine))
     return stages
 
 
@@ -585,6 +619,39 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
                 _with_provenance(brief_dict, agent_name, ctxp, state),
             )
             out_artifacts.append("creative-motion-brief.json")
+        elif produces == "motion-code.json":
+            from pathlib import Path
+
+            if not getattr(artifact, "validated_by_codeguard", False) or getattr(artifact, "issues", []):
+                raise StageError(
+                    "codeguard_validation_failed",
+                    f"Motion code failed CodeGuard security sandbox: {getattr(artifact, 'issues', [])}",
+                )
+
+            code_dir = Path(store.job_dir(job_id)) / "code"
+            code_dir.mkdir(parents=True, exist_ok=True)
+            files = getattr(artifact, "files", None)
+            if not isinstance(files, dict) and hasattr(artifact, "to_json"):
+                files = artifact.to_json().get("files", {})
+            if isinstance(files, dict):
+                for filename, content in files.items():
+                    if not filename or not isinstance(filename, str) or not filename.strip():
+                        raise StageError(
+                            "invalid_code_filename",
+                            f"Empty or non-string filename in motion code: {filename!r}",
+                        )
+                    target = (code_dir / filename).resolve()
+                    if (
+                        not target.is_relative_to(code_dir.resolve())
+                        or target == code_dir.resolve()
+                        or target.is_dir()
+                    ):
+                        raise StageError(
+                            "path_traversal_detected",
+                            f"File path escapes quarantined code directory: {filename!r}",
+                        )
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.write_text(str(content), encoding="utf-8")
         _emit(
             state,
             job_id,

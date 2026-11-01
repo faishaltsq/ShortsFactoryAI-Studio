@@ -13,6 +13,7 @@ from typing import Any, cast
 from ..contracts import (
     CreativeMotionBriefArtifact,
     MetadataArtifact,
+    MotionCodeArtifact,
     MotionPlanArtifact,
     ResearchArtifact,
     ReviewArtifact,
@@ -27,8 +28,10 @@ from ..contracts.scene import (
     OBJECT_LABELS,
     CausalStateSpec,
 )
+from ..media.codeguard import CodeGuard
 from ..providers.base import Capability
-from . import Agent
+from . import Agent, CallContext
+from .skill_loader import MotionSkillLoader, SkillBundle
 
 STORYBOARD_SCHEMA = json.dumps(
     {
@@ -1000,10 +1003,96 @@ class QualityAgent(Agent):
         return ReviewArtifact
 
 
+class MotionCoderAgent(Agent):
+    name = "MotionCoderAgent"
+    requires = frozenset({Capability.CHAT})
+    system_prompt = (
+        "You are an expert Remotion animation developer. You generate modular, production-ready "
+        "React/Remotion TypeScript (.tsx) code for vertical YouTube Shorts animations (1080x1920, 30fps). "
+        "Return ONLY a JSON object matching the motion-code schema with keys: "
+        "schema_version, entry_component, files, dependencies, skill_hashes, validated_by_codeguard, issues. "
+        "'files' must map filename (e.g. 'RootComposition.tsx', 'Scene01.tsx') to valid TSX source code. "
+        "Never import disallowed Node builtins like fs, path, or child_process."
+    )
+
+    def __init__(self, ctx: CallContext) -> None:
+        super().__init__(ctx)
+        self.skill_loader = MotionSkillLoader()
+        self._skills_bundle: SkillBundle | None = None
+
+    def system_prompt_for_task(self, task: str) -> str:
+        base = super().system_prompt_for_task(task)
+        loader = getattr(self, "skill_loader", None) or MotionSkillLoader()
+        skills = loader.list_available_skills()
+        bundle = loader.load_bundle(skills, max_tokens=2000)
+        self._skills_bundle = bundle
+        if bundle.content:
+            return f"{base}\n\nRemotion Motion Skills Reference:\n{bundle.content}"
+        return base
+
+    def build_user_prompt(self, **kwargs: Any) -> str:
+        storyboard = kwargs.get("storyboard") or {}
+        brief = kwargs.get("creative_motion_brief") or kwargs.get("brief") or {}
+        visual_plan = kwargs.get("visual_plan") or {}
+        return (
+            "Generate modular Remotion TSX code for the following vertical short.\n"
+            f"Creative Motion Brief:\n{json.dumps(brief, ensure_ascii=False)[:2000]}\n\n"
+            f"Visual Plan:\n{json.dumps(visual_plan, ensure_ascii=False)[:2000]}\n\n"
+            f"Storyboard:\n{json.dumps(storyboard, ensure_ascii=False)[:4000]}\n\n"
+            "Generate RootComposition.tsx as the entry point and individual Scene components. "
+            "Ensure all imports are strictly allowed (react, remotion, @remotion/*, or local ./ modules). "
+            "Do not import fs, path, os, child_process, or any Node builtins. "
+            "Return JSON only."
+        )
+
+    def contract(self) -> type[Artifact]:
+        return MotionCodeArtifact
+
+    def sanitize_payload(self, payload: dict[str, Any], task: str | None = None) -> dict[str, Any]:
+        payload.setdefault("schema_version", 1)
+        entry = str(payload.get("entry_component") or "RootComposition").strip()
+        payload["entry_component"] = entry or "RootComposition"
+
+        raw_files = payload.get("files")
+        if not isinstance(raw_files, dict):
+            raw_files = {}
+        files: dict[str, str] = {str(k): str(v) for k, v in raw_files.items()}
+        payload["files"] = files
+
+        raw_deps = payload.get("dependencies")
+        if not isinstance(raw_deps, list):
+            raw_deps = ["react", "remotion"]
+        payload["dependencies"] = [str(d) for d in raw_deps if isinstance(d, str)]
+
+        bundle = getattr(self, "_skills_bundle", None)
+        skill_hashes = payload.get("skill_hashes")
+        if not isinstance(skill_hashes, list) or not skill_hashes:
+            if bundle and getattr(bundle, "sha256_hash", None):
+                skill_hashes = [bundle.sha256_hash]
+            else:
+                skill_hashes = []
+        payload["skill_hashes"] = [str(h) for h in skill_hashes if isinstance(h, str)]
+
+        guard = CodeGuard()
+        all_issues: list[str] = []
+        results_valid: list[bool] = []
+        for filename, source in files.items():
+            result = guard.validate_source(source, filename=filename)
+            results_valid.append(result.valid)
+            all_issues.extend(result.issues)
+
+        # ponytail: empty file map treated as valid by codeguard; pipeline stage checks presence of entry component.
+        validated = all(results_valid) if results_valid else True
+        payload["validated_by_codeguard"] = validated
+        payload["issues"] = all_issues
+        return payload
+
+
 __all__ = [
     "AnimationAgent",
     "CreativeDirectorAgent",
     "MetadataAgent",
+    "MotionCoderAgent",
     "QualityAgent",
     "ResearchAgent",
     "ScriptAgent",

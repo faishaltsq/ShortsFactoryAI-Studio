@@ -145,6 +145,36 @@ MOTION_OK = {
     "anti_patterns_checked": ["text-wall"],
 }
 
+VISUAL_PLAN_OK = {
+    "schema_version": 1,
+    "style_intent": {
+        "style_name": "editorial_technical",
+        "theme": "editorialLight",
+        "color_mood": "Clean technical slate with amber accent",
+        "motion_character": "crisp_editorial",
+        "lighting_intent": "High contrast studio lighting",
+    },
+    "beats": [
+        {
+            "scene_id": "s1",
+            "concept": "Introduction to silicon compute",
+            "primary_subject": "gpu",
+            "secondary_elements": ["wafer"],
+            "environment": "circuit",
+            "metaphor_grounding": "Hardware acceleration",
+            "camera_intent": {
+                "movement": "push",
+                "target": "gpu",
+                "motivation": "Focus on compute die",
+            },
+            "mandatory_assets": ["gpu"],
+            "visual_density": "clean",
+            "key_action": "Light pulse across interconnects",
+        }
+    ],
+    "reasoning": "Technical explainer starting from chip level",
+}
+
 #: agent -> (contract-valid payload, the kwargs its ``build_user_prompt`` reads)
 AGENT_FIXTURES: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
     "ResearchAgent": (RESEARCH_OK, {"topic": "kereta", "genre": "sejarah", "avoid": []}),
@@ -156,6 +186,22 @@ AGENT_FIXTURES: dict[str, tuple[dict[str, Any], dict[str, Any]]] = {
     "MetadataAgent": (METADATA_OK, {"script": SCRIPT_OK, "language": "id"}),
     # QualityAgent's text pass is the same shape as the creative review: a verdict plus findings.
     "QualityAgent": (REVIEW_OK, {"storyboard": STORYBOARD_OK, "attempt": 0}),
+    "MotionCoderAgent": (
+        {
+            "schema_version": 1,
+            "kind": "motion-code",
+            "entry_component": "RootComposition",
+            "files": {
+                "RootComposition.tsx": "import React from 'react'; export const RootComposition = () => <div>Root</div>;",
+                "Scene01.tsx": "import React from 'react'; export const Scene01 = () => <div>Scene</div>;",
+            },
+            "dependencies": ["react", "remotion"],
+            "skill_hashes": ["hash123"],
+            "validated_by_codeguard": True,
+            "issues": [],
+        },
+        {"storyboard": STORYBOARD_OK, "creative_motion_brief": {}, "visual_plan": VISUAL_PLAN_OK},
+    ),
 }
 
 
@@ -227,3 +273,13 @@ def test_every_llm_agent_has_a_fixture():
     """Phase 2.1 says *each* agent. A new agent with no fixture must fail here, not silently."""
     missing = sorted(set(AGENTS) - set(AGENT_FIXTURES))
     assert missing == [], f"agents without a contract fixture: {missing}"
+
+def test_creative_director_produces_visual_plan():
+    from packages.core.agents.concrete import CreativeDirectorAgent
+
+    provider = FakeProvider([json.dumps(VISUAL_PLAN_OK)])
+    agent = CreativeDirectorAgent(_ctx(provider))
+    artifact = agent.produce(task="visual_plan", script=SCRIPT_OK, topic=RESEARCH_OK, research=RESEARCH_OK)
+    assert artifact.kind == "visual-plan"
+    assert len(artifact.beats) == 1
+    assert artifact.beats[0].primarySubjects == ["gpu"]
