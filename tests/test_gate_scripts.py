@@ -19,6 +19,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 SCAN = ROOT / "scripts" / "scan_secrets.py"
 EXPORT = ROOT / "scripts" / "export_schemas.py"
+BENCHMARKS = ROOT / "scripts" / "run_causal_benchmarks.py"
 
 
 def _load(path: Path, name: str):
@@ -232,3 +233,38 @@ def test_a_planted_type_error_exits_one(tmp_path):
     )
     assert result.returncode == 1, result.stdout + result.stderr
     assert "add" in result.stdout
+
+
+# -- run_causal_benchmarks ---------------------------------------------------------------------
+
+
+def test_run_causal_benchmarks_exists():
+    assert BENCHMARKS.is_file(), "causal benchmarks runner script must exist at scripts/run_causal_benchmarks.py"
+
+
+def test_run_causal_benchmarks_help():
+    result = subprocess.run(
+        [sys.executable, str(BENCHMARKS), "--help"],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "--benchmark" in result.stdout
+    assert "--dry-run" in result.stdout
+
+
+def test_run_causal_benchmarks_dry_run():
+    result = subprocess.run(
+        [sys.executable, str(BENCHMARKS), "--dry-run"],
+        capture_output=True,
+        text=True,
+        cwd=str(ROOT),
+        check=False,
+    )
+    assert result.returncode == 0
+    assert "Benchmark A" in result.stdout
+    assert "Benchmark B" in result.stdout
+    assert "Benchmark C" in result.stdout
+
