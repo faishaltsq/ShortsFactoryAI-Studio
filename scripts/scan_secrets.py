@@ -32,7 +32,7 @@ ROOT = Path(__file__).resolve().parents[1]
 #: that is always red is a gate that gets bypassed.
 EXCLUDED_DIRS = frozenset(
     {".venv", "venv", "node_modules", "data", ".git", "__pycache__", ".next", "test-results",
-     "dist", "build", ".pytest_cache", ".ruff_cache", ".mypy_cache"}
+     "dist", "build", ".pytest_cache", ".ruff_cache", ".mypy_cache", ".agents", ".hermes"}
 )
 
 #: Extensions worth reading. A binary file cannot contain a literal credential in a useful form,

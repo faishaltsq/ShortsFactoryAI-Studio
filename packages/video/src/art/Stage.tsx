@@ -14,9 +14,139 @@ import {OBJECT_COMPONENTS} from './objects';
 import {OBJECT_CAPTION_Y, type ObjectKind} from './object-kinds';
 import {alpha, shade, type ArtPalette, type EnvironmentKind} from './palette';
 import type {CalloutSpec, ExplainerData, FlowSpec, StageObject} from '../scene-data';
+import type {LayoutMode, CausalStateSpec} from '../types';
 
 export const STAGE_WIDTH = 1080;
 export const STAGE_HEIGHT = 1920;
+export const TOP_SAFE_PX = 210;
+export const BOTTOM_SAFE_PX = 1460; // 1920 - 460px bottom safe zone for captions
+
+/** Clamp object Y coordinate and bounds inside the required vertical safe zones. */
+export const clampSafeY = (yPx: number, sizePx: number = 0): number => {
+  const half = sizePx / 2;
+  const minY = TOP_SAFE_PX + half;
+  const maxY = BOTTOM_SAFE_PX - half;
+  if (minY <= maxY) {
+    return Math.max(minY, Math.min(maxY, yPx));
+  }
+  return (TOP_SAFE_PX + BOTTOM_SAFE_PX) / 2;
+};
+
+/**
+ * Computes adaptive coordinates and sizes for stage objects according to the active layout mode.
+ * Always clamps within safe zones (top >= 210px, bottom <= 1460px).
+ */
+export function computeAdaptiveLayout(
+  objects: readonly StageObject[],
+  layoutMode: LayoutMode = 'DefaultHero',
+): StageObject[] {
+  if (objects.length === 0) return [];
+
+  let adapted: StageObject[];
+
+  switch (layoutMode) {
+    case 'SplitComparison': {
+      // Two main objects positioned side-by-side (left: x=0.28, right: x=0.72, y=0.48, size=0.42)
+      adapted = objects.map((obj, i) => {
+        if (i === 0) {
+          return {...obj, x: 0.28, y: 0.48, size: 0.42};
+        }
+        if (i === 1) {
+          return {...obj, x: 0.72, y: 0.48, size: 0.42};
+        }
+        const tertiaryCount = objects.length - 2;
+        const subT = tertiaryCount <= 1 ? 0.5 : (i - 2) / (tertiaryCount - 1);
+        const x = tertiaryCount <= 1 ? 0.5 : 0.22 + subT * 0.56;
+        const y = 0.70;
+        const size = Math.min(obj.size, 0.28);
+        return {...obj, x, y, size};
+      });
+      break;
+    }
+
+    case 'RadialNetwork': {
+      // Hero in center (x=0.5, y=0.48, size=0.45), secondary objects in orbital/radial positions
+      const secondaryCount = objects.length - 1;
+      adapted = objects.map((obj, i) => {
+        if (i === 0) {
+          return {...obj, x: 0.5, y: 0.48, size: 0.45};
+        }
+        const idx = i - 1;
+        const angle = secondaryCount <= 1
+          ? 0
+          : -Math.PI / 2 + (idx * 2 * Math.PI) / secondaryCount;
+        const radX = 0.32;
+        const radY = 0.16;
+        const x = 0.5 + Math.cos(angle) * radX;
+        const y = 0.48 + Math.sin(angle) * radY;
+        return {...obj, x, y, size: Math.min(obj.size, 0.3)};
+      });
+      break;
+    }
+
+    case 'LeftRailProcess': {
+      // Vertical rail or horizontal step sequence (top-left down to bottom-right)
+      adapted = objects.map((obj, i) => {
+        if (objects.length > 1) {
+          const t = i / (objects.length - 1);
+          const x = 0.26 + t * 0.48;
+          const y = 0.34 + t * 0.32;
+          const size = Math.min(obj.size, 0.38);
+          return {...obj, x, y, size};
+        }
+        return {...obj, x: 0.5, y: 0.48, size: Math.min(obj.size, 0.38)};
+      });
+      break;
+    }
+
+    case 'FullBleedFocus': {
+      // Dominant hero (size=0.78, y=0.48), subtle secondary accents
+      adapted = objects.map((obj, i) => {
+        if (i === 0) {
+          return {...obj, x: 0.5, y: 0.48, size: 0.78};
+        }
+        if (i === 1) {
+          return {...obj, x: 0.22, y: 0.72, size: 0.22};
+        }
+        const tertiaryCount = objects.length - 2;
+        const subT = tertiaryCount <= 1 ? 1 : (i - 2) / (tertiaryCount - 1);
+        const x = 0.50 + subT * 0.28;
+        const y = 0.72;
+        const size = Math.min(obj.size, 0.22);
+        return {...obj, x, y, size};
+      });
+      break;
+    }
+
+    case 'DefaultHero':
+    default: {
+      // Existing behavior: primary hero ~0.62 size, supporting objects around it
+      adapted = objects.map((obj, i) => {
+        if (i === 0) {
+          return {...obj, size: obj.size ?? 0.62};
+        }
+        return {...obj};
+      });
+      break;
+    }
+  }
+
+  // Always clamp safe zones: top >= 210px, bottom <= 1460px (leaving 460px bottom safe zone for captions)
+  return adapted.map((obj) => {
+    const sizePx = obj.size * STAGE_WIDTH;
+    const yPx = obj.y * STAGE_HEIGHT;
+    const clampedYPx = clampSafeY(yPx, sizePx);
+    const halfX = sizePx / 2;
+    const minX = halfX + 24;
+    const maxX = STAGE_WIDTH - halfX - 24;
+    const clampedXPx = minX <= maxX ? Math.max(minX, Math.min(maxX, obj.x * STAGE_WIDTH)) : STAGE_WIDTH / 2;
+    return {
+      ...obj,
+      x: clampedXPx / STAGE_WIDTH,
+      y: clampedYPx / STAGE_HEIGHT,
+    };
+  });
+}
 
 /** Where an object's centre sits, in stage pixels. */
 export const objectCentre = (object: StageObject): {x: number; y: number; size: number} => ({
@@ -49,11 +179,16 @@ const PlacedObject: React.FC<{
   fps: number;
   index: number;
   labelColor: string;
-}> = ({object: spec, palette, frame, fps, index, labelColor}) => {
+  subtle?: boolean;
+}> = ({object: spec, palette, frame, fps, index, labelColor, subtle = false}) => {
   const Component = OBJECT_COMPONENTS[spec.kind as ObjectKind];
   if (!Component) return null;
   const {x, y, size} = objectCentre(spec);
-  const enter = arrival(frame, spec.at ?? 0, fps);
+  const rawAt = spec.at ?? 0;
+  // Hero object arrives immediately at frame 0 so the scene is never a blank void.
+  // Supporting objects clamp to a reasonable entrance window within the scene.
+  const effectiveAt = index === 0 ? 0 : Math.max(0, Math.min(rawAt, 20));
+  const enter = arrival(frame, effectiveAt, fps);
   const lit = highlightAt(frame, spec.highlight);
   const lift = (1 - enter) * 60;
   // A highlight grows the object by 3% and drops a soft ring behind it. Both read at 1080px wide;
@@ -69,7 +204,7 @@ const PlacedObject: React.FC<{
         top: y - size / 2,
         width: size,
         height: size,
-        opacity: enter,
+        opacity: enter * (subtle ? 0.55 : 1),
         transform: `translateY(${lift}px) scale(${scale})`,
       }}
     >
@@ -87,20 +222,23 @@ const PlacedObject: React.FC<{
           />
         </svg>
       ) : null}
-      <Component palette={palette} frame={frame - (spec.at ?? 0)} progress={0} />
+      <Component
+        palette={palette}
+        frame={Math.max(0, frame - effectiveAt)}
+        progress={Math.max(0, Math.min(1, (frame - effectiveAt) / (fps * 2)))}
+      />
       {spec.label ? (
         <div
           style={{
             position: 'absolute',
             left: 0,
             right: 0,
-            top: size * (OBJECT_CAPTION_Y[spec.kind] ?? 0.94) + 24,
+            top: size * (OBJECT_CAPTION_Y[spec.kind] ?? 0.94) + 18,
             textAlign: 'center',
             fontFamily: 'Inter, system-ui, sans-serif',
-            fontWeight: 700,
-            fontSize: 26,
-            letterSpacing: '0.04em',
-            textTransform: 'uppercase',
+            fontWeight: 600,
+            fontSize: 24,
+            letterSpacing: '0.01em',
             color: lit > 0.3 ? palette.accent : labelColor,
             whiteSpace: 'nowrap',
           }}
@@ -222,15 +360,47 @@ export const ObjectStage: React.FC<{
   scale?: number;
   /** Frames elapsed at scene start, so objects keyed on `at` stay seekable. */
   sceneFrame?: number;
-}> = ({data, environment, palette, frame, labelColor, scale = 1}) => {
+  layoutMode?: LayoutMode;
+  causalState?: CausalStateSpec;
+}> = ({data, environment, palette, frame, labelColor, scale = 1, layoutMode, causalState}) => {
   const {fps} = useVideoConfig();
-  const anchors = data.objects.map(objectCentre);
+  const effectiveLayout = layoutMode ?? (data.layoutMode as LayoutMode | undefined) ?? 'DefaultHero';
+  const adaptedObjects = React.useMemo(
+    () => computeAdaptiveLayout(data.objects, effectiveLayout),
+    [data.objects, effectiveLayout],
+  );
+  const anchors = adaptedObjects.map(objectCentre);
+
+  // Flows: synthesized if RadialNetwork or LeftRailProcess when none declared
+  const flowsToRender = React.useMemo(() => {
+    if (data.flows.length > 0) return data.flows;
+    if (effectiveLayout === 'RadialNetwork' && adaptedObjects.length > 1) {
+      return adaptedObjects.slice(1).map((_, i) => ({
+        from: 0,
+        to: i + 1,
+      }));
+    }
+    if (effectiveLayout === 'LeftRailProcess' && adaptedObjects.length > 1) {
+      return adaptedObjects.slice(0, -1).map((_, i) => ({
+        from: i,
+        to: i + 1,
+      }));
+    }
+    return data.flows;
+  }, [data.flows, effectiveLayout, adaptedObjects]);
+
+  // FullBleedFocus: immersive scale animation
+  const focusScale = effectiveLayout === 'FullBleedFocus'
+    ? interpolate(frame, [0, 150], [0.97, 1.04], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})
+    : 1;
+  const combinedScale = scale * focusScale;
+
   return (
     <div
       style={{
         position: 'absolute',
         inset: 0,
-        transform: `scale(${scale})`,
+        transform: `scale(${combinedScale})`,
         transformOrigin: '50% 55%',
         overflow: 'hidden',
       }}
@@ -238,13 +408,118 @@ export const ObjectStage: React.FC<{
       <svg width={STAGE_WIDTH} height={STAGE_HEIGHT} style={{position: 'absolute', inset: 0}} aria-hidden="true">
         <Environment kind={environment} palette={palette} frame={frame} />
       </svg>
-      {data.flows.map((flow, i) =>
+
+      {/* SplitComparison: comparative divider and dual leader anchors */}
+      {effectiveLayout === 'SplitComparison' && adaptedObjects.length > 1 && (
+        <svg width={STAGE_WIDTH} height={STAGE_HEIGHT} style={{position: 'absolute', inset: 0, pointerEvents: 'none'}} aria-hidden="true">
+          <line
+            x1={STAGE_WIDTH * 0.5}
+            y1={TOP_SAFE_PX + 60}
+            x2={STAGE_WIDTH * 0.5}
+            y2={BOTTOM_SAFE_PX - 60}
+            stroke={alpha(palette.accent, 0.25)}
+            strokeWidth={2}
+            strokeDasharray="10 8"
+          />
+          <circle cx={STAGE_WIDTH * 0.5} cy={STAGE_HEIGHT * 0.48} r={28} fill={palette.ink} stroke={alpha(palette.accent, 0.6)} strokeWidth={2} />
+          <text
+            x={STAGE_WIDTH * 0.5}
+            y={STAGE_HEIGHT * 0.48 + 7}
+            textAnchor="middle"
+            fill={palette.accent}
+            fontFamily="Inter, system-ui, sans-serif"
+            fontSize={18}
+            fontWeight={800}
+            letterSpacing="0.05em"
+          >
+            VS
+          </text>
+          {anchors[0] && anchors[1] && (
+            <>
+              <line
+                x1={STAGE_WIDTH * 0.5 - 28}
+                y1={STAGE_HEIGHT * 0.48}
+                x2={anchors[0].x + anchors[0].size * 0.35}
+                y2={anchors[0].y}
+                stroke={alpha(palette.accent, 0.3)}
+                strokeWidth={2}
+                strokeDasharray="6 6"
+              />
+              <line
+                x1={STAGE_WIDTH * 0.5 + 28}
+                y1={STAGE_HEIGHT * 0.48}
+                x2={anchors[1].x - anchors[1].size * 0.35}
+                y2={anchors[1].y}
+                stroke={alpha(palette.accent, 0.3)}
+                strokeWidth={2}
+                strokeDasharray="6 6"
+              />
+            </>
+          )}
+        </svg>
+      )}
+
+      {/* RadialNetwork: orbital guide path */}
+      {effectiveLayout === 'RadialNetwork' && adaptedObjects.length > 1 && (
+        <svg width={STAGE_WIDTH} height={STAGE_HEIGHT} style={{position: 'absolute', inset: 0, pointerEvents: 'none'}} aria-hidden="true">
+          <ellipse
+            cx={STAGE_WIDTH * 0.5}
+            cy={STAGE_HEIGHT * 0.48}
+            rx={STAGE_WIDTH * 0.32}
+            ry={STAGE_HEIGHT * 0.16}
+            fill="none"
+            stroke={alpha(palette.accent, 0.18)}
+            strokeWidth={2}
+            strokeDasharray="8 6"
+          />
+        </svg>
+      )}
+
+      {/* LeftRailProcess: step sequence rail and numbered badges */}
+      {effectiveLayout === 'LeftRailProcess' && adaptedObjects.length > 1 && (
+        <svg width={STAGE_WIDTH} height={STAGE_HEIGHT} style={{position: 'absolute', inset: 0, pointerEvents: 'none'}} aria-hidden="true">
+          <path
+            d={`M ${anchors.map((a) => `${a.x} ${a.y}`).join(' L ')}`}
+            fill="none"
+            stroke={alpha(palette.accent, 0.35)}
+            strokeWidth={3}
+            strokeDasharray="12 8"
+          />
+          {anchors.map((a, idx) => (
+            <g key={idx}>
+              <circle cx={a.x - a.size * 0.45} cy={a.y - a.size * 0.45} r={18} fill={palette.accent} />
+              <text
+                x={a.x - a.size * 0.45}
+                y={a.y - a.size * 0.45 + 6}
+                textAnchor="middle"
+                fill={palette.ink}
+                fontFamily="Inter, system-ui, sans-serif"
+                fontSize={16}
+                fontWeight={800}
+              >
+                {idx + 1}
+              </text>
+            </g>
+          ))}
+        </svg>
+      )}
+
+      {flowsToRender.map((flow, i) =>
         anchors[flow.from] && anchors[flow.to] ? (
           <Flow key={`flow-${i}`} flow={flow} from={anchors[flow.from]} to={anchors[flow.to]} palette={palette} frame={frame} />
         ) : null,
       )}
-      {data.objects.map((spec, i) => (
-        <PlacedObject key={`obj-${i}`} object={spec} palette={palette} frame={frame} fps={fps} index={i} labelColor={labelColor} />
+      {adaptedObjects.map((spec, i) => (
+        <PlacedObject
+          key={`obj-${i}`}
+          object={spec}
+          palette={palette}
+          frame={frame}
+          fps={fps}
+          index={i}
+          labelColor={labelColor}
+          subtle={effectiveLayout === 'FullBleedFocus' && i > 0}
+        />
       ))}
       {data.callouts.map((callout, i) =>
         anchors[callout.object] ? (

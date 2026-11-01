@@ -126,6 +126,20 @@ export interface MotionSpec {
   beats: MotionBeat[];
 }
 
+export type LayoutMode =
+  | 'DefaultHero'
+  | 'SplitComparison'
+  | 'RadialNetwork'
+  | 'LeftRailProcess'
+  | 'FullBleedFocus';
+
+export interface CausalStateSpec {
+  initialState: string;
+  causalAction: string;
+  resultingState: string;
+  transition: string;
+}
+
 export interface SceneSpec {
   sceneId: string;
   template: TemplateId;
@@ -156,6 +170,8 @@ export interface SceneSpec {
   durationInFrames: number;
   /** Optional data payload used by data-driven templates. */
   data?: Record<string, unknown>;
+  layoutMode?: LayoutMode;
+  causalState?: CausalStateSpec;
 }
 
 export interface SubtitleCue {

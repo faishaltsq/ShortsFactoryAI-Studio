@@ -18,7 +18,13 @@ from typing import Any
 
 from ..agents import CallContext, ModelOutputError
 from ..agents.registry import AGENTS
-from ..contracts.artifacts import ReviewArtifact, RevisionArtifact, RevisionAttempt, ScriptArtifact
+from ..contracts.artifacts import (
+    ArtDirectionSpec,
+    ReviewArtifact,
+    RevisionArtifact,
+    RevisionAttempt,
+    ScriptArtifact,
+)
 from ..contracts.base import ArtifactValidationError, validate_artifact
 from ..contracts.state import JobState
 from ..observability.events import STAGE_AGENTS
@@ -709,7 +715,7 @@ def _derive_creative_motion_brief(visual_plan: Any) -> dict[str, Any]:
 
     brief = CreativeMotionBriefArtifact(
         visual_thesis=visual_thesis,
-        art_direction=art_dict,
+        art_direction=ArtDirectionSpec.model_validate(art_dict),
         narrative_arc=narrative_arc,
         primary_visual_motifs=primary_motifs,
         pacing_strategy=pacing_strategy,

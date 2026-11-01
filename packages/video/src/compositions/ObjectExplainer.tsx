@@ -1,6 +1,7 @@
 import React from 'react';
 import {useCurrentFrame} from 'remotion';
 import type {SceneProps} from '../components/NarrativeFrame';
+import type {LayoutMode, CausalStateSpec} from '../types';
 import {InformativeFrame} from '../components/InformativeFrame';
 import {ObjectStage} from '../art/Stage';
 import {paletteFor} from '../art/palette';
@@ -63,10 +64,26 @@ export const ObjectExplainerScene: React.FC<SceneProps> = ({scene, theme: inputT
   // The title steps back once the object it names is on stage: two things competing for the eye is
   // how a graphic ends up saying nothing.
   const titleOpacity = frame > lastArrival + 24 ? 0.55 : 1;
+  const layoutMode =
+    scene.layoutMode ??
+    (scene as unknown as {layout_mode?: LayoutMode}).layout_mode ??
+    (data.layoutMode as LayoutMode | undefined);
+  const causalState =
+    scene.causalState ??
+    (scene as unknown as {causal_state?: CausalStateSpec}).causal_state ??
+    data.causalState;
 
   return (
     <InformativeFrame scene={scene} theme={theme} watermark={watermark} title={title} caption={data.caption} titleOpacity={titleOpacity}>
-      <ObjectStage data={withBeats} environment={data.environment} palette={palette} frame={frame} labelColor={theme.secondary} />
+      <ObjectStage
+        data={withBeats}
+        environment={data.environment}
+        palette={palette}
+        frame={frame}
+        labelColor={theme.secondary}
+        layoutMode={layoutMode}
+        causalState={causalState}
+      />
     </InformativeFrame>
   );
 };

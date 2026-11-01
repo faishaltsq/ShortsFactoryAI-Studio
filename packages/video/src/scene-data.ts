@@ -62,6 +62,13 @@ export interface ExplainerData {
   objects: StageObject[];
   callouts: CalloutSpec[];
   flows: FlowSpec[];
+  layoutMode?: 'DefaultHero' | 'SplitComparison' | 'RadialNetwork' | 'LeftRailProcess' | 'FullBleedFocus';
+  causalState?: {
+    initialState: string;
+    causalAction: string;
+    resultingState: string;
+    transition: string;
+  };
 }
 
 /** A staged sequence: each step is a node, and packets run the chain in order. */
@@ -143,12 +150,57 @@ const stageObject = (raw: unknown, index: number): StageObject => {
 };
 
 export function validateExplainerData(raw: unknown): ExplainerData {
-  const d = object(raw, ['title', 'caption', 'environment', 'objects', 'callouts', 'flows']);
+  const d = object(raw, [
+    'title',
+    'caption',
+    'environment',
+    'objects',
+    'callouts',
+    'flows',
+    'layoutMode',
+    'layout_mode',
+    'causalState',
+    'causal_state',
+  ]);
   const out: ExplainerData = {environment: environment(d.environment), objects: [], callouts: [], flows: []};
   text(d.title, 70, true);
   if (d.title != null) out.title = d.title as string;
   text(d.caption, 160, true);
   if (d.caption != null) out.caption = d.caption as string;
+  const rawLayout = d.layoutMode ?? d.layout_mode;
+  if (rawLayout != null) {
+    const validModes = ['DefaultHero', 'SplitComparison', 'RadialNetwork', 'LeftRailProcess', 'FullBleedFocus'];
+    if (typeof rawLayout !== 'string' || !validModes.includes(rawLayout)) {
+      throw new Error(`Invalid layoutMode: ${String(rawLayout)}`);
+    }
+    out.layoutMode = rawLayout as 'DefaultHero' | 'SplitComparison' | 'RadialNetwork' | 'LeftRailProcess' | 'FullBleedFocus';
+  }
+  const rawCausal = d.causalState ?? d.causal_state;
+  if (rawCausal != null) {
+    const cs = object(rawCausal, [
+      'initialState',
+      'causalAction',
+      'resultingState',
+      'transition',
+      'initial_state',
+      'causal_action',
+      'resulting_state',
+    ]);
+    const init = cs.initialState ?? cs.initial_state;
+    const action = cs.causalAction ?? cs.causal_action;
+    const result = cs.resultingState ?? cs.resulting_state;
+    const trans = cs.transition;
+    text(init, 500);
+    text(action, 500);
+    text(result, 500);
+    text(trans, 500);
+    out.causalState = {
+      initialState: init as string,
+      causalAction: action as string,
+      resultingState: result as string,
+      transition: trans as string,
+    };
+  }
   // A scene with no object has nothing to explain; an empty stage is the failure this engine
   // exists to prevent, so it is rejected here rather than rendered as a black frame.
   out.objects = items(d.objects, 1, 5).map(stageObject);
@@ -287,4 +339,27 @@ export function validateSceneData(scene: SceneSpec): void {
     default: throw new Error(`Unsupported template: ${scene.template}`);
   }
   for (const ref of scene.assetRefs) localImage(ref);
+  const rawSceneLayout = scene.layoutMode ?? (scene as unknown as {layout_mode?: unknown}).layout_mode;
+  if (rawSceneLayout != null) {
+    const validModes = ['DefaultHero', 'SplitComparison', 'RadialNetwork', 'LeftRailProcess', 'FullBleedFocus'];
+    if (typeof rawSceneLayout !== 'string' || !validModes.includes(rawSceneLayout)) {
+      throw new Error(`Invalid scene layoutMode: ${String(rawSceneLayout)}`);
+    }
+  }
+  const rawSceneCausal = scene.causalState ?? (scene as unknown as {causal_state?: unknown}).causal_state;
+  if (rawSceneCausal != null) {
+    const cs = object(rawSceneCausal, [
+      'initialState',
+      'causalAction',
+      'resultingState',
+      'transition',
+      'initial_state',
+      'causal_action',
+      'resulting_state',
+    ]);
+    text(cs.initialState ?? cs.initial_state, 500);
+    text(cs.causalAction ?? cs.causal_action, 500);
+    text(cs.resultingState ?? cs.resulting_state, 500);
+    text(cs.transition, 500);
+  }
 }

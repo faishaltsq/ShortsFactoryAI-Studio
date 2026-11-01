@@ -30,7 +30,7 @@ class ProviderSpec(BaseModel):
     base_url: str = ""
     model: str = Field(default="", max_length=200)
     credential: dict[str, str] | None = None
-    capabilities: frozenset[Capability] = Field(
+    capabilities: frozenset[Capability] | list[Capability] = Field(
         default_factory=lambda: frozenset([Capability.CHAT])
     )
     timeout_s: float = Field(default=90.0, gt=0, le=600)
