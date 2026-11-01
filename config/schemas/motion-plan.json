@@ -22,7 +22,9 @@
       "default": "remotion",
       "enum": [
         "remotion",
-        "bang-motion"
+        "bang-motion",
+        "custom-motion",
+        "legacy-template"
       ],
       "title": "Renderer",
       "type": "string"

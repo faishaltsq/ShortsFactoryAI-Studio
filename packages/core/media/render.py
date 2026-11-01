@@ -22,10 +22,11 @@ import time
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from ..contracts.artifacts import RenderArtifact
+from ..contracts.artifacts import RenderArtifact, RendererId
 from ..contracts.base import validate_artifact
 from ..contracts.state import JobState
 from ..security.redact import redact
+from .codeguard import CodeGuard
 
 if TYPE_CHECKING:
     from ..orchestration.runner import Stage
@@ -666,10 +667,8 @@ def _cache_key(
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
-#: The renderers this repository can drive. Only Remotion survives the informative-engine
-#: migration: the second renderer existed to capture character SVG frames frame-by-frame, and the
-#: character engine is gone. The tuple stays so the dispatch contract keeps one closed vocabulary.
-RENDERERS: tuple[str, ...] = ("remotion",)
+#: The renderers this repository can drive.
+RENDERERS: tuple[str, ...] = ("remotion", "custom-motion", "legacy-template")
 
 
 class SceneCache:
@@ -786,6 +785,107 @@ CHROME_RELATIVE = (
 )
 
 
+def select_rendering_strategy(
+    payload: dict[str, Any],
+    code_valid: bool = False,
+    code_dir: Path | None = None,
+) -> str:
+    """Select between 'custom-motion' and 'legacy-template'.
+
+    If 'custom-motion' is requested:
+      - If code_dir is given, validate with CodeGuard and check for RootComposition.tsx.
+      - If code_valid is True and no code_dir, accept 'custom-motion'.
+      - If invalid, missing, or any check fails, cleanly fall back to 'legacy-template'.
+    Defaults to 'legacy-template' when renderer is empty or not 'custom-motion'.
+    """
+    if not isinstance(payload, dict):
+        return "legacy-template"
+    if payload.get("renderer") != "custom-motion":
+        return "legacy-template"
+
+    if code_dir is not None:
+        try:
+            path = Path(code_dir)
+            if not path.is_dir() or not (path / "RootComposition.tsx").is_file():
+                return "legacy-template"
+            guard = CodeGuard()
+            res = guard.validate_directory(path)
+            if not res.valid:
+                return "legacy-template"
+            return "custom-motion"
+        except Exception:
+            return "legacy-template"
+
+    if code_valid:
+        return "custom-motion"
+
+    return "legacy-template"
+
+
+def render_custom_motion(
+    *,
+    video_dir: Path,
+    code_dir: Path,
+    props_path: Path,
+    out_path: Path,
+    timeout_s: int = 900,
+    composition: str = "RootComposition",
+) -> dict[str, Any]:
+    """Render a custom Remotion composition from a quarantined code directory."""
+    node = shutil.which("node")
+    if not node:
+        raise RuntimeError("node is not on PATH; the renderer needs it to run packages/video")
+    cli = Path(video_dir) / CLI_RELATIVE
+    if not cli.is_file():
+        raise RuntimeError(f"Remotion CLI missing at {cli}; run npm install in packages/video")
+    entry_file = Path(code_dir) / f"{composition}.tsx"
+    if not entry_file.is_file():
+        entry_file = Path(code_dir) / "RootComposition.tsx"
+    if not entry_file.is_file():
+        raise RuntimeError(f"entry component not found in {code_dir}")
+    port = free_tcp_port()
+    argv = [
+        node,
+        str(cli),
+        "render",
+        str(entry_file.resolve()),
+        composition,
+        str(Path(out_path).resolve()),
+        f"--props={Path(props_path).resolve()}",
+        "--overwrite",
+        "--log=error",
+        "--pixel-format=yuv420p",
+        "--color-space=bt709",
+        f"--port={port}",
+        "--concurrency=1",
+    ]
+    started = time.monotonic()
+    try:
+        proc = subprocess.run(  # noqa: S603 - argv array, no shell
+            argv,
+            cwd=str(video_dir),
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=timeout_s,
+            check=False,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"custom motion render timed out after {timeout_s}s (port {port})") from exc
+    elapsed_ms = int((time.monotonic() - started) * 1000)
+    if proc.returncode != 0:
+        tail = (proc.stderr or proc.stdout or "").strip()[-1200:]
+        raise RuntimeError(f"custom motion render exited {proc.returncode}: {tail}")
+    if not out_path.is_file() or out_path.stat().st_size == 0:
+        raise RuntimeError(f"custom motion render produced no file at {out_path}")
+    return {
+        "port": port,
+        "elapsed_ms": elapsed_ms,
+        "stdout_tail": (proc.stdout or "").strip()[-1200:],
+    }
+
+
 def renderer_kind(payload: dict[str, Any]) -> str:
     """Which renderer this job asked for. An unknown value is an error, never a fallback.
 
@@ -807,7 +907,7 @@ def _finalize_render(
     ctx: Any,
     video_dir: Path,
     out_path: Path,
-    renderer: str,
+    renderer: RendererId,
     renderer_version_value: str,
 ) -> dict[str, Any]:
     """Probe the finished file and stage ``render.json``. Shared by both renderers.
@@ -842,7 +942,7 @@ def _finalize_render(
         video_codec=str(video.get("codec_name") or ""),
         audio_codec=(str(audio_streams[0].get("codec_name")) if audio_streams else None),
         pix_fmt=str(video.get("pix_fmt") or ""),
-        renderer=renderer,  # type: ignore[arg-type]
+        renderer=renderer,
         renderer_version=renderer_version_value,
         scene_hashes=_scene_hashes(storyboard),
     )
@@ -906,78 +1006,141 @@ def build_render_stage(
             fps = int(storyboard.get("fps") or 30)
 
             renderer_version_value = renderer_version(Path(video_dir))
-            # `storyboard` IS the timed doc (props_path is update_storyboard_from_audio's
-            # output), so hashes over it change when narration timing moves and a cache key can
-            # never serve a stale-timing picture.
-            hashes = _scene_hashes(storyboard)
-            # The picture cache is per-scene: one part per scene window, keyed over every input
-            # that can change that picture.
-            # The cache lives beside the jobs tree (jobs_dir = <root>/jobs), so test stores and
-            # real installs both get it with zero configuration: no settings object required.
-            cache = SceneCache(state.store.jobs_dir.parent / "render-cache")
-            # One key per scene: env tail is spelled out because a `**dict` unpack is opaque
-            # to mypy --strict, and the key's inputs are exactly this function's contract.
-            keys = {
-                scene_id: _cache_key(
-                    scene_hash=scene_hash,
-                    renderer=renderer,
-                    renderer_version_value=renderer_version_value,
-                    theme=json.dumps(
-                        storyboard.get("theme") or {},
-                        sort_keys=True,
-                        separators=(",", ":"),
-                    ),
-                    total_frames=frames,
-                    watermark=str((storyboard.get("watermark") or {}).get("text") or ""),
-                    width=int(storyboard.get("width") or 0),
-                    height=int(storyboard.get("height") or 0),
-                    fps=fps,
-                )
-                for scene_id, scene_hash in hashes.items()
-            }
 
-            parts: list[Path] = []
-            misses: list[dict[str, Any]] = []
-            for scene in storyboard["scenes"]:
-                scene_id = str(scene["sceneId"])
-                hit = cache.hit(
-                    keys[scene_id],
-                    width=int(storyboard.get("width") or 0),
-                    height=int(storyboard.get("height") or 0),
-                    fps=fps,
-                    frames=int(scene["durationInFrames"]),
-                )
-                if hit is not None:
-                    parts.append(hit)
-                    continue
-                misses.append(scene)
+            job = store.get(job_id) if hasattr(store, "get") else None
+            job_payload = getattr(job, "payload", {}) if job else {}
+            if not isinstance(job_payload, dict):
+                job_payload = {}
+            payload = dict(job_payload)
+            payload.setdefault("renderer", renderer)
+            # Enforce renderer_kind check on the actual runtime payload: typos must fail loudly!
+            renderer_kind(payload)
 
-            if misses:
-                # One picture-only run per missing scene: same full props, a `--frames=s-e`
-                # window on the scene's own range. Pixel-identical to those frames of a full
-                # render (same composition, same props), and no sliced-props surgery to get
-                # wrong. Each fresh part is stored in the cache; its stored copy is what gets
-                # spliced, so hits and misses splice from one identical source.
-                staging.mkdir(parents=True, exist_ok=True)
-                for scene in misses:
+            code_dir_candidate = job_dir / "code"
+            code_dir = code_dir_candidate if code_dir_candidate.is_dir() else None
+
+            code_valid = False
+            try:
+                motion_code = store.read_artifact(job_id, "motion-code.json")
+                if isinstance(motion_code, dict):
+                    code_valid = bool(
+                        motion_code.get("validated_by_codeguard")
+                        and not motion_code.get("issues")
+                    )
+            except Exception:
+                pass
+
+            active_strategy = select_rendering_strategy(
+                payload, code_valid=code_valid, code_dir=code_dir
+            )
+
+            def _render_legacy() -> None:
+                hashes = _scene_hashes(storyboard)
+                cache = SceneCache(state.store.jobs_dir.parent / "render-cache")
+                keys = {
+                    scene_id: _cache_key(
+                        scene_hash=scene_hash,
+                        renderer="remotion",
+                        renderer_version_value=renderer_version_value,
+                        theme=json.dumps(
+                            storyboard.get("theme") or {},
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        total_frames=frames,
+                        watermark=str((storyboard.get("watermark") or {}).get("text") or ""),
+                        width=int(storyboard.get("width") or 0),
+                        height=int(storyboard.get("height") or 0),
+                        fps=fps,
+                    )
+                    for scene_id, scene_hash in hashes.items()
+                }
+
+                parts: list[Path] = []
+                misses: list[dict[str, Any]] = []
+                for scene in storyboard["scenes"]:
                     scene_id = str(scene["sceneId"])
-                    start = int(scene["startFrame"])
-                    scene_frames = int(scene["durationInFrames"])
-                    scene_raw = staging / f"scene-{scene_id}.mp4"
-                    render_storyboard(
+                    hit = cache.hit(
+                        keys[scene_id],
+                        width=int(storyboard.get("width") or 0),
+                        height=int(storyboard.get("height") or 0),
+                        fps=fps,
+                        frames=int(scene["durationInFrames"]),
+                    )
+                    if hit is not None:
+                        parts.append(hit)
+                        continue
+                    misses.append(scene)
+
+                if misses:
+                    staging.mkdir(parents=True, exist_ok=True)
+                    for scene in misses:
+                        scene_id = str(scene["sceneId"])
+                        start = int(scene["startFrame"])
+                        scene_frames = int(scene["durationInFrames"])
+                        scene_raw = staging / f"scene-{scene_id}.mp4"
+                        render_storyboard(
+                            video_dir=Path(video_dir),
+                            props_path=props_path,
+                            out_path=scene_raw,
+                            frames=(start, start + scene_frames - 1),
+                            timeout_s=timeout_s,
+                        )
+                        if not scene_raw.is_file() or scene_raw.stat().st_size == 0:
+                            raise RuntimeError(f"renderer produced no scene file for {scene_id}")
+                        parts.append(cache.store(keys[scene_id], scene_raw))
+                        scene_raw.unlink(missing_ok=True)
+                concat_parts(list(parts), raw_video_path)
+
+            actual_renderer: RendererId
+            if active_strategy == "custom-motion":
+                try:
+                    _emit(
+                        state,
+                        job_id,
+                        JobState.RENDERING.value,
+                        "stage_started",
+                        "Rendering with custom-motion engine",
+                        agent=RENDER_AGENT,
+                    )
+                    render_custom_motion(
                         video_dir=Path(video_dir),
+                        code_dir=code_dir_candidate,
                         props_path=props_path,
-                        out_path=scene_raw,
-                        frames=(start, start + scene_frames - 1),
+                        out_path=raw_video_path,
                         timeout_s=timeout_s,
                     )
-                    if not scene_raw.is_file() or scene_raw.stat().st_size == 0:
-                        raise RuntimeError(f"renderer produced no scene file for {scene_id}")
-                    parts.append(cache.store(keys[scene_id], scene_raw))
-                    scene_raw.unlink(missing_ok=True)
-            # Hits and fresh parts are both in `parts`, scene order; one concat pass
-            # (single part = straight copy) rebuilds the timeline.
-            concat_parts(list(parts), raw_video_path)
+                    actual_renderer = "custom-motion"
+                except Exception as exc:
+                    _emit(
+                        state,
+                        job_id,
+                        JobState.RENDERING.value,
+                        "progress",
+                        f"custom-motion render failed ({exc}), falling back to legacy-template",
+                        agent=RENDER_AGENT,
+                    )
+                    raw_video_path.unlink(missing_ok=True)
+                    shutil.rmtree(staging, ignore_errors=True)
+                    _render_legacy()
+                    actual_renderer = "legacy-template"
+            else:
+                if payload.get("renderer") == "custom-motion":
+                    _emit(
+                        state,
+                        job_id,
+                        JobState.RENDERING.value,
+                        "progress",
+                        "custom-motion strategy unavailable or rejected by CodeGuard, "
+                        "falling back to legacy-template",
+                        agent=RENDER_AGENT,
+                    )
+                    actual_renderer = "legacy-template"
+                elif renderer == "legacy-template" or payload.get("renderer") == "legacy-template":
+                    actual_renderer = "legacy-template"
+                else:
+                    actual_renderer = "remotion"
+                _render_legacy()
 
             if not raw_video_path.is_file() or raw_video_path.stat().st_size == 0:
                 raise RuntimeError(f"renderer produced no file at {raw_video_path}")
@@ -989,7 +1152,7 @@ def build_render_stage(
                 ctx=ctx,
                 video_dir=Path(video_dir),
                 out_path=out_path,
-                renderer=renderer,
+                renderer=actual_renderer,
                 renderer_version_value=renderer_version(Path(video_dir)),
             )
         except Exception as exc:  # noqa: BLE001 - any render failure is a stage failure
@@ -1022,6 +1185,7 @@ def build_render_stage(
 
 
 __all__ = [
+    "RENDER_NAME",
     "RENDERERS",
     "build_render_stage",
     "free_tcp_port",
@@ -1030,9 +1194,11 @@ __all__ = [
     "mux_narration",
     "probe_media",
     "render_argv",
+    "render_custom_motion",
     "render_storyboard",
     "renderer_kind",
     "renderer_version",
+    "select_rendering_strategy",
     "sha256_file",
     "update_storyboard_from_audio",
     "validate_render",

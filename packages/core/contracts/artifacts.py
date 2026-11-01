@@ -15,7 +15,8 @@ from .scene import SceneSpec, SubtitleCue, WordTimestamp
 
 ContentKind = Literal["factual", "fictional"]
 ProviderMode = Literal["live", "mock"]
-RendererId = Literal["remotion", "bang-motion"]
+#: Note: "bang-motion" is retained for historical artifact deserialization.
+RendererId = Literal["remotion", "bang-motion", "custom-motion", "legacy-template"]
 
 
 class ResearchArtifact(Artifact):

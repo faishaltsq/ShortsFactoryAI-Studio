@@ -22,6 +22,7 @@ from packages.core.media.render import (
     RENDERERS,
     build_render_stage,
     renderer_kind,
+    select_rendering_strategy,
 )
 
 
@@ -142,8 +143,60 @@ def _payload(**overrides: Any) -> dict[str, Any]:
     return payload
 
 
-def test_the_repository_ships_one_renderer() -> None:
-    assert RENDERERS == ("remotion",)
+def test_repository_registered_renderers() -> None:
+    assert set(RENDERERS) >= {"remotion", "custom-motion", "legacy-template"}
+
+
+def test_select_rendering_strategy_custom_motion() -> None:
+    strategy = select_rendering_strategy(payload={"renderer": "custom-motion"}, code_valid=True)
+    assert strategy == "custom-motion"
+
+
+def test_select_rendering_strategy_fallback_on_invalid_code() -> None:
+    strategy = select_rendering_strategy(payload={"renderer": "custom-motion"}, code_valid=False)
+    assert strategy == "legacy-template"
+
+
+def test_select_rendering_strategy_defaults_to_legacy() -> None:
+    strategy = select_rendering_strategy(payload={}, code_valid=False)
+    assert strategy == "legacy-template"
+
+
+def test_select_rendering_strategy_with_code_dir(tmp_path: Path) -> None:
+    # 1. Valid directory containing RootComposition.tsx
+    valid_dir = tmp_path / "valid_code"
+    valid_dir.mkdir()
+    (valid_dir / "RootComposition.tsx").write_text(
+        "import React from 'react';\nexport const RootComposition: React.FC = () => null;\n",
+        encoding="utf-8",
+    )
+    strategy = select_rendering_strategy(
+        payload={"renderer": "custom-motion"}, code_dir=valid_dir
+    )
+    assert strategy == "custom-motion"
+
+    # 2. Directory failing CodeGuard
+    invalid_dir = tmp_path / "invalid_code"
+    invalid_dir.mkdir()
+    (invalid_dir / "RootComposition.tsx").write_text(
+        "import fs from 'fs';\nexport const RootComposition = () => null;\n",
+        encoding="utf-8",
+    )
+    strategy = select_rendering_strategy(
+        payload={"renderer": "custom-motion"}, code_dir=invalid_dir
+    )
+    assert strategy == "legacy-template"
+
+    # 3. Missing RootComposition.tsx
+    missing_dir = tmp_path / "missing_entry"
+    missing_dir.mkdir()
+    (missing_dir / "Scene01.tsx").write_text(
+        "export const Scene01 = () => null;", encoding="utf-8"
+    )
+    strategy = select_rendering_strategy(
+        payload={"renderer": "custom-motion"}, code_dir=missing_dir
+    )
+    assert strategy == "legacy-template"
 
 
 def test_renderer_kind_defaults_to_remotion() -> None:
@@ -283,6 +336,222 @@ def test_a_renderer_that_writes_nothing_fails_the_stage(
     with pytest.raises(Exception, match="produced no file|render"):
         stage.run(stage_ctx(store, "job1"))
     assert True  # the raise above is the assertion: nothing was staged
+
+
+def test_stage_custom_motion_renders_and_records_custom_motion(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import packages.core.media.render as render_mod
+
+    store = _FakeStore(tmp_path, payload=_payload(renderer="custom-motion"))
+    code_dir = store.job_dir("job1") / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "RootComposition.tsx").write_text(
+        "import React from 'react';\nexport const RootComposition: React.FC = () => null;\n",
+        encoding="utf-8",
+    )
+
+    calls: list[str] = []
+
+    def fake_custom(**kwargs: Any) -> dict[str, Any]:
+        calls.append("custom-motion")
+        Path(kwargs["out_path"]).write_bytes(b"fake-video-bytes")
+        return {"elapsed_ms": 1}
+
+    def fake_probe(path: Path) -> dict[str, Any]:
+        return {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "pix_fmt": "yuv420p",
+                    "width": 1080,
+                    "height": 1920,
+                    "avg_frame_rate": "30/1",
+                    "nb_read_frames": "30",
+                },
+                {"codec_type": "audio", "codec_name": "aac"},
+            ],
+            "format": {"duration": "1.0"},
+        }
+
+    monkeypatch.setattr(render_mod, "render_custom_motion", fake_custom)
+    monkeypatch.setattr(render_mod, "mux_narration", _fake_mux)
+    monkeypatch.setattr(render_mod, "probe_media", fake_probe)
+    monkeypatch.setattr(render_mod, "sha256_file", lambda path: "0" * 64)
+
+    stage = build_render_stage(
+        _State(store), video_dir=_stub_video_dir(tmp_path), renderer="custom-motion"
+    )
+    ctx = stage_ctx(store, "job1")
+    outcome = stage.run(ctx)
+
+    assert outcome.ok
+    assert calls == ["custom-motion"]
+    written = dict(ctx.json_pending)[RENDER_NAME]
+    assert written["renderer"] == "custom-motion"
+
+
+def test_stage_custom_motion_fallback_on_render_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import packages.core.media.render as render_mod
+
+    store = _FakeStore(tmp_path, payload=_payload(renderer="custom-motion"))
+    code_dir = store.job_dir("job1") / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "RootComposition.tsx").write_text(
+        "import React from 'react';\nexport const RootComposition: React.FC = () => null;\n",
+        encoding="utf-8",
+    )
+
+    calls: list[str] = []
+
+    def fake_custom(**kwargs: Any) -> dict[str, Any]:
+        calls.append("custom-motion-fail")
+        raise RuntimeError("simulated custom motion compile error")
+
+    def fake_render(**kwargs: Any) -> dict[str, Any]:
+        calls.append("remotion-fallback")
+        Path(kwargs["out_path"]).write_bytes(b"fake-video-bytes")
+        return {"elapsed_ms": 1}
+
+    def fake_probe(path: Path) -> dict[str, Any]:
+        return {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "pix_fmt": "yuv420p",
+                    "width": 1080,
+                    "height": 1920,
+                    "avg_frame_rate": "30/1",
+                    "nb_read_frames": "30",
+                },
+                {"codec_type": "audio", "codec_name": "aac"},
+            ],
+            "format": {"duration": "1.0"},
+        }
+
+    monkeypatch.setattr(render_mod, "render_custom_motion", fake_custom)
+    monkeypatch.setattr(render_mod, "render_storyboard", fake_render)
+    monkeypatch.setattr(render_mod, "mux_narration", _fake_mux)
+    monkeypatch.setattr(render_mod, "probe_media", fake_probe)
+    monkeypatch.setattr(render_mod, "sha256_file", lambda path: "0" * 64)
+
+    stage = build_render_stage(
+        _State(store), video_dir=_stub_video_dir(tmp_path), renderer="custom-motion"
+    )
+    ctx = stage_ctx(store, "job1")
+    outcome = stage.run(ctx)
+
+    assert outcome.ok
+    assert calls == ["custom-motion-fail", "remotion-fallback"]
+    written = dict(ctx.json_pending)[RENDER_NAME]
+    assert written["renderer"] == "legacy-template"
+
+
+def test_stage_custom_motion_prerender_fallback_emits_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import packages.core.media.render as render_mod
+
+    # Custom motion requested, but code dir is empty/missing
+    store = _FakeStore(tmp_path, payload=_payload(renderer="custom-motion"))
+    state = _State(store)
+    calls: list[str] = []
+
+    def fake_render(**kwargs: Any) -> dict[str, Any]:
+        calls.append("remotion-fallback")
+        Path(kwargs["out_path"]).write_bytes(b"fake-video-bytes")
+        return {"elapsed_ms": 1}
+
+    def fake_probe(path: Path) -> dict[str, Any]:
+        return {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "h264",
+                    "pix_fmt": "yuv420p",
+                    "width": 1080,
+                    "height": 1920,
+                    "avg_frame_rate": "30/1",
+                    "nb_read_frames": "30",
+                },
+                {"codec_type": "audio", "codec_name": "aac"},
+            ],
+            "format": {"duration": "1.0"},
+        }
+
+    monkeypatch.setattr(render_mod, "render_storyboard", fake_render)
+    monkeypatch.setattr(render_mod, "mux_narration", _fake_mux)
+    monkeypatch.setattr(render_mod, "probe_media", fake_probe)
+    monkeypatch.setattr(render_mod, "sha256_file", lambda path: "0" * 64)
+
+    stage = build_render_stage(
+        state, video_dir=_stub_video_dir(tmp_path), renderer="custom-motion"
+    )
+    ctx = stage_ctx(store, "job1")
+    outcome = stage.run(ctx)
+
+    assert outcome.ok
+    assert calls == ["remotion-fallback"]
+    written = dict(ctx.json_pending)[RENDER_NAME]
+    assert written["renderer"] == "legacy-template"
+    fallback_events = [
+        r for r in state.events.rows
+        if "falling back to legacy-template" in r.get("description", "")
+    ]
+    assert len(fallback_events) == 1
+    assert fallback_events[0]["event_type"] == "progress"
+
+
+def test_render_custom_motion_validations(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from packages.core.media.render import render_custom_motion
+
+    monkeypatch.setattr("shutil.which", lambda cmd: "node" if cmd == "node" else None)
+
+    video_dir = _stub_video_dir(tmp_path)
+    code_dir = tmp_path / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    props_path = tmp_path / "props.json"
+    props_path.write_text("{}", encoding="utf-8")
+    out_path = tmp_path / "out.mp4"
+
+    # Missing entry file
+    with pytest.raises(RuntimeError, match="entry component not found"):
+        render_custom_motion(
+            video_dir=video_dir,
+            code_dir=code_dir,
+            props_path=props_path,
+            out_path=out_path,
+        )
+
+    # Missing CLI
+    (code_dir / "RootComposition.tsx").write_text("export const Root = () => null;", encoding="utf-8")
+    with pytest.raises(RuntimeError, match="Remotion CLI missing"):
+        render_custom_motion(
+            video_dir=tmp_path / "nonexistent-video",
+            code_dir=code_dir,
+            props_path=props_path,
+            out_path=out_path,
+        )
+
+
+def test_runtime_invalid_payload_renderer_rejected(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Payload has a typo renderer that must be rejected at runtime
+    store = _FakeStore(tmp_path, payload={"render_video": True, "renderer": "unknown_renderer_typo"})
+    state = _State(store)
+    stage = build_render_stage(state, video_dir=_stub_video_dir(tmp_path), renderer="remotion")
+    ctx = stage_ctx(store, "job1")
+    from packages.core.orchestration.runner import StageError
+
+    with pytest.raises(StageError, match="unknown renderer 'unknown_renderer_typo'"):
+        stage.run(ctx)
 
 
 def stage_ctx(store, job_id: str) -> Any:
