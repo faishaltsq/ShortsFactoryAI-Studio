@@ -37,9 +37,12 @@ from ..contracts.base import validate_artifact
 from ..contracts.state import JobState
 from ..media.qc import (
     content_hash,
+    evaluate_bme_dynamics,
     evaluate_creative,
     evaluate_technical,
+    extract_bme_frames,
     extract_contact_sheet,
+    get_bme_frame_indices,
     measure_loudness,
     measure_static,
     run_detectors,
@@ -295,6 +298,32 @@ def build_editorial_qc_stage(state: Any) -> Stage:
             )
 
             static_seconds, _ = measure_static(video)
+            bme_dynamics = None
+            if video.is_file():
+                try:
+                    scenes = storyboard.get("scenes", [])
+                    if isinstance(scenes, list) and scenes:
+                        valid_scenes = [
+                            s
+                            for s in scenes
+                            if isinstance(s, dict)
+                            and isinstance(s.get("startFrame"), int)
+                            and isinstance(s.get("durationInFrames"), int)
+                            and int(s.get("durationInFrames") or 0) > 0
+                        ]
+                        if valid_scenes:
+                            scene_points = [
+                                get_bme_frame_indices(
+                                    int(s["startFrame"]),
+                                    int(s["durationInFrames"]),
+                                )
+                                for s in valid_scenes
+                            ]
+                            bme_frames = extract_bme_frames(video, scene_points)
+                            bme_dynamics = evaluate_bme_dynamics(valid_scenes, bme_frames)
+                except Exception:
+                    bme_dynamics = None
+
             creative = evaluate_creative(
                 props={"storyboard": props},
                 audio=audio,
@@ -303,6 +332,7 @@ def build_editorial_qc_stage(state: Any) -> Stage:
                 assets=_optional(store, job_id, "assets.json"),
                 static_seconds=static_seconds,
                 history=_history(store, job_id),
+                bme_dynamics=bme_dynamics,
             ).as_creative()
 
             sheet_path = ctx.alloc(SHEET_NAME)

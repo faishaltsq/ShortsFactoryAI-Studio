@@ -79,6 +79,9 @@ CREATIVE_THRESHOLDS: dict[str, str] = {
     "coherence": "review verdict accept and score >= 3",
     "segment_mapping": "every scene segment in the script and every script segment in a scene",
     "object_consistency": ">= 1 rendered object, every kind drawn by the shipped library",
+    "concrete_subjects": "mandatory concrete objects match script domain when specified",
+    "safe_zones": "elements positioned within YouTube Shorts safe margins",
+    "bme_dynamics": "no static scene across B/M/E keyframe deltas",
 }
 
 MAX_SUBTITLE_CHARS = 42
@@ -636,6 +639,135 @@ def extract_contact_sheet(
     return target, count
 
 
+# -- B/M/E keyframe dynamics -------------------------------------------------------------------
+
+
+def calculate_frame_delta(frame_a: bytes, frame_b: bytes) -> float:
+    """Compute normalized mean absolute difference between two raw frame byte buffers in [0.0, 1.0]."""
+    if not frame_a or not frame_b:
+        raise ValueError("frame buffers must not be empty")
+    if len(frame_a) != len(frame_b):
+        raise ValueError(f"frame buffers must be the same length: {len(frame_a)} vs {len(frame_b)}")
+    diff = sum(abs(x - y) for x, y in zip(frame_a, frame_b, strict=True))
+    return diff / (255.0 * len(frame_a))
+
+
+def get_bme_frame_indices(
+    start_frame: int, duration_frames: int, *, boundary_pad: int = 6
+) -> tuple[int, int, int]:
+    """Return Beginning, Middle, End frame indices for a scene with boundary padding."""
+    if duration_frames <= 0:
+        raise ValueError(f"duration_frames must be positive, got {duration_frames}")
+    if duration_frames <= boundary_pad * 2:
+        b = start_frame
+        m = start_frame + duration_frames // 2
+        e = start_frame + duration_frames - 1
+    else:
+        b = start_frame + boundary_pad
+        m = start_frame + duration_frames // 2
+        e = start_frame + duration_frames - boundary_pad
+    return b, m, e
+
+
+def extract_bme_frames(
+    video_path: Path,
+    scene_points: list[tuple[int, int, int]],
+    *,
+    width: int = 160,
+    height: int = 90,
+    timeout_s: int = 60,
+) -> list[tuple[bytes, bytes, bytes]]:
+    """Extract downscaled grayscale rawvideo bytes for (B, M, E) points across scenes in one ffmpeg pass."""
+    video = Path(video_path)
+    if not video.is_file():
+        raise RuntimeError(f"video file not found at {video}")
+    if not scene_points:
+        return []
+
+    all_frames: list[int] = []
+    for b, m, e in scene_points:
+        all_frames.extend((b, m, e))
+
+    select_expr = "+".join(f"eq(n\\,{f})" for f in all_frames)
+    frame_size = width * height
+    cmd = [
+        "ffmpeg", "-v", "error", "-y",
+        "-i", str(video),
+        "-vf", f"select={select_expr},scale={width}:{height},format=gray",
+        "-fps_mode", "vfr",
+        "-f", "rawvideo",
+        "pipe:1",
+    ]
+    try:
+        proc = subprocess.run(
+            cmd,
+            capture_output=True,
+            timeout=timeout_s,
+            check=False,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError("ffmpeg is not on PATH; cannot extract B/M/E frames") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RuntimeError(f"B/M/E frame extraction timed out after {timeout_s}s") from exc
+
+    if proc.returncode != 0:
+        err = (proc.stderr or b"").decode(errors="replace")[-600:]
+        raise RuntimeError(f"ffmpeg B/M/E frame extraction failed: {err}")
+
+    raw_data = proc.stdout
+    results: list[tuple[bytes, bytes, bytes]] = []
+    for i in range(len(scene_points)):
+        offset = i * 3 * frame_size
+        fb = raw_data[offset : offset + frame_size]
+        fm = raw_data[offset + frame_size : offset + 2 * frame_size]
+        fe = raw_data[offset + 2 * frame_size : offset + 3 * frame_size]
+        results.append((fb, fm, fe))
+    return results
+
+
+def evaluate_bme_dynamics(
+    scenes: list[dict[str, Any]],
+    bme_frames: list[tuple[bytes, bytes, bytes]],
+    *,
+    min_delta: float = 0.005,
+) -> dict[str, Any]:
+    """Evaluate pixel dynamics across Beginning, Middle, End keyframes for each scene."""
+    static_scenes: list[str] = []
+    scene_metrics: list[dict[str, Any]] = []
+
+    for index, scene in enumerate(scenes):
+        scene_id = str(scene.get("sceneId") or f"sc{index}")
+        if index >= len(bme_frames):
+            continue
+        fb, fm, fe = bme_frames[index]
+        if not fb or not fm or not fe or not (len(fb) == len(fm) == len(fe)):
+            static_scenes.append(scene_id)
+            scene_metrics.append({"sceneId": scene_id, "delta_bm": 0.0, "delta_me": 0.0, "static": True})
+            continue
+
+        delta_bm = calculate_frame_delta(fb, fm)
+        delta_me = calculate_frame_delta(fm, fe)
+        is_static = (delta_bm < min_delta) or (delta_me < min_delta)
+        if is_static:
+            static_scenes.append(scene_id)
+        scene_metrics.append(
+            {
+                "sceneId": scene_id,
+                "delta_bm": round(delta_bm, 5),
+                "delta_me": round(delta_me, 5),
+                "static": is_static,
+            }
+        )
+
+    passed = len(static_scenes) == 0
+    return {
+        "passed": passed,
+        "static_scenes": static_scenes,
+        "scene_metrics": scene_metrics,
+        "min_delta_threshold": min_delta,
+    }
+
+
 # -- technical ---------------------------------------------------------------------------------
 
 
@@ -840,11 +972,11 @@ def _world(scene: dict[str, Any]) -> tuple[str, str, str]:
     raw_data = scene.get("data")
     data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
     template = scene.get("template")
-    environment = data.get("environment")
+    environment = data.get("environment") or data.get("setting")
     hero = ""
     objects = data.get("objects")
     if isinstance(objects, list) and objects and isinstance(objects[0], dict):
-        kind = objects[0].get("kind")
+        kind = objects[0].get("kind") or objects[0].get("objectKind")
         hero = kind if isinstance(kind, str) else ""
     return (
         template if isinstance(template, str) else "",
@@ -912,12 +1044,11 @@ def _signature_tokens(signature: dict[str, Any]) -> set[str]:
     for scene in scenes:
         if not isinstance(scene, dict):
             continue
-        tokens.add(
-            "|".join(
-                str(scene.get(key) or "")
-                for key in ("template", "setting", "timeOfDay", "shot")
-            )
-        )
+        env = scene.get("environment") or scene.get("setting") or ""
+        hero = scene.get("hero") or ""
+        template = scene.get("template") or ""
+        shot = scene.get("shot") or ""
+        tokens.add(f"{template}|{env}|{hero}|{shot}")
     return tokens
 
 
@@ -930,6 +1061,7 @@ def evaluate_creative(
     assets: dict[str, Any] | None,
     static_seconds: float,
     history: list[dict[str, Any]] | None = None,
+    bme_dynamics: dict[str, Any] | None = None,
 ) -> QcVerdict:
     """FR-7.2 over the props the renderer received and the timings it was given."""
     scenes = _scenes(props)
@@ -1046,6 +1178,52 @@ def evaluate_creative(
     metrics["unknown_objects"] = unknown
     checks["object_consistency"] = bool(kinds) and not unknown
 
+    # concrete_subjects -- when script segments explicitly discuss specialized domain subjects,
+    # the storyboard must use the concrete subject assets rather than generic placeholders.
+    missing_concrete: list[str] = []
+    script_text = ""
+    if isinstance(script, dict) and isinstance(script.get("segments"), list):
+        script_text = " ".join(
+            str(item.get("text") or "")
+            for item in script["segments"]
+            if isinstance(item, dict)
+        ).lower()
+
+    if script_text:
+        domain_requirements = [
+            (("mesh", "wireframe", "edge loop", "poligon", "topologi"), "meshTopology"),
+            (("sculpt", "clay", "volume sculpting", "pahat"), "claySculpt"),
+            (("arsitektur cloud", "microservice", "load balancer"), "cloudArch"),
+            (("multicore", "processor", "prosesor cpu"), "cpuProcessor"),
+            (("quantum", "qubit", "superkonduktor"), "quantumProcessor"),
+            (("serat optik", "kabel optik"), ("opticalFiber", "subseaCableCutaway")),
+            (("kabel bawah laut", "kabel laut", "subsea cable"), "subseaCableCutaway"),
+            (("mi instan", "mie instan", "ramen"), "ramenBowl"),
+            (("panci", "merebus", "memasak mi"), "cookingPot"),
+            (("bumi", "planet bumi", "globe"), "planetEarth"),
+        ]
+        rendered_kinds = set(kinds)
+        for keywords, expected in domain_requirements:
+            expected_set = set(expected) if isinstance(expected, tuple) else {expected}
+            if any(kw in script_text for kw in keywords):
+                if not (expected_set & rendered_kinds):
+                    missing_concrete.append(expected if isinstance(expected, str) else expected[0])
+    metrics["missing_concrete_subjects"] = missing_concrete
+    checks["concrete_subjects"] = len(missing_concrete) == 0
+
+    # safe_zones -- ensure scenes avoid large empty voids and keep objects in visible region
+    safe_zone_violations = 0
+    for scene in scenes:
+        data = scene.get("data")
+        if isinstance(data, dict):
+            for obj in data.get("objects") or []:
+                if isinstance(obj, dict):
+                    y = float(obj.get("y", 0.5))
+                    if y < 0.15 or y > 0.85:
+                        safe_zone_violations += 1
+    metrics["safe_zone_violations"] = safe_zone_violations
+    checks["safe_zones"] = safe_zone_violations == 0
+
     # pacing -- from measured scene timings and cue durations.
     raw_audio_scenes = audio.get("scenes")
     audio_scenes: list[Any] = raw_audio_scenes if isinstance(raw_audio_scenes, list) else []
@@ -1088,6 +1266,10 @@ def evaluate_creative(
     metrics["history_compared"] = len(prior)
     checks["repetition"] = worst <= 0.8
 
+    if bme_dynamics is not None:
+        metrics["bme_dynamics"] = bme_dynamics
+        checks["bme_dynamics"] = bool(bme_dynamics.get("passed", True))
+
     observed["signature"] = signature
     observed["scenes"] = scene_count
     return _finish(
@@ -1123,10 +1305,14 @@ __all__ = [
     "MAX_TEXT_ELEMENT_CHARS",
     "QcVerdict",
     "TECHNICAL_THRESHOLDS",
+    "calculate_frame_delta",
     "content_hash",
+    "evaluate_bme_dynamics",
     "evaluate_creative",
     "evaluate_technical",
+    "extract_bme_frames",
     "extract_contact_sheet",
+    "get_bme_frame_indices",
     "scene_midpoints",
     "sheet_grid",
     "measure_loudness",
