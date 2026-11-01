@@ -159,3 +159,115 @@ def test_word_timestamp_rejected_when_unordered():
         WordTimestamp(word="Test", startMs=500, endMs=300)
     assert "endMs must be greater than startMs" in str(exc.value)
 
+
+def test_scene_spec_causal_state_cycle() -> None:
+    from packages.core.contracts.scene import CausalStateSpec, SceneSpec
+
+    causal = CausalStateSpec(
+        initial_state="Satelit GPS mengorbit bumi memancarkan sinyal waktu uncorrected.",
+        causal_action="Dilatasi waktu gravitasi mempercepat jam atom satelit 38 mikrodetik per hari.",
+        resulting_state="Posisi peta melenceng 11 kilometer jika koreksi relativitas tidak diterapkan.",
+        transition="Zoom fokus ke penerima GPS ponsel yang menyinkronkan data koreksi.",
+    )
+    assert causal.initial_state != ""
+    assert causal.causal_action != ""
+    assert causal.resulting_state != ""
+    assert causal.transition != ""
+
+    scene = SceneSpec(
+        sceneId="scene_01",
+        template="ObjectExplainer",
+        segment="seg_01",
+        startFrame=0,
+        durationInFrames=180,
+        data={"objects": [{"kind": "satellite", "x": 0.5, "y": 0.45, "size": 0.5}]},
+        causal_state=causal,
+        layout_mode="SplitComparison",
+    )
+    assert scene.causal_state is not None
+    assert scene.causal_state.causal_action.startswith("Dilatasi waktu")
+    assert scene.layout_mode == "SplitComparison"
+
+
+def test_scene_spec_causal_state_coercion_and_camel_case() -> None:
+    from packages.core.contracts.scene import SceneSpec
+
+    scene = SceneSpec.model_validate(
+        {
+            "sceneId": "scene_02",
+            "template": "ObjectExplainer",
+            "segment": "seg_02",
+            "startFrame": 0,
+            "durationInFrames": 180,
+            "data": {"objects": []},
+            "causal_state": {
+                "initialState": "  Satelit awal  ",
+                "causalAction": "  Relativitas  ",
+                "resultingState": "  Waktu bergeser  ",
+                "transition": "  Sinkronisasi  ",
+            },
+            "layout_mode": "RadialNetwork",
+        }
+    )
+    assert scene.causal_state is not None
+    assert scene.causal_state.initial_state == "Satelit awal"
+    assert scene.causal_state.causal_action == "Relativitas"
+    assert scene.causal_state.resulting_state == "Waktu bergeser"
+    assert scene.causal_state.transition == "Sinkronisasi"
+    assert scene.layout_mode == "RadialNetwork"
+
+
+def test_causal_state_spec_empty_string_rejected() -> None:
+    from packages.core.contracts.scene import CausalStateSpec
+
+    with pytest.raises(ValidationError):
+        CausalStateSpec(
+            initial_state="   ",
+            causal_action="aksi",
+            resulting_state="hasil",
+            transition="transisi",
+        )
+
+
+def test_storyboard_agent_sanitizes_causal_state_and_layout_mode() -> None:
+    from packages.core.agents.concrete import StoryboardAgent
+
+    agent = StoryboardAgent.__new__(StoryboardAgent)
+    raw_payload = {
+        "theme": "editorialLight",
+        "fps": 30,
+        "scenes": [
+            {
+                "sceneId": "sc1",
+                "template": "ObjectExplainer",
+                "segment": "s1",
+                "startFrame": 0,
+                "durationInFrames": 120,
+                "text": [{"id": "t1", "text": "Orbit", "role": "title"}],
+                "causalState": {
+                    "initialState": "  Kondisi awal satelit  ",
+                    "causalAction": "  Efek relativistik  ",
+                    "resultingState": "  Offset waktu mikrodetik  ",
+                    "transition": "  Pergeseran fokus  ",
+                },
+                "layoutMode": "splitcomparison",
+                "data": {"objects": [{"kind": "satellite", "x": 0.5, "y": 0.45, "size": 0.5}]},
+            }
+        ],
+        "subtitles": [],
+    }
+
+    sanitized = agent.sanitize_payload(raw_payload)
+    sc = sanitized["scenes"][0]
+    assert "causalState" not in sc
+    assert "layoutMode" not in sc
+    assert sc["layout_mode"] == "SplitComparison"
+    assert sc["causal_state"] == {
+        "initial_state": "Kondisi awal satelit",
+        "causal_action": "Efek relativistik",
+        "resulting_state": "Offset waktu mikrodetik",
+        "transition": "Pergeseran fokus",
+    }
+
+
+

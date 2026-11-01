@@ -100,6 +100,44 @@
       "title": "CameraSpec",
       "type": "object"
     },
+    "CausalStateSpec": {
+      "additionalProperties": false,
+      "description": "The four-part causal state cycle grounding a scene in physical transformation.",
+      "properties": {
+        "causal_action": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Causal Action",
+          "type": "string"
+        },
+        "initial_state": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Initial State",
+          "type": "string"
+        },
+        "resulting_state": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Resulting State",
+          "type": "string"
+        },
+        "transition": {
+          "maxLength": 500,
+          "minLength": 1,
+          "title": "Transition",
+          "type": "string"
+        }
+      },
+      "required": [
+        "initial_state",
+        "causal_action",
+        "resulting_state",
+        "transition"
+      ],
+      "title": "CausalStateSpec",
+      "type": "object"
+    },
     "MotionSpec": {
       "additionalProperties": false,
       "description": "How a scene moves. ``continuity`` decides whether the world survives the cut.",
@@ -158,6 +196,17 @@
         "camera": {
           "$ref": "#/$defs/CameraSpec"
         },
+        "causal_state": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/CausalStateSpec"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "data": {
           "anyOf": [
             {
@@ -177,6 +226,25 @@
           "minimum": 30,
           "title": "Durationinframes",
           "type": "integer"
+        },
+        "layout_mode": {
+          "anyOf": [
+            {
+              "enum": [
+                "DefaultHero",
+                "SplitComparison",
+                "RadialNetwork",
+                "LeftRailProcess",
+                "FullBleedFocus"
+              ],
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Layout Mode"
         },
         "motion": {
           "$ref": "#/$defs/MotionSpec"

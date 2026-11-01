@@ -21,7 +21,12 @@ from ..contracts import (
     VisualPlanArtifact,
 )
 from ..contracts.base import Artifact
-from ..contracts.scene import DATA_DRIVEN_TEMPLATES, OBJECT_KINDS, OBJECT_LABELS
+from ..contracts.scene import (
+    DATA_DRIVEN_TEMPLATES,
+    OBJECT_KINDS,
+    OBJECT_LABELS,
+    CausalStateSpec,
+)
 from ..providers.base import Capability
 from . import Agent
 
@@ -57,6 +62,13 @@ STORYBOARD_SCHEMA = json.dumps(
                     ],
                 },
                 "transition": {"kind": "cut", "frames": 0},
+                "causal_state": {
+                    "initial_state": "Satelit GPS mengorbit bumi memancarkan sinyal waktu uncorrected.",
+                    "causal_action": "Dilatasi waktu gravitasi mempercepat jam atom satelit 38 mikrodetik per hari.",
+                    "resulting_state": "Posisi peta melenceng 11 kilometer jika koreksi relativitas tidak diterapkan.",
+                    "transition": "Zoom fokus ke penerima GPS ponsel yang menyinkronkan data koreksi.",
+                },
+                "layout_mode": "DefaultHero",
                 "data": {
                     "title": "...",
                     "caption": "...",
@@ -648,31 +660,36 @@ class CreativeDirectorAgent(Agent):
                 scores["pacing"] = 8.0
         return payload
 
+STORYBOARD_SYSTEM_PROMPT = (
+    "You turn a script into a storyboard for a 1080x1920 30fps vertical video. Return ONLY JSON matching "
+    "this exact shape (types matter):\n"
+    + STORYBOARD_SCHEMA
+    + "\nRules: scenes must be contiguous (scene N starts where N-1 ended). "
+    "durationInFrames between 30 and 3000. Give every scene a motivated camera movement ('push', 'pull', 'pan', or 'tilt') "
+    "targeting an element id in that scene's text array (e.g. camera.target='t1') with amplitude 0.08 to 0.15 and ease 'linear'. "
+    "Do NOT leave camera.move as 'static', because static scenes cause frozen-frame QC rejection. "
+    "Prefer 'ObjectExplainer': every scene MUST identify the concrete visual subject required to explain its narration. "
+    "The main hero object must be visually dominant (size ~0.62 at center y=0.46). "
+    "For every scene, specify causal_state with initial_state, causal_action, resulting_state, and transition. "
+    "Choose an expressive layout_mode: DefaultHero, SplitComparison, RadialNetwork, LeftRailProcess, or FullBleedFocus. "
+    "Every scene declares environment ('dataCenter', 'circuit', 'space', 'lab', 'city', 'grid', 'abstract', 'oceanFloor', 'kitchen') "
+    "and 1-3 objects from: gpu, wafer, serverRack, dataCenter, neuralNet, database, satellite, antenna, turbine, solarPanel, coolingFan, "
+    "phone, drone, rocket, building, meshTopology, claySculpt, cloudArch, cpuProcessor, quantumProcessor, opticalFiber, "
+    "subseaCableCutaway, ramenBowl, cookingPot, planetEarth, microscope, lightBulb, factory, stockChart. "
+    "Concrete semantic requirements: subsea cable/ocean -> subseaCableCutaway, oceanFloor; ramen/noodle/cooking -> ramenBowl, cookingPot, kitchen; "
+    "planet/earth/astronomy -> planetEarth, space; 3D mesh/topology -> meshTopology; clay sculpting -> claySculpt; "
+    "cloud architecture -> cloudArch; CPU/processor -> cpuProcessor; GPU computing -> gpu; "
+    "science/biology/medicine -> microscope, lab; innovation/electricity -> lightBulb, lab; industrial history/manufacturing -> factory, city; market/economics/trend -> stockChart, city. "
+    "Theme should default to 'editorialLight', or 'warmLifestyle' for cooking, or 'spaceDark' for space/night. "
+    "Abstract gradients or decorative circles are NOT acceptable substitutes for concrete subjects. "
+    "Use 'ProcessFlow' when the segment explains how something works step-by-step, and 'MetricShift' when it compares quantities. "
+    "Vary environments and objects across scenes. Give every scene at least one beat."
+)
+
+
 class StoryboardAgent(Agent):
     name = "StoryboardAgent"
-    system_prompt = (
-        "You turn a script into a storyboard for a 1080x1920 30fps vertical video. Return ONLY JSON matching "
-        "this exact shape (types matter):\n"
-        + STORYBOARD_SCHEMA
-        + "\nRules: scenes must be contiguous (scene N starts where N-1 ended). "
-        "durationInFrames between 30 and 3000. Give every scene a motivated camera movement ('push', 'pull', 'pan', or 'tilt') "
-        "targeting an element id in that scene's text array (e.g. camera.target='t1') with amplitude 0.08 to 0.15 and ease 'linear'. "
-        "Do NOT leave camera.move as 'static', because static scenes cause frozen-frame QC rejection. "
-        "Prefer 'ObjectExplainer': every scene MUST identify the concrete visual subject required to explain its narration. "
-        "The main hero object must be visually dominant (size ~0.62 at center y=0.46). "
-        "Every scene declares environment ('dataCenter', 'circuit', 'space', 'lab', 'city', 'grid', 'abstract', 'oceanFloor', 'kitchen') "
-        "and 1-3 objects from: gpu, wafer, serverRack, dataCenter, neuralNet, database, satellite, antenna, turbine, solarPanel, coolingFan, "
-        "phone, drone, rocket, building, meshTopology, claySculpt, cloudArch, cpuProcessor, quantumProcessor, opticalFiber, "
-        "subseaCableCutaway, ramenBowl, cookingPot, planetEarth, microscope, lightBulb, factory, stockChart. "
-        "Concrete semantic requirements: subsea cable/ocean -> subseaCableCutaway, oceanFloor; ramen/noodle/cooking -> ramenBowl, cookingPot, kitchen; "
-        "planet/earth/astronomy -> planetEarth, space; 3D mesh/topology -> meshTopology; clay sculpting -> claySculpt; "
-        "cloud architecture -> cloudArch; CPU/processor -> cpuProcessor; GPU computing -> gpu; "
-        "science/biology/medicine -> microscope, lab; innovation/electricity -> lightBulb, lab; industrial history/manufacturing -> factory, city; market/economics/trend -> stockChart, city. "
-        "Theme should default to 'editorialLight', or 'warmLifestyle' for cooking, or 'spaceDark' for space/night. "
-        "Abstract gradients or decorative circles are NOT acceptable substitutes for concrete subjects. "
-        "Use 'ProcessFlow' when the segment explains how something works step-by-step, and 'MetricShift' when it compares quantities. "
-        "Vary environments and objects across scenes. Give every scene at least one beat."
-    )
+    system_prompt = STORYBOARD_SYSTEM_PROMPT
     def build_user_prompt(self, **kwargs: Any) -> str:
         script = cast(dict[str, Any], kwargs.get("script") or {})
         fps = int(kwargs.get("fps") or 30)
@@ -755,6 +772,50 @@ class StoryboardAgent(Agent):
                 trans = sc.get("transition")
                 if not isinstance(trans, dict):
                     sc["transition"] = {"kind": "cut", "frames": 0}
+
+                # Normalize causal_state and layout_mode
+                raw_causal = sc.get("causal_state") if "causal_state" in sc else sc.get("causalState")
+                sc.pop("causalState", None)
+                if isinstance(raw_causal, CausalStateSpec):
+                    sc["causal_state"] = raw_causal
+                elif isinstance(raw_causal, dict):
+                    init_s = str(
+                        raw_causal.get("initial_state") or raw_causal.get("initialState") or ""
+                    ).strip()
+                    action_s = str(
+                        raw_causal.get("causal_action") or raw_causal.get("causalAction") or ""
+                    ).strip()
+                    result_s = str(
+                        raw_causal.get("resulting_state") or raw_causal.get("resultingState") or ""
+                    ).strip()
+                    trans_s = str(raw_causal.get("transition") or "").strip()
+                    if init_s or action_s or result_s or trans_s:
+                        sc["causal_state"] = {
+                            "initial_state": init_s or "Keadaan awal sistem.",
+                            "causal_action": action_s or "Aksi kausal pengubah sistem.",
+                            "resulting_state": result_s or "Kondisi hasil perubahan sistem.",
+                            "transition": trans_s or "Transisi fokus visual ke aspek berikutnya.",
+                        }
+                    else:
+                        sc["causal_state"] = None
+                else:
+                    sc["causal_state"] = None
+
+                raw_layout = sc.get("layout_mode") if "layout_mode" in sc else sc.get("layoutMode")
+                sc.pop("layoutMode", None)
+                if isinstance(raw_layout, str) and raw_layout.strip():
+                    cleaned_layout = raw_layout.strip()
+                    valid_layouts = {
+                        "defaulthero": "DefaultHero",
+                        "splitcomparison": "SplitComparison",
+                        "radialnetwork": "RadialNetwork",
+                        "leftrailprocess": "LeftRailProcess",
+                        "fullbleedfocus": "FullBleedFocus",
+                    }
+                    sc["layout_mode"] = valid_layouts.get(cleaned_layout.lower(), "DefaultHero")
+                else:
+                    sc["layout_mode"] = None
+
                 # Every scene renders as an informative graphic. A model that names a text-only
                 # template for a visual topic still gets objects, and an id we do not ship is
                 # replaced rather than silently rendered as a blank frame.

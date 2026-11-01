@@ -8,7 +8,14 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import (
+    AliasChoices,
+    BaseModel,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 TemplateId = Literal[
     "KineticTypography",
@@ -41,8 +48,21 @@ OBJECT_KINDS: tuple[str, ...] = (
     "drone",
     "rocket",
     "building",
+    "meshTopology",
+    "claySculpt",
+    "cloudArch",
+    "cpuProcessor",
+    "quantumProcessor",
+    "opticalFiber",
+    "subseaCableCutaway",
+    "ramenBowl",
+    "cookingPot",
+    "planetEarth",
+    "microscope",
+    "lightBulb",
+    "factory",
+    "stockChart",
 )
-
 ObjectKind = Literal[
     "gpu",
     "wafer",
@@ -59,8 +79,21 @@ ObjectKind = Literal[
     "drone",
     "rocket",
     "building",
+    "meshTopology",
+    "claySculpt",
+    "cloudArch",
+    "cpuProcessor",
+    "quantumProcessor",
+    "opticalFiber",
+    "subseaCableCutaway",
+    "ramenBowl",
+    "cookingPot",
+    "planetEarth",
+    "microscope",
+    "lightBulb",
+    "factory",
+    "stockChart",
 ]
-
 #: Short captions drawn under an object. Long labels collide at 1080px wide.
 OBJECT_LABELS: dict[str, str] = {
     "gpu": "GPU",
@@ -78,8 +111,21 @@ OBJECT_LABELS: dict[str, str] = {
     "drone": "Drone",
     "rocket": "Roket",
     "building": "Kantor",
+    "meshTopology": "Mesh 3D",
+    "claySculpt": "Clay Sculpt",
+    "cloudArch": "Cloud Architecture",
+    "cpuProcessor": "CPU Processor",
+    "quantumProcessor": "Quantum Processor",
+    "opticalFiber": "Optical Fiber",
+    "subseaCableCutaway": "Kabel Bawah Laut (Cross-Section)",
+    "ramenBowl": "Mangkok Mi",
+    "cookingPot": "Panci Masak",
+    "planetEarth": "Planet Bumi",
+    "microscope": "Mikroskop Sains",
+    "lightBulb": "Bohlam Inovasi",
+    "factory": "Pabrik Industri",
+    "stockChart": "Grafik Pasar / Tren",
 }
-
 #: Backdrops the renderer can stand an object in, mirrored from ``art/palette.ts``.
 ENVIRONMENTS: tuple[str, ...] = (
     "dataCenter",
@@ -89,8 +135,9 @@ ENVIRONMENTS: tuple[str, ...] = (
     "city",
     "grid",
     "abstract",
+    "oceanFloor",
+    "kitchen",
 )
-
 EnvironmentKind = Literal[
     "dataCenter",
     "circuit",
@@ -99,8 +146,9 @@ EnvironmentKind = Literal[
     "city",
     "grid",
     "abstract",
+    "oceanFloor",
+    "kitchen",
 ]
-
 #: Templates whose renderer reads ``scene.data``. The ported ``validateSceneData`` throws when
 #: ``data`` is missing for these five and returns immediately for the two text templates, so
 #: presence is checked here — at the contract boundary — and the *contents* stay the renderer's
@@ -134,6 +182,13 @@ TransitionKind = Literal["cut", "fade", "wipe", "push", "match"]
 BeatKind = Literal["enter", "emphasis", "exit", "action", "reveal"]
 Continuity = Literal["carry", "cut", "match"]
 TextRole = Literal["title", "body", "caption", "label"]
+LayoutMode = Literal[
+    "DefaultHero",
+    "SplitComparison",
+    "RadialNetwork",
+    "LeftRailProcess",
+    "FullBleedFocus",
+]
 
 
 class CameraSpec(BaseModel):
@@ -229,8 +284,47 @@ class SubtitleCue(BaseModel):
         return self
 
 
+class CausalStateSpec(BaseModel):
+    """The four-part causal state cycle grounding a scene in physical transformation."""
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    initial_state: str = Field(
+        validation_alias=AliasChoices("initial_state", "initialState"),
+        min_length=1,
+        max_length=500,
+    )
+    causal_action: str = Field(
+        validation_alias=AliasChoices("causal_action", "causalAction"),
+        min_length=1,
+        max_length=500,
+    )
+    resulting_state: str = Field(
+        validation_alias=AliasChoices("resulting_state", "resultingState"),
+        min_length=1,
+        max_length=500,
+    )
+    transition: str = Field(
+        min_length=1,
+        max_length=500,
+    )
+
+    @field_validator(
+        "initial_state",
+        "causal_action",
+        "resulting_state",
+        "transition",
+        mode="before",
+    )
+    @classmethod
+    def _strip_whitespace(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+
 class SceneSpec(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     sceneId: str = Field(min_length=1, max_length=64)
     template: TemplateId
@@ -244,6 +338,14 @@ class SceneSpec(BaseModel):
     transition: TransitionSpec = Field(default_factory=TransitionSpec)
     audio: dict[str, Any] | None = None
     data: dict[str, Any] | None = None
+    causal_state: CausalStateSpec | None = Field(
+        default=None,
+        validation_alias=AliasChoices("causal_state", "causalState"),
+    )
+    layout_mode: LayoutMode | None = Field(
+        default=None,
+        validation_alias=AliasChoices("layout_mode", "layoutMode"),
+    )
 
     @model_validator(mode="after")
     def _data_required_for_data_driven_templates(self) -> SceneSpec:
@@ -295,3 +397,31 @@ class SceneSpec(BaseModel):
     @property
     def end_frame(self) -> int:
         return self.startFrame + self.durationInFrames
+
+
+__all__ = [
+    "DATA_DRIVEN_TEMPLATES",
+    "ENVIRONMENTS",
+    "OBJECT_KINDS",
+    "OBJECT_LABELS",
+    "Beat",
+    "CameraMove",
+    "CameraSpec",
+    "CausalStateSpec",
+    "Continuity",
+    "Easing",
+    "EnvironmentKind",
+    "LayoutMode",
+    "MotionSpec",
+    "ObjectKind",
+    "SceneSpec",
+    "ShotSize",
+    "SubtitleCue",
+    "TemplateId",
+    "TextElementSpec",
+    "TextRole",
+    "TransitionKind",
+    "TransitionSpec",
+    "WordTimestamp",
+]
+

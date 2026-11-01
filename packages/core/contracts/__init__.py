@@ -26,7 +26,16 @@ from .artifacts import (
     VisualPlanArtifact,
 )
 from .base import Artifact, ArtifactValidationError, content_hash, validate_artifact
-from .scene import CameraSpec, MotionSpec, SceneSpec, SubtitleCue, TemplateId, WordTimestamp
+from .scene import (
+    CameraSpec,
+    CausalStateSpec,
+    LayoutMode,
+    MotionSpec,
+    SceneSpec,
+    SubtitleCue,
+    TemplateId,
+    WordTimestamp,
+)
 from .state import JobState, StudioStatus, allowed_transitions, assert_transition
 
 __all__ = [
@@ -38,8 +47,10 @@ __all__ = [
     "AudioArtifact",
     "CameraIntent",
     "CameraSpec",
+    "CausalStateSpec",
     "CreativeMotionBriefArtifact",
     "JobState",
+    "LayoutMode",
     "MetadataArtifact",
     "MotionPlanArtifact",
     "MotionSpec",
