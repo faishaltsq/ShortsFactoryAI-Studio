@@ -285,6 +285,12 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
             "topic": topic,
             "language": language,
         }
+    def motion_plan_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
+        return {
+            "storyboard": store.read_artifact(job_id, "storyboard.json"),
+            "previous_style": None,
+        }
+
 
     stages = [
         _dynamic_stage(
@@ -342,6 +348,16 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
     ]
 
     if payload.get("render_video") is True:
+        stages.append(
+            _dynamic_stage(
+                state,
+                agent_name="AnimationAgent",
+                stage_state=JobState.STORYBOARD_READY,
+                produces="motion-plan.json",
+                task="motion_plan",
+                kwargs_fn=motion_plan_prompt,
+            )
+        )
         stages.extend(_render_stages(state, renderer=payload.get("renderer", "remotion")))
     return stages
 

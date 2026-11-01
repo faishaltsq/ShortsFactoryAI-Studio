@@ -37,6 +37,11 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from ..contracts.scene import OBJECT_KINDS
+
+#: The renderer's object vocabulary, imported rather than mirrored a second time.
+SHIPPED_OBJECT_KINDS: frozenset[str] = frozenset(OBJECT_KINDS)
+
 #: FFmpeg filter strings. Thresholds are part of the contract, so they are named once and
 #: reported in every artifact that used them.
 TECHNICAL_THRESHOLDS: dict[str, str] = {
@@ -65,7 +70,7 @@ CREATIVE_THRESHOLDS: dict[str, str] = {
     "fade_ratio": "<= 0.35",
     "text_density": "<= 42 chars/s per scene and <= 120 chars per element",
     "shot_variety": ">= 0.5 distinct rendered shots",
-    "repeated_world": ">= 0.5 distinct (template, setting, timeOfDay)",
+    "repeated_world": ">= 0.5 distinct (template, environment, hero object)",
     "pacing": "max scene share <= 0.6 of narration and median cue >= 700 ms",
     "pacing_max_scene_share": "<= 0.6 of total narration",
     "pacing_min_cue_ms": ">= 700 ms median cue",
@@ -73,7 +78,7 @@ CREATIVE_THRESHOLDS: dict[str, str] = {
     "hook": "review verdict accept and score >= 3",
     "coherence": "review verdict accept and score >= 3",
     "segment_mapping": "every scene segment in the script and every script segment in a scene",
-    "character_consistency": ">= 1 rendered character id, all resolve to one rig/palette",
+    "object_consistency": ">= 1 rendered object, every kind drawn by the shipped library",
 }
 
 MAX_SUBTITLE_CHARS = 42
@@ -815,55 +820,53 @@ def _subtitle_metrics(
 
 
 def _rendered_shots(scene: dict[str, Any]) -> list[tuple[str, str]]:
-    """The shots the renderer will actually cut to.
+    """The framing and move the composition will actually apply.
 
-    ``product-adapter.ts`` forwards ``data`` untouched and drops ``camera``/``motion``, and
-    ``IllustratedStory`` reads ``data.shots[]``. Scoring ``camera.move`` would produce a number no
-    pixel can contradict, which is exactly the false confidence this file exists to prevent.
+    Every template draws its declared camera through ``DeclaredCameraScope``, so ``scene.camera``
+    is the single authority for what the frame does. Scoring anything else would produce a number
+    no pixel can contradict.
     """
-    data = scene.get("data")
-    if not isinstance(data, dict):
+    camera = scene.get("camera")
+    if not isinstance(camera, dict):
         return []
-    shots = data.get("shots")
-    if not isinstance(shots, list):
-        return []
-    out: list[tuple[str, str]] = []
-    for shot in shots:
-        if not isinstance(shot, dict):
-            continue
-        framing = shot.get("framing")
-        camera = shot.get("camera")
-        if isinstance(framing, str) and isinstance(camera, str):
-            out.append((framing, camera))
-    return out
-
+    shot = camera.get("shot")
+    move = camera.get("move")
+    if isinstance(shot, str) and isinstance(move, str):
+        return [(shot, move)]
+    return []
 
 def _world(scene: dict[str, Any]) -> tuple[str, str, str]:
+    """The triple a viewer would call "the same look": template, backdrop, and hero object."""
     raw_data = scene.get("data")
     data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
     template = scene.get("template")
-    setting = data.get("setting")
-    time_of_day = data.get("timeOfDay")
+    environment = data.get("environment")
+    hero = ""
+    objects = data.get("objects")
+    if isinstance(objects, list) and objects and isinstance(objects[0], dict):
+        kind = objects[0].get("kind")
+        hero = kind if isinstance(kind, str) else ""
     return (
         template if isinstance(template, str) else "",
-        setting if isinstance(setting, str) else "",
-        time_of_day if isinstance(time_of_day, str) else "",
+        environment if isinstance(environment, str) else "",
+        hero,
     )
 
 
-def _character_ids(props: dict[str, Any]) -> list[str]:
-    ids: list[str] = []
+def _object_kinds(props: dict[str, Any]) -> list[str]:
+    """Every object kind the storyboard asks the renderer to draw."""
+    kinds: list[str] = []
     for scene in _scenes(props):
         data = scene.get("data")
         if not isinstance(data, dict):
             continue
-        actors = data.get("actors")
-        if not isinstance(actors, list):
+        objects = data.get("objects")
+        if not isinstance(objects, list):
             continue
-        for actor in actors:
-            if isinstance(actor, dict) and isinstance(actor.get("character"), str):
-                ids.append(actor["character"])
-    return ids
+        for item in objects:
+            if isinstance(item, dict) and isinstance(item.get("kind"), str):
+                kinds.append(item["kind"])
+    return kinds
 
 
 def _distinct_ratio(values: Iterable[Any], total: int) -> float:
@@ -881,12 +884,12 @@ def _style_signature(props: dict[str, Any]) -> dict[str, Any]:
     scenes = []
     for scene in _scenes(props):
         shots = _rendered_shots(scene)
-        template, setting, time_of_day = _world(scene)
+        template, environment, hero = _world(scene)
         scenes.append(
             {
                 "template": template,
-                "setting": setting,
-                "timeOfDay": time_of_day,
+                "environment": environment,
+                "hero": hero,
                 "shot": "/".join(shots[0]) if shots else "",
             }
         )
@@ -981,7 +984,7 @@ def evaluate_creative(
     metrics["text_element_max_chars"] = longest_element
     checks["text_density"] = worst_density <= 42.0 and longest_element <= MAX_TEXT_ELEMENT_CHARS
 
-    # shot_variety -- rendered data.shots[] only.
+    # shot_variety -- declared cameras only.
     shots: list[tuple[str, str]] = []
     for scene in scenes:
         shots.extend(_rendered_shots(scene))
@@ -991,7 +994,7 @@ def evaluate_creative(
     metrics["distinct_rendered_shots"] = len(set(shots))
     checks["shot_variety"] = bool(shots) and shot_variety >= 0.5
 
-    # repeated_world -- one template/setting/timeOfDay for the whole video is the failure.
+    # repeated_world -- one template/backdrop/hero for the whole video is the failure.
     worlds = [_world(scene) for scene in scenes]
     repeated_world = _distinct_ratio(worlds, scene_count)
     metrics["repeated_world"] = repeated_world
@@ -1035,23 +1038,13 @@ def evaluate_creative(
         and len(scene_segments) == len(scenes)
     )
 
-    # character_consistency -- at least one rendered actor, all resolving to one rig/palette.
-    ids = _character_ids(props)
-    records = {}
-    if isinstance(assets, dict) and isinstance(assets.get("characters"), list):
-        for record in assets["characters"]:
-            if isinstance(record, dict) and isinstance(record.get("id"), str):
-                records[record["id"]] = record
-    unresolved = sorted({cid for cid in ids if cid not in records})
-    pairs = {
-        (records[cid].get("rig_hash"), records[cid].get("palette_hash"))
-        for cid in ids
-        if cid in records
-    }
-    metrics["character_ids"] = sorted(set(ids))
-    metrics["unresolved_characters"] = unresolved
-    metrics["character_rig_palette_pairs"] = len(pairs)
-    checks["character_consistency"] = bool(ids) and not unresolved and len(pairs) == 1
+    # object_consistency -- something is drawn, and every kind it names has a drawing. An unknown
+    # kind is a blank space in the frame, which is exactly the failure this gate exists to catch.
+    kinds = _object_kinds(props)
+    unknown = sorted({kind for kind in kinds if kind not in SHIPPED_OBJECT_KINDS})
+    metrics["object_kinds"] = sorted(set(kinds))
+    metrics["unknown_objects"] = unknown
+    checks["object_consistency"] = bool(kinds) and not unknown
 
     # pacing -- from measured scene timings and cue durations.
     raw_audio_scenes = audio.get("scenes")
@@ -1105,6 +1098,21 @@ def evaluate_creative(
     )
 
 
+def verify_voice_locale(audio: dict[str, Any], language: str = "id") -> tuple[bool, str]:
+    """Verify that the narration voice locale matches the requested job language."""
+    narration = audio.get("narration") if isinstance(audio, dict) else None
+    if not isinstance(narration, dict):
+        return False, "narration artifact is missing"
+    voice = str(narration.get("voice") or "")
+    locale = str(narration.get("locale") or "")
+    lang = (language or "id").strip().lower()
+    if lang in ("id", "id-id", "indonesian"):
+        if locale and not locale.lower().startswith("id"):
+            return False, f"narration locale {locale!r} does not match Indonesian language"
+        if not locale and ("david" in voice.lower() or "zira" in voice.lower()):
+            return False, f"English SAPI voice {voice!r} used for Indonesian job"
+    return True, "ok"
+
 __all__ = [
     "CREATIVE_THRESHOLDS",
     "DETECTORS",
@@ -1130,4 +1138,5 @@ __all__ = [
     "run_detector",
     "run_detectors",
     "sha256_file",
+    "verify_voice_locale",
 ]

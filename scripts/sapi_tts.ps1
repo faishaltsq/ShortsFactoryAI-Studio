@@ -18,8 +18,8 @@ try {
         $installed = @($synth.GetInstalledVoices() | ForEach-Object { $_.VoiceInfo.Name })
         if ($installed -contains $Voice) {
             $synth.SelectVoice($Voice)
-        } elseif ($installed.Count -gt 0) {
-            $synth.SelectVoice($installed[0])
+        } else {
+            throw "Requested voice '$Voice' is not installed in Windows SAPI. Available: $($installed -join ', ')"
         }
     }
 

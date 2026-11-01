@@ -44,6 +44,7 @@ from ..media.qc import (
     measure_static,
     run_detectors,
     sha256_file,
+    verify_voice_locale,
 )
 from ..providers.base import Capability, CapabilityMismatch, Provider, ResolvedCall
 from ..security.redact import redact
@@ -278,6 +279,10 @@ def build_editorial_qc_stage(state: Any) -> Stage:
             props = _storyboard(job_dir)
             audio = store.read_artifact(job_id, "audio.json")
             storyboard = store.read_artifact(job_id, "storyboard.json")
+            job_lang = str(job.payload.get("language") or "id")
+            locale_ok, locale_err = verify_voice_locale(audio, language=job_lang)
+            if not locale_ok:
+                raise RuntimeError(f"Voice locale check failed: {locale_err}")
             render = store.read_artifact(job_id, "render.json")
             technical = store.read_artifact(job_id, TECHNICAL_NAME)
             video = job_dir / str(render.get("src") or "output.mp4")

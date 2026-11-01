@@ -7,6 +7,7 @@ prompt forgot is a validation failure rather than a silent default.
 from __future__ import annotations
 
 import json
+import re
 from typing import Any, cast
 
 from ..contracts import (
@@ -18,7 +19,7 @@ from ..contracts import (
     StoryboardArtifact,
 )
 from ..contracts.base import Artifact
-from ..contracts.scene import DATA_DRIVEN_TEMPLATES
+from ..contracts.scene import DATA_DRIVEN_TEMPLATES, OBJECT_KINDS, OBJECT_LABELS
 from ..providers.base import Capability
 from . import Agent
 
@@ -28,15 +29,15 @@ STORYBOARD_SCHEMA = json.dumps(
         "fps": 30,
         "width": 1080,
         "height": 1920,
-        "theme": "dusk",
+        "theme": "midnight",
         "scenes": [
             {
                 "sceneId": "sc1",
-                "template": "EducationalExplainer",
+                "template": "ObjectExplainer",
                 "segment": "s1",
                 "startFrame": 0,
                 "durationInFrames": 300,
-                "assetRefs": ["character:maya"],
+                "assetRefs": [],
                 "text": [{"id": "t1", "text": "...", "role": "title", "atFrame": 0}],
                 "camera": {
                     "shot": "wide",
@@ -46,11 +47,25 @@ STORYBOARD_SCHEMA = json.dumps(
                     "ease": "linear",
                 },
                 "motion": {
-                    "energy": 0.5,
+                    "energy": 0.6,
                     "continuity": "cut",
-                    "beats": [{"atFrame": 0, "kind": "enter", "subject": "t1"}],
+                    "beats": [
+                        {"atFrame": 0, "kind": "enter", "subject": "t1"},
+                        {"atFrame": 90, "kind": "action", "subject": "t1"},
+                    ],
                 },
                 "transition": {"kind": "cut", "frames": 0},
+                "data": {
+                    "title": "...",
+                    "caption": "...",
+                    "environment": "dataCenter",
+                    "objects": [
+                        {"kind": "gpu", "x": 0.5, "y": 0.34, "size": 0.46, "at": 0, "label": "GPU"},
+                        {"kind": "serverRack", "x": 0.28, "y": 0.62, "size": 0.26, "at": 14},
+                    ],
+                    "callouts": [{"object": 0, "text": "...", "dx": 0.0, "dy": -0.14, "at": 40}],
+                    "flows": [{"from": 1, "to": 0, "label": "data", "at": 34}],
+                },
             }
         ],
         "subtitles": [],
@@ -65,8 +80,186 @@ TEMPLATES = (
     "HistoricalTimeline",
     "ParallaxStory",
     "InfographicMotion",
-    "IllustratedStory",
+    "ObjectExplainer",
+    "ProcessFlow",
+    "MetricShift",
 )
+
+#: Topic keywords → (backdrop, hero object, supporting objects). Ordered: the first matching row
+#: wins, so the specific topics sit above the general ones.
+TOPIC_VISUALS: tuple[tuple[tuple[str, ...], str, tuple[str, ...]], ...] = (
+    (
+        ("data center", "datacenter", "server", "rak", "hosting", "penyimpanan", "storage"),
+        "dataCenter",
+        ("serverRack", "dataCenter", "coolingFan"),
+    ),
+    (
+        ("gpu", "grafis", "akselerator", "chip", "semikonduktor", "wafer", "transistor", "nvidia"),
+        "circuit",
+        ("gpu", "wafer", "coolingFan"),
+    ),
+    (
+        ("satelit", "orbit", "antariksa", "roket", "nasa", "luar angkasa", "mars", "bulan", "space"),
+        "space",
+        ("satellite", "antenna", "rocket"),
+    ),
+    (
+        ("energi", "listrik", "daya", "turbin", "surya", "solar", "emisi", "karbon"),
+        "grid",
+        ("turbine", "solarPanel", "coolingFan"),
+    ),
+    (
+        ("internet", "jaringan", "sinyal", "5g", "koneksi", "bandwidth", "telekomunikasi", "wifi"),
+        "grid",
+        ("antenna", "serverRack", "phone"),
+    ),
+    (
+        ("startup", "bisnis", "perusahaan", "unicorn", "ipo", "pendanaan", "modal", "pasar"),
+        "city",
+        ("building", "database", "neuralNet"),
+    ),
+    (
+        ("hp", "ponsel", "smartphone", "aplikasi", "software", "android", "ios", "perangkat"),
+        "city",
+        ("phone", "database", "serverRack"),
+    ),
+    (
+        ("drone", "robot", "otomasi", "pabrik", "manufaktur", "gudang"),
+        "lab",
+        ("drone", "gpu", "serverRack"),
+    ),
+    (
+        ("otak", "ingatan", "mimpi", "tidur", "memori", "belajar", "pikiran"),
+        "grid",
+        ("neuralNet", "database", "gpu"),
+    ),
+    (
+        ("gunung", "vulkan", "magma", "lava", "erupsi", "gempa", "geologi", "iklim", "cuaca", "samudra"),
+        "grid",
+        ("satellite", "drone", "antenna"),
+    ),
+    (
+        ("ai", "kecerdasan", "model", "neural", "llm", "machine learning", "pelatihan", "training", "inferensi"),
+        "grid",
+        ("neuralNet", "gpu", "database"),
+    ),
+)
+
+#: Fallback when no topic keyword matches: still an object, never a blank stage.
+DEFAULT_VISUAL: tuple[str, tuple[str, ...]] = ("abstract", ("gpu", "neuralNet", "database"))
+
+_STAGED_ASSET = re.compile(r"assets/[a-f0-9]{64}\.(png|jpe?g|webp)")
+
+
+def _scene_text(scene: dict[str, Any]) -> str:
+    """Everything a viewer would read in this scene, lowercased, for topic matching."""
+    parts = [str(scene.get("segment") or "")]
+    for element in scene.get("text") or []:
+        if isinstance(element, dict):
+            parts.append(str(element.get("text") or ""))
+    data = scene.get("data")
+    if isinstance(data, dict):
+        parts.append(str(data.get("title") or ""))
+        parts.append(str(data.get("caption") or ""))
+    return " ".join(parts).lower()
+
+
+def _topic_visual(text: str) -> tuple[str, tuple[str, ...]]:
+    for keywords, environment, kinds in TOPIC_VISUALS:
+        if any(word in text for word in keywords):
+            return environment, kinds
+    return DEFAULT_VISUAL
+
+
+def _object_label(kind: str) -> str:
+    return OBJECT_LABELS.get(kind, kind)
+
+
+def fill_explainer(data: dict[str, Any], scene: dict[str, Any], index: int) -> None:
+    """Give an ``ObjectExplainer`` scene a stage that matches its own words.
+
+    The storyboard model is asked for objects, and usually supplies them. When it does not — or
+    when it names a kind the renderer has no drawing for — the scene is rebuilt from its topic so
+    a scene is never a blank backdrop with a title over it.
+    """
+    environment, kinds = _topic_visual(_scene_text(scene))
+
+    objects = data.get("objects")
+    usable: list[dict[str, Any]] = []
+    if isinstance(objects, list):
+        for item in objects:
+            if isinstance(item, dict) and item.get("kind") in OBJECT_KINDS:
+                usable.append(item)
+    if not usable:
+        usable = [
+            {"kind": kinds[0], "x": 0.5, "y": 0.34, "size": 0.46, "at": 0, "label": _object_label(kinds[0])},
+            {"kind": kinds[1], "x": 0.28, "y": 0.62, "size": 0.26, "at": 14, "label": _object_label(kinds[1])},
+            {"kind": kinds[2], "x": 0.72, "y": 0.62, "size": 0.26, "at": 26, "label": _object_label(kinds[2])},
+        ]
+    data["objects"] = usable[:5]
+    data.setdefault("environment", environment)
+    if data.get("environment") not in {
+        "dataCenter", "circuit", "space", "lab", "city", "grid", "abstract"
+    }:
+        data["environment"] = environment
+    if not isinstance(data.get("callouts"), list):
+        data["callouts"] = [
+            {"object": 0, "text": str(scene.get("segment") or "")[:48] or "Objek utama", "dx": 0.0, "dy": -0.14, "at": 40}
+        ]
+    if not isinstance(data.get("flows"), list):
+        # Flow from the supporting objects into the hero: the visual claim is that the parts feed
+        # the subject, which is what an explainer scene is for.
+        data["flows"] = [
+            {"from": i, "to": 0, "at": 34 + i * 8}
+            for i in range(1, len(data["objects"]))
+        ]
+
+
+def fill_process_flow(data: dict[str, Any], scene: dict[str, Any], index: int) -> bool:
+    """Keep a declared step chain; otherwise report that the scene needs rebuilding."""
+    steps = data.get("steps")
+    if not isinstance(steps, list) or len(steps) < 2:
+        return False
+    cleaned: list[dict[str, Any]] = []
+    for item in steps[:5]:
+        if not isinstance(item, dict) or not str(item.get("label") or "").strip():
+            return False
+        cleaned.append(
+            {"label": str(item["label"])[:34], "detail": str(item.get("detail") or "")[:70] or None}
+        )
+    for step in cleaned:
+        if step["detail"] is None:
+            step.pop("detail")
+    data["steps"] = cleaned
+    data.setdefault("environment", "circuit")
+    return True
+
+
+def fill_metric_shift(data: dict[str, Any], scene: dict[str, Any], index: int) -> bool:
+    """Keep declared metrics when they are numeric; otherwise rebuild as an explainer."""
+    metrics = data.get("metrics")
+    if not isinstance(metrics, list) or not metrics:
+        return False
+    cleaned: list[dict[str, Any]] = []
+    for item in metrics[:4]:
+        if not isinstance(item, dict):
+            return False
+        raw = item.get("value")
+        # A bool is an int in Python; `true` is not a measurement.
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            return False
+        value = float(raw)
+        if value < 0:
+            return False
+        entry: dict[str, Any] = {"label": str(item.get("label") or "Nilai")[:34], "value": value}
+        if item.get("unit"):
+            entry["unit"] = str(item["unit"])[:16]
+        cleaned.append(entry)
+    data["metrics"] = cleaned
+    data.setdefault("maxValue", max(m["value"] for m in cleaned) or 1)
+    data.setdefault("decimals", 0)
+    data.setdefault("environment", "grid")
+    return True
 
 
 class ResearchAgent(Agent):
@@ -189,9 +382,12 @@ class StoryboardAgent(Agent):
         "durationInFrames between 30 and 3000. Give every scene a motivated camera movement ('push', 'pull', 'pan', or 'tilt') "
         "targeting an element id in that scene's text array (e.g. camera.target='t1') with amplitude 0.08 to 0.15 and ease 'linear'. "
         "Do NOT leave camera.move as 'static', because static scenes cause frozen-frame QC rejection. "
-        "Available templates: "
-        + ", ".join(TEMPLATES)
-        + ". Prefer 'EducationalExplainer' or 'KineticTypography'. Give every scene at least one beat."
+        "Prefer 'ObjectExplainer': the picture must explain the subject without subtitles. Never produce a text-only slide. "
+        "Every scene declares environment ('dataCenter', 'circuit', 'space', 'lab', 'city', 'grid', 'abstract') and 1-3 objects "
+        "from: gpu, wafer, serverRack, dataCenter, neuralNet, database, satellite, antenna, turbine, solarPanel, coolingFan, "
+        "phone, drone, rocket, building. Objects are things, never people: no characters, presenters, faces or poses. "
+        "Use 'ProcessFlow' when the segment explains how something works, and 'MetricShift' when it compares quantities. "
+        "Vary environments and objects across scenes so consecutive scenes do not look identical. Give every scene at least one beat."
     )
     def build_user_prompt(self, **kwargs: Any) -> str:
         script = cast(dict[str, Any], kwargs.get("script") or {})
@@ -205,6 +401,8 @@ class StoryboardAgent(Agent):
         return StoryboardArtifact
 
     def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        payload.setdefault("theme", "dusk")
+        payload.setdefault("subtitles", [])
         scenes = payload.get("scenes")
         if isinstance(scenes, list):
             valid_roles = {"title", "body", "caption", "label"}
@@ -213,56 +411,46 @@ class StoryboardAgent(Agent):
             for sc_idx, sc in enumerate(scenes):
                 if not isinstance(sc, dict):
                     continue
-                # Normalize template if data is missing for data-driven templates
+                trans = sc.get("transition")
+                if not isinstance(trans, dict):
+                    sc["transition"] = {"kind": "cut", "frames": 0}
+                # Every scene renders as an informative graphic. A model that names a text-only
+                # template for a visual topic still gets objects, and an id we do not ship is
+                # replaced rather than silently rendered as a blank frame.
                 tmpl = sc.get("template")
-                if tmpl == "IllustratedStory" or tmpl not in TEMPLATES:
-                    tmpl = "IllustratedStory"
+                if tmpl in ("EducationalExplainer", "KineticTypography"):
+                    tmpl = "ObjectExplainer"
+                    sc["template"] = tmpl
+                elif tmpl not in TEMPLATES:
+                    tmpl = "ObjectExplainer"
                     sc["template"] = tmpl
 
-                if tmpl == "IllustratedStory":
-                    data = sc.get("data")
-                    if not isinstance(data, dict):
-                        data = {}
-                        sc["data"] = data
-                    settings = ["interior", "city", "space", "abstract"]
-                    times = ["night", "day", "dawn", "dusk"]
-                    framings = ["wide", "medium", "close", "extreme_wide"]
-                    cam_moves = ["push", "pan", "tilt", "pull"]
-                    setting = data.get("setting")
-                    if setting not in {"space", "desert", "city", "ocean", "forest", "interior", "abstract"}:
-                        data["setting"] = settings[sc_idx % len(settings)]
-                    time_of_day = data.get("timeOfDay")
-                    if time_of_day not in {"night", "day", "dawn", "dusk"}:
-                        data["timeOfDay"] = times[sc_idx % len(times)]
-                    actors = data.get("actors")
-                    if not isinstance(actors, list) or not actors:
-                        data["actors"] = [
-                            {
-                                "character": "maya",
-                                "expression": "neutral",
-                                "scale": 0.82,
-                                "ground": 0.88,
-                                "x": 0.5,
-                            }
-                        ]
-                    else:
-                        for act in actors:
-                            if isinstance(act, dict):
-                                if not act.get("character"):
-                                    act["character"] = "maya"
-                                act.setdefault("scale", 0.82)
-                                act.setdefault("ground", 0.88)
-                                act.setdefault("x", 0.5)
-                    shots = data.get("shots")
-                    if not isinstance(shots, list) or not shots:
-                        data["shots"] = [
-                            {
-                                "framing": framings[sc_idx % len(framings)],
-                                "camera": cam_moves[sc_idx % len(cam_moves)],
-                            }
-                        ]
-                elif tmpl in DATA_DRIVEN_TEMPLATES and not sc.get("data"):
-                    sc["template"] = "EducationalExplainer"
+                data = sc.get("data")
+                if not isinstance(data, dict):
+                    data = {}
+                    sc["data"] = data
+
+                if tmpl == "ObjectExplainer":
+                    fill_explainer(data, sc, sc_idx)
+                elif tmpl == "ProcessFlow":
+                    if not fill_process_flow(data, sc, sc_idx):
+                        sc["template"] = "ObjectExplainer"
+                        fill_explainer(data, sc, sc_idx)
+                elif tmpl == "MetricShift":
+                    if not fill_metric_shift(data, sc, sc_idx):
+                        sc["template"] = "ObjectExplainer"
+                        fill_explainer(data, sc, sc_idx)
+                elif tmpl in DATA_DRIVEN_TEMPLATES and not data:
+                    sc["template"] = "ObjectExplainer"
+                    fill_explainer(data, sc, sc_idx)
+
+                # Only staged rasters may reach the browser. A pseudo-ref such as ``character:maya``
+                # is dropped here rather than failing the renderer's own guard an hour later.
+                refs = sc.get("assetRefs")
+                if isinstance(refs, list):
+                    sc["assetRefs"] = [
+                        r for r in refs if isinstance(r, str) and _STAGED_ASSET.fullmatch(r)
+                    ]
                 duration = int(sc.get("durationInFrames") or 300)
                 duration = max(30, min(3000, duration))
                 sc["startFrame"] = current_frame
@@ -309,23 +497,32 @@ class StoryboardAgent(Agent):
                     cam["target"] = first_text_id
                     cam["amplitude"] = max(0.08, min(0.20, float(cam.get("amplitude") or 0.12)))
                     cam["ease"] = "linear"
-                elif move == "orbit" and sc.get("template") not in {"IllustratedStory", "ParallaxStory"}:
+                elif move == "orbit" and sc.get("template") not in {"ObjectExplainer", "ParallaxStory"}:
                     cam["move"] = "push"
                     cam["target"] = first_text_id
 
                 # Normalize motion beats within scene relative duration
                 motion = sc.get("motion")
-                if isinstance(motion, dict):
-                    beats = motion.get("beats")
-                    if isinstance(beats, list):
-                        for b in beats:
-                            if not isinstance(b, dict):
-                                continue
-                            bf = int(b.get("atFrame") or 0)
-                            if bf >= current_frame and current_frame > 0:
-                                bf -= current_frame
-                            b["atFrame"] = max(0, min(duration - 1, bf))
-
+                if not isinstance(motion, dict):
+                    motion = {"energy": 0.6, "continuity": "cut", "beats": []}
+                    sc["motion"] = motion
+                beats = motion.get("beats")
+                if not isinstance(beats, list) or not beats:
+                    motion["beats"] = [
+                        {"atFrame": 0, "kind": "enter", "subject": "actor:0"},
+                        {"atFrame": max(1, duration // 3), "kind": "action", "subject": "actor:0"},
+                        {"atFrame": max(2, (duration * 2) // 3), "kind": "emphasis", "subject": "actor:0"},
+                    ]
+                else:
+                    for b in beats:
+                        if not isinstance(b, dict):
+                            continue
+                        bf = int(b.get("atFrame") or 0)
+                        if bf >= current_frame and current_frame > 0:
+                            bf -= current_frame
+                        b["atFrame"] = max(0, min(duration - 1, bf))
+                        if not b.get("subject"):
+                            b["subject"] = "actor:0"
                 current_frame += duration
         return payload
 

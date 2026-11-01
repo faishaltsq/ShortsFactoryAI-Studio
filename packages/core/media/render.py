@@ -291,7 +291,19 @@ def update_storyboard_from_audio(storyboard: dict[str, Any], audio: dict[str, An
         if end_frame <= cursor:
             raise ValueError(f"audio scene {scene.get('sceneId')!r} has no renderable duration")
         scene["startFrame"] = cursor
-        scene["durationInFrames"] = end_frame - cursor
+        old_duration = int(scene.get("durationInFrames") or (end_frame - cursor))
+        new_duration = end_frame - cursor
+        scene["durationInFrames"] = new_duration
+        motion = scene.get("motion")
+        if isinstance(motion, dict) and isinstance(motion.get("beats"), list) and old_duration > 0 and new_duration > 0:
+            for b in motion["beats"]:
+                if isinstance(b, dict) and "atFrame" in b:
+                    try:
+                        bf = int(b["atFrame"])
+                        if bf >= new_duration:
+                            b["atFrame"] = min(new_duration - 1, max(0, int(bf * (new_duration - 1) / max(1, old_duration))))
+                    except (TypeError, ValueError):
+                        pass
         speech = _speech_windows(timing.get("speech"), duration_ms=int(timing["endMs"]) - int(timing["startMs"]))
         if speech:
             scene["speech"] = speech
@@ -302,6 +314,10 @@ def update_storyboard_from_audio(storyboard: dict[str, Any], audio: dict[str, An
             scene.pop("speech", None)
         cursor = end_frame
     timed["subtitles"] = audio.get("subtitles", [])
+    if "words" in audio:
+        timed["captions"] = audio["words"]
+    elif "captions" in audio:
+        timed["captions"] = audio["captions"]
     return timed
 
 
@@ -428,9 +444,143 @@ def render_storyboard(
     }
 
 
+CANONICAL_BEAT_KINDS: frozenset[str] = frozenset({
+    "enter", "emphasis", "exit", "action", "reveal",
+})
+
+BEAT_KIND_MAP: dict[str, str] = {
+    "enter": "enter",
+    "arrive": "enter",
+    "start": "enter",
+    "in": "enter",
+    "exit": "exit",
+    "leave": "exit",
+    "vanish": "exit",
+    "out": "exit",
+    "action": "action",
+    "act": "action",
+    "strike": "action",
+    "move": "action",
+    "reveal": "reveal",
+    "show": "reveal",
+    "appear": "reveal",
+    "emphasis": "emphasis",
+    "gesture": "emphasis",
+    "anticipation": "emphasis",
+    "recoil": "emphasis",
+    "hold": "emphasis",
+    "settle": "emphasis",
+    "wiggle": "emphasis",
+}
+
+
+def _normalize_beat(b: Any, default_subject: str) -> dict[str, Any] | None:
+    if not isinstance(b, dict):
+        return None
+    at_frame = b.get("atFrame")
+    if at_frame is None:
+        at_frame = b.get("frame")
+    try:
+        at_frame_val = int(at_frame)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    raw_kind = str(b.get("kind") or b.get("type") or b.get("action") or "emphasis").lower()
+    kind = BEAT_KIND_MAP.get(raw_kind, "emphasis")
+    subject = str(b.get("subject") or b.get("target") or default_subject)
+    if not subject:
+        subject = default_subject
+    return {"atFrame": at_frame_val, "kind": kind, "subject": subject}
+
+
+def merge_motion_plan_into_storyboard(storyboard: dict[str, Any], motion_plan: dict[str, Any]) -> dict[str, Any]:
+    """Merge motion-plan beats, camera moves, and energy into storyboard scenes."""
+    if not isinstance(storyboard, dict) or not isinstance(motion_plan, dict):
+        return storyboard
+    plan_scenes = {
+        str(sc.get("sceneId")): sc
+        for sc in motion_plan.get("scenes", [])
+        if isinstance(sc, dict) and sc.get("sceneId")
+    }
+    # `style_brief` stays on the motion plan artifact. Copying it into every scene's `data` used to
+    # put a field the renderer's own validator rejects into the payload it has to render.
+    scenes = storyboard.get("scenes")
+    if isinstance(scenes, list):
+        for scene in scenes:
+            if not isinstance(scene, dict):
+                continue
+            sid = str(scene.get("sceneId") or "")
+            plan_sc = plan_scenes.get(sid)
+            duration = int(scene.get("durationInFrames") or 300)
+            if plan_sc:
+                raw_beats = plan_sc.get("beats")
+                if isinstance(raw_beats, list):
+                    # A beat with no subject is about the scene's own heading, which is the one
+                    # thing every scene is guaranteed to have on screen.
+                    default_subject = next(
+                        (
+                            str(element.get("id"))
+                            for element in scene.get("text") or []
+                            if isinstance(element, dict) and element.get("id")
+                        ),
+                        "",
+                    )
+                    norm_beats = [
+                        nb for b in raw_beats
+                        if (nb := _normalize_beat(b, default_subject or "object:0")) is not None
+                    ]
+                    if norm_beats:
+                        motion = scene.setdefault("motion", {"energy": 0.5, "continuity": "cut", "beats": []})
+                        if isinstance(motion, dict):
+                            for nb in norm_beats:
+                                nb["atFrame"] = max(0, min(duration - 1, int(nb["atFrame"])))
+                            motion["beats"] = norm_beats
+
+                continuity = plan_sc.get("continuity_from") or plan_sc.get("continuity")
+                if continuity in ("cut", "carry", "match"):
+                    motion = scene.setdefault("motion", {"energy": 0.5, "continuity": "cut", "beats": []})
+                    if isinstance(motion, dict):
+                        motion["continuity"] = continuity
+
+                energy = plan_sc.get("energy")
+                if energy is not None:
+                    try:
+                        energy_val = max(0.0, min(1.0, float(energy)))
+                        motion = scene.setdefault("motion", {"energy": 0.5, "continuity": "cut", "beats": []})
+                        if isinstance(motion, dict):
+                            motion["energy"] = energy_val
+                    except (TypeError, ValueError):
+                        pass
+
+                cam_path = plan_sc.get("camera_path") or plan_sc.get("camera")
+                if isinstance(cam_path, dict):
+                    cam = scene.setdefault("camera", {})
+                    if isinstance(cam, dict):
+                        move = cam_path.get("move")
+                        if move in ("push", "pull", "pan", "tilt", "static", "orbit"):
+                            cam["move"] = move
+                        shot = cam_path.get("shot")
+                        if shot in ("wide", "medium", "close"):
+                            cam["shot"] = shot
+                        if cam_path.get("target"):
+                            cam["target"] = str(cam_path["target"])
+                        if cam_path.get("amplitude") is not None:
+                            try:
+                                cam["amplitude"] = max(0.08, min(0.25, float(cam_path["amplitude"])))
+                            except (TypeError, ValueError):
+                                pass
+
+    return storyboard
+
+
 def write_render_props(store: Any, job_id: str) -> Path:
     """Persist storyboard props with measured audio timings and real subtitle cues."""
     storyboard = store.read_artifact(job_id, "storyboard.json")
+    try:
+        motion_plan = store.read_artifact(job_id, "motion-plan.json")
+    except Exception:
+        motion_plan = None
+    if motion_plan:
+        storyboard = merge_motion_plan_into_storyboard(storyboard, motion_plan)
     audio = store.read_artifact(job_id, "audio.json")
     timed = update_storyboard_from_audio(storyboard, audio)
     target = Path(store.job_dir(job_id)) / PROPS_NAME
@@ -516,11 +666,10 @@ def _cache_key(
     return hashlib.sha256(material.encode("utf-8")).hexdigest()[:32]
 
 
-#: The two renderers this repository can drive. Order is deliberate: the primary first.
-RENDERERS: tuple[str, ...] = ("remotion", "bang-motion")
-
-#: ``packages/video``'s Node capture driver for the secondary renderer.
-BANG_SCRIPT_RELATIVE = Path("scripts/bang-render.mjs")
+#: The renderers this repository can drive. Only Remotion survives the informative-engine
+#: migration: the second renderer existed to capture character SVG frames frame-by-frame, and the
+#: character engine is gone. The tuple stays so the dispatch contract keeps one closed vocabulary.
+RENDERERS: tuple[str, ...] = ("remotion",)
 
 
 class SceneCache:
@@ -636,9 +785,6 @@ CHROME_RELATIVE = (
     / "chrome-headless-shell.exe"
 )
 
-#: Skill version recorded in ``RenderArtifact.renderer_version`` for the secondary renderer.
-BANG_MOTION_VERSION = "1.19.0+c1aa65e"
-
 
 def renderer_kind(payload: dict[str, Any]) -> str:
     """Which renderer this job asked for. An unknown value is an error, never a fallback.
@@ -654,77 +800,6 @@ def renderer_kind(payload: dict[str, Any]) -> str:
             f"unknown renderer {value!r}; expected one of {', '.join(RENDERERS)}"
         )
     return value
-
-
-def bang_render_argv(
-    *,
-    video_dir: Path,
-    props_path: Path,
-    out_path: Path,
-    staging: Path,
-    frames: int,
-    fps: int,
-    timeout_s: int = 900,
-) -> list[str]:
-    """Build the Node capture argv for the secondary renderer.
-
-    Delegates to ``packages/core/motion/emit.py``, which owns the document and the argument
-    contract. The chrome binary and the script are resolved relative to ``packages/video`` so no
-    absolute path is hardcoded here.
-    """
-    from ..motion.emit import build_render_argv as build_motion_argv
-
-    return build_motion_argv(
-        props_path=props_path,
-        out_path=out_path,
-        staging=staging,
-        chrome=Path(video_dir) / CHROME_RELATIVE,
-        script=Path(video_dir) / BANG_SCRIPT_RELATIVE,
-        frames=frames,
-        fps=fps,
-        wall_clock_s=timeout_s,
-    )
-
-
-def render_bang_motion(
-    *,
-    video_dir: Path,
-    props_path: Path,
-    out_path: Path,
-    staging: Path,
-    frames: int,
-    fps: int,
-    timeout_s: int = 900,
-) -> dict[str, Any]:
-    """Run exactly one Node capture subprocess. The second, independent ``packages/video`` edge."""
-    argv = bang_render_argv(
-        video_dir=video_dir,
-        props_path=props_path,
-        out_path=out_path,
-        staging=staging,
-        frames=frames,
-        fps=fps,
-        timeout_s=timeout_s,
-    )
-    started = time.monotonic()
-    try:
-        proc = subprocess.run(  # noqa: S603 - argv array, no shell
-            argv,
-            cwd=str(video_dir),
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            timeout=timeout_s,
-            check=False,
-        )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"bang-motion capture timed out after {timeout_s}s") from exc
-    elapsed_ms = int((time.monotonic() - started) * 1000)
-    if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip()[-1200:]
-        raise RuntimeError(f"bang-motion capture exited {proc.returncode}: {tail}")
-    return {"elapsed_ms": elapsed_ms, "stdout_tail": (proc.stdout or "").strip()[-1200:]}
 
 
 def _finalize_render(
@@ -796,42 +871,12 @@ def _render_remotion(
     )
 
 
-def _render_bang(
-    *,
-    video_dir: Path,
-    props_path: Path,
-    raw_path: Path,
-    staging: Path,
-    frames: int,
-    fps: int,
-    timeout_s: int,
-) -> None:
-    script = Path(video_dir) / BANG_SCRIPT_RELATIVE
-    if not script.is_file():
-        raise RuntimeError(f"bang-motion driver missing at {script}")
-    chrome = Path(video_dir) / CHROME_RELATIVE
-    if not chrome.is_file():
-        raise RuntimeError(
-            f"chrome-headless-shell missing at {chrome}; run `npx remotion browser ensure`"
-        )
-    render_bang_motion(
-        video_dir=Path(video_dir),
-        props_path=props_path,
-        out_path=raw_path,
-        staging=staging,
-        frames=frames,
-        fps=fps,
-        timeout_s=timeout_s,
-    )
-
-
 def build_render_stage(
     state: Any, *, video_dir: Path, renderer: str = "remotion", timeout_s: int = 900
 ) -> Stage:
     """The RENDERING stage: render, prove it with ffprobe, then and only then write render.json.
 
-    The renderer is passed in from the job payload (``remotion`` by default, ``bang-motion``
-    optional). An unknown value is refused before any subprocess is reachable, so a typo cannot
+    The renderer is passed in from the job payload (``remotion`` is the only one). An unknown value is refused before any subprocess is reachable, so a typo cannot
     quietly render with the primary and record a different name. Both paths converge on
     ``_finalize_render``: same probe, same artifact, same gate.
     """
@@ -860,17 +905,13 @@ def build_render_stage(
             frames = sum(int(scene["durationInFrames"]) for scene in storyboard["scenes"])
             fps = int(storyboard.get("fps") or 30)
 
-            renderer_version_value = (
-                renderer_version(Path(video_dir)) if renderer == "remotion" else BANG_MOTION_VERSION
-            )
+            renderer_version_value = renderer_version(Path(video_dir))
             # `storyboard` IS the timed doc (props_path is update_storyboard_from_audio's
             # output), so hashes over it change when narration timing moves and a cache key can
             # never serve a stale-timing picture.
             hashes = _scene_hashes(storyboard)
-            # Cache applies to the remotion path only: bang-motion captures from frame 0 for N
-            # frames (no start offset), so it cannot render one scene's window. bang keeps the
-            # legacy whole-document render, unchanged.
-            cacheable = renderer == "remotion"
+            # The picture cache is per-scene: one part per scene window, keyed over every input
+            # that can change that picture.
             # The cache lives beside the jobs tree (jobs_dir = <root>/jobs), so test stores and
             # real installs both get it with zero configuration: no settings object required.
             cache = SceneCache(state.store.jobs_dir.parent / "render-cache")
@@ -895,60 +936,48 @@ def build_render_stage(
                 for scene_id, scene_hash in hashes.items()
             }
 
-            if not cacheable:
-                # bang-motion: single full-render pass, exactly as before the cache existed.
-                _render_bang(
-                    video_dir=Path(video_dir),
-                    props_path=props_path,
-                    raw_path=raw_video_path,
-                    staging=staging,
-                    frames=frames,
+            parts: list[Path] = []
+            misses: list[dict[str, Any]] = []
+            for scene in storyboard["scenes"]:
+                scene_id = str(scene["sceneId"])
+                hit = cache.hit(
+                    keys[scene_id],
+                    width=int(storyboard.get("width") or 0),
+                    height=int(storyboard.get("height") or 0),
                     fps=fps,
-                    timeout_s=timeout_s,
+                    frames=int(scene["durationInFrames"]),
                 )
-            else:
-                parts: list[Path] = []
-                misses: list[dict[str, Any]] = []
-                for scene in storyboard["scenes"]:
-                    scene_id = str(scene["sceneId"])
-                    hit = cache.hit(
-                        keys[scene_id],
-                        width=int(storyboard.get("width") or 0),
-                        height=int(storyboard.get("height") or 0),
-                        fps=fps,
-                        frames=int(scene["durationInFrames"]),
-                    )
-                    if hit is not None:
-                        parts.append(hit)
-                        continue
-                    misses.append(scene)
+                if hit is not None:
+                    parts.append(hit)
+                    continue
+                misses.append(scene)
 
-                if misses:
-                    # One picture-only run per missing scene: same full props, a `--frames=s-e`
-                    # window on the scene's own range. Pixel-identical to those frames of a full
-                    # render (same composition, same props), and no sliced-props surgery to get
-                    # wrong. Each fresh part is stored in the cache; its stored copy is what gets
-                    # spliced, so hits and misses splice from one identical source.
-                    staging.mkdir(parents=True, exist_ok=True)
-                    for scene in misses:
-                        scene_id = str(scene["sceneId"])
-                        start = int(scene["startFrame"])
-                        scene_frames = int(scene["durationInFrames"])
-                        scene_raw = staging / f"scene-{scene_id}.mp4"
-                        render_storyboard(
-                            video_dir=Path(video_dir),
-                            props_path=props_path,
-                            out_path=scene_raw,
-                            frames=(start, start + scene_frames - 1),
-                            timeout_s=timeout_s,
-                        )
-                        if not scene_raw.is_file() or scene_raw.stat().st_size == 0:
-                            raise RuntimeError(f"renderer produced no scene file for {scene_id}")
-                        parts.append(cache.store(keys[scene_id], scene_raw))
-                        scene_raw.unlink(missing_ok=True)
-                # Hits and fresh parts are both in `parts`, scene order; one concat pass
-                # (single part = straight copy) rebuilds the timeline.
-                concat_parts(list(parts), raw_video_path)
+            if misses:
+                # One picture-only run per missing scene: same full props, a `--frames=s-e`
+                # window on the scene's own range. Pixel-identical to those frames of a full
+                # render (same composition, same props), and no sliced-props surgery to get
+                # wrong. Each fresh part is stored in the cache; its stored copy is what gets
+                # spliced, so hits and misses splice from one identical source.
+                staging.mkdir(parents=True, exist_ok=True)
+                for scene in misses:
+                    scene_id = str(scene["sceneId"])
+                    start = int(scene["startFrame"])
+                    scene_frames = int(scene["durationInFrames"])
+                    scene_raw = staging / f"scene-{scene_id}.mp4"
+                    render_storyboard(
+                        video_dir=Path(video_dir),
+                        props_path=props_path,
+                        out_path=scene_raw,
+                        frames=(start, start + scene_frames - 1),
+                        timeout_s=timeout_s,
+                    )
+                    if not scene_raw.is_file() or scene_raw.stat().st_size == 0:
+                        raise RuntimeError(f"renderer produced no scene file for {scene_id}")
+                    parts.append(cache.store(keys[scene_id], scene_raw))
+                    scene_raw.unlink(missing_ok=True)
+            # Hits and fresh parts are both in `parts`, scene order; one concat pass
+            # (single part = straight copy) rebuilds the timeline.
+            concat_parts(list(parts), raw_video_path)
 
             if not raw_video_path.is_file() or raw_video_path.stat().st_size == 0:
                 raise RuntimeError(f"renderer produced no file at {raw_video_path}")
@@ -961,11 +990,7 @@ def build_render_stage(
                 video_dir=Path(video_dir),
                 out_path=out_path,
                 renderer=renderer,
-                renderer_version_value=(
-                    renderer_version(Path(video_dir))
-                    if renderer == "remotion"
-                    else BANG_MOTION_VERSION
-                ),
+                renderer_version_value=renderer_version(Path(video_dir)),
             )
         except Exception as exc:  # noqa: BLE001 - any render failure is a stage failure
             raw_video_path.unlink(missing_ok=True)
@@ -997,16 +1022,14 @@ def build_render_stage(
 
 
 __all__ = [
-    "BANG_MOTION_VERSION",
     "RENDERERS",
-    "bang_render_argv",
     "build_render_stage",
     "free_tcp_port",
+    "merge_motion_plan_into_storyboard",
     "mux_argv",
     "mux_narration",
     "probe_media",
     "render_argv",
-    "render_bang_motion",
     "render_storyboard",
     "renderer_kind",
     "renderer_version",

@@ -6,6 +6,7 @@ import array
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -17,7 +18,7 @@ from typing import TYPE_CHECKING, Any
 
 from ..contracts.artifacts import AssetsArtifact, AudioArtifact
 from ..contracts.base import validate_artifact
-from ..contracts.scene import SubtitleCue
+from ..contracts.scene import SubtitleCue, WordTimestamp
 from ..contracts.state import JobState
 from ..security.redact import redact
 from .render import probe_media
@@ -49,12 +50,9 @@ NARRATION_TARGET_LUFS = -16.0
 NARRATION_LOUDNESS_TOLERANCE = 0.5
 NARRATION_TRUE_PEAK_MAX_DBTP = -1.5
 
-#: Raw SAPI speech has a peak-to-loudness ratio near 20 dB. Reaching -16 LUFS under a -1.5 dBTP
-#: ceiling needs a PLR of at most 14.5 dB, so plain gain cannot get there without clipping — the
-#: crest factor has to come down first. This is a deliberately gentle compressor: 0.3 ms attack
-#: and 10 ms release so it only acts on the plosive peaks that would otherwise be the ceiling,
-#: with a soft knee so it does not gate the quiet tail of a word.
-NARRATION_COMPRESSOR = "acompressor=threshold=-20dB:ratio=12:attack=0.3:release=10:knee=1:makeup=1"
+#: Speech compressor tuned for vocal transparency: 0.5 ms attack to preserve consonant transients,
+#: 30 ms release to avoid LF distortion and pumping, 4:1 ratio with soft knee for natural dynamics.
+NARRATION_COMPRESSOR = "acompressor=threshold=-20dB:ratio=4:attack=0.5:release=30:knee=2:makeup=2"
 #: Brickwall ceiling at -2 dBFS, i.e. 0.5 dB of headroom under the -1.5 dBTP promise.
 NARRATION_LIMITER = "alimiter=limit=0.794328:level=disabled:attack=0.1:release=50"
 
@@ -386,6 +384,390 @@ def synthesize_sapi(
         text_path.unlink(missing_ok=True)
 
 
+@dataclass(frozen=True)
+class TTSVoice:
+    """A declared voice from a TTS provider."""
+
+    id: str
+    name: str
+    locale: str
+    gender: str
+    provider: str
+    description: str = ""
+
+
+def normalize_indonesian_pronunciation(text: str) -> str:
+    """Safe normalization for Indonesian scripts without mutating technical terms.
+
+    Expands percentage signs (e.g. '50%' -> '50 persen') and normalizes common symbols,
+    while leaving technical/scientific terms (REM, MCH, DNA, neuron) intact.
+    """
+    normalized = re.sub(r"(\d+)%", r"\1 persen", text)
+    normalized = re.sub(r"\bProf\.", "Profesor", normalized)
+    normalized = re.sub(r"\bdr\.", "Dokter", normalized)
+    normalized = re.sub(r"\*\*([^*]+)\*\*", r"\1", normalized)
+    normalized = re.sub(r"\*([^*]+)\*", r"\1", normalized)
+    return normalized
+
+
+def _fallback_word_boundaries(text: str, duration_ms: int) -> list[WordBoundary]:
+    tokens = [t.strip() for t in text.split() if t.strip()]
+    if not tokens or duration_ms <= 0:
+        return []
+    total_chars = sum(len(t) for t in tokens)
+    cursor = 0
+    words: list[WordBoundary] = []
+    for t in tokens:
+        word_dur = max(1, round(duration_ms * (len(t) / total_chars)))
+        end = min(duration_ms, cursor + word_dur)
+        if end > cursor:
+            words.append(WordBoundary(t, cursor, end))
+        cursor = end
+    if words and words[-1].end_ms < duration_ms:
+        words[-1] = WordBoundary(words[-1].text, words[-1].start_ms, duration_ms)
+    return words
+
+
+class BaseTTSProvider:
+    provider_id: str
+
+    def list_voices(self, locale: str | None = None) -> list[TTSVoice]:
+        raise NotImplementedError
+
+    def validate_voice(self, voice: str, locale: str | None = None) -> TTSVoice:
+        raise NotImplementedError
+
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path,
+        *,
+        voice: str,
+        timeout_s: int = 90,
+    ) -> tuple[list[WordBoundary], int]:
+        raise NotImplementedError
+
+
+class EdgeTTSProvider(BaseTTSProvider):
+    provider_id = "edge-tts"
+    _cached_voices: list[TTSVoice] | None = None
+
+    def list_voices(self, locale: str | None = None) -> list[TTSVoice]:
+        if self._cached_voices is None:
+            self._load_voices()
+        voices = self._cached_voices or []
+        if locale:
+            loc = locale.lower()
+            norm = "id-id" if loc in ("id", "id-id", "indonesian") else loc
+            return [v for v in voices if v.locale.lower() == norm or v.locale.lower().startswith(norm[:2])]
+        return list(voices)
+
+    def _load_voices(self) -> None:
+        try:
+            import asyncio
+
+            import edge_tts
+
+            async def _fetch() -> list[Any]:
+                return list(await edge_tts.list_voices())
+
+            try:
+                loop = asyncio.get_running_loop()
+            except RuntimeError:
+                loop = None
+
+            if loop and loop.is_running():
+                import concurrent.futures
+                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                    raw_list = ex.submit(asyncio.run, _fetch()).result(timeout=10)
+            else:
+                raw_list = asyncio.run(_fetch())
+
+            res = []
+            for item in raw_list:
+                res.append(
+                    TTSVoice(
+                        id=str(item.get("ShortName", "")),
+                        name=str(item.get("FriendlyName", item.get("ShortName", ""))),
+                        locale=str(item.get("Locale", "")),
+                        gender=str(item.get("Gender", "Unknown")),
+                        provider="edge-tts",
+                        description=f"Microsoft Edge Neural ({item.get('Locale', '')})",
+                    )
+                )
+            self._cached_voices = res
+        except Exception:
+            self._cached_voices = [
+                TTSVoice(
+                    id="id-ID-ArdiNeural",
+                    name="Microsoft Ardi Online (Natural) - Indonesian (Indonesia)",
+                    locale="id-ID",
+                    gender="Male",
+                    provider="edge-tts",
+                    description="Indonesian Male Voice",
+                ),
+                TTSVoice(
+                    id="id-ID-GadisNeural",
+                    name="Microsoft Gadis Online (Natural) - Indonesian (Indonesia)",
+                    locale="id-ID",
+                    gender="Female",
+                    provider="edge-tts",
+                    description="Indonesian Female Voice",
+                ),
+            ]
+
+    def validate_voice(self, voice: str, locale: str | None = None) -> TTSVoice:
+        voices = self.list_voices()
+        found = next((v for v in voices if v.id.lower() == voice.lower()), None)
+        if not found:
+            if "Neural" in voice:
+                parts = voice.split("-")
+                loc = f"{parts[0]}-{parts[1]}" if len(parts) >= 2 else "unknown"
+                found = TTSVoice(
+                    id=voice,
+                    name=voice,
+                    locale=loc,
+                    gender="Unknown",
+                    provider="edge-tts",
+                    description=f"Neural Voice ({loc})",
+                )
+            else:
+                raise ValueError(f"Unknown Edge TTS voice {voice!r}")
+        if locale:
+            loc = locale.lower()
+            norm = "id" if loc in ("id", "id-id", "indonesian") else loc[:2]
+            if not found.locale.lower().startswith(norm):
+                raise ValueError(
+                    f"Edge TTS voice {voice!r} (locale {found.locale}) does not match required locale {locale!r}"
+                )
+        return found
+
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path,
+        *,
+        voice: str,
+        timeout_s: int = 90,
+    ) -> tuple[list[WordBoundary], int]:
+        import asyncio
+
+        import edge_tts
+
+        normalized = normalize_indonesian_pronunciation(text.strip())
+        if not normalized:
+            raise ValueError("narration text is empty")
+
+        output_path = Path(output_path).resolve()
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_mp3 = output_path.with_suffix(".tmp.mp3")
+
+        async def _run() -> list[Any]:
+            communicate = edge_tts.Communicate(normalized, voice, boundary="WordBoundary")
+            words_raw: list[Any] = []
+            with open(raw_mp3, "wb") as f:
+                async for chunk in communicate.stream():
+                    if chunk["type"] == "audio":
+                        f.write(chunk["data"])
+                    elif chunk["type"] == "WordBoundary":
+                        words_raw.append(chunk)
+            return words_raw
+
+        try:
+            try:
+                loop = None
+                try:
+                    loop = asyncio.get_running_loop()
+                except RuntimeError:
+                    pass
+
+                if loop and loop.is_running():
+                    import concurrent.futures
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as ex:
+                        words_raw = ex.submit(asyncio.run, _run()).result(timeout=timeout_s)
+                else:
+                    words_raw = asyncio.run(_run())
+            except Exception as exc:
+                raise RuntimeError(f"Edge TTS synthesis failed for voice {voice}: {exc}") from exc
+
+            if not raw_mp3.is_file() or raw_mp3.stat().st_size == 0:
+                raise RuntimeError("Edge TTS produced empty audio output")
+
+            cmd = [
+                "ffmpeg", "-y", "-i", str(raw_mp3),
+                "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+                str(output_path),
+            ]
+            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
+            if proc.returncode != 0:
+                raise RuntimeError(f"ffmpeg conversion failed: {proc.stderr[-STDERR_LIMIT:]}")
+
+            duration_ms = _audio_duration_ms(probe_media(output_path))
+            words: list[WordBoundary] = []
+            for w in words_raw:
+                start_ms = round(w["offset"] / 10000)
+                end_ms = round((w["offset"] + w["duration"]) / 10000)
+                if end_ms > start_ms:
+                    words.append(WordBoundary(text=w["text"], start_ms=start_ms, end_ms=end_ms))
+
+            if not words:
+                words = _fallback_word_boundaries(normalized, duration_ms)
+
+            words = parse_boundaries([{"text": w.text, "startMs": w.start_ms, "endMs": w.end_ms} for w in words], duration_ms=duration_ms)
+            group_subtitles(words, duration_ms=duration_ms)
+            return words, duration_ms
+        finally:
+            raw_mp3.unlink(missing_ok=True)
+
+
+def _list_sapi_installed_voices() -> list[TTSVoice]:
+    powershell = shutil.which("powershell.exe") or shutil.which("powershell")
+    if not powershell:
+        return []
+    ps_code = (
+        "Add-Type -AssemblyName System.Speech; "
+        "$s = New-Object System.Speech.Synthesis.SpeechSynthesizer; "
+        "foreach ($v in $s.GetInstalledVoices()) { "
+        'Write-Output ($v.VoiceInfo.Name + "|" + $v.VoiceInfo.Culture.Name + "|" + [string]$v.VoiceInfo.Gender) '
+        "}"
+    )
+    try:
+        proc = subprocess.run(
+            [powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", ps_code],
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return []
+        voices = []
+        for line in proc.stdout.splitlines():
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = line.split("|")
+            name = parts[0]
+            culture = parts[1] if len(parts) > 1 else "unknown"
+            gender = parts[2] if len(parts) > 2 else "Unknown"
+            voices.append(
+                TTSVoice(
+                    id=name,
+                    name=name,
+                    locale=culture,
+                    gender=gender,
+                    provider="sapi",
+                    description=f"Windows Desktop SAPI Voice ({culture})",
+                )
+            )
+        return voices
+    except Exception:
+        return []
+
+
+class SapiTTSProvider(BaseTTSProvider):
+    provider_id = "sapi"
+    _cached_voices: list[TTSVoice] | None = None
+
+    def list_voices(self, locale: str | None = None) -> list[TTSVoice]:
+        if self._cached_voices is None:
+            self._cached_voices = _list_sapi_installed_voices()
+        voices = self._cached_voices or []
+        if locale:
+            loc = locale.lower()
+            norm = "id" if loc in ("id", "id-id", "indonesian") else loc[:2]
+            return [v for v in voices if v.locale.lower().startswith(norm)]
+        return list(voices)
+
+    def validate_voice(self, voice: str, locale: str | None = None) -> TTSVoice:
+        _validate_voice(voice)
+        installed = self.list_voices()
+        v: TTSVoice | None
+        if voice == "system-default":
+            v = installed[0] if installed else TTSVoice("system-default", "System Default", "en-US", "Unknown", "sapi")
+        else:
+            v = next((item for item in installed if item.id.lower() == voice.lower()), None)
+        if v is None:
+            raise ValueError(f"Requested voice {voice!r} is not installed in Windows SAPI")
+        if locale:
+            loc = locale.lower()
+            norm = "id" if loc in ("id", "id-id", "indonesian") else loc[:2]
+            if not v.locale.lower().startswith(norm):
+                raise ValueError(
+                    f"Requested SAPI voice {v.id!r} has culture {v.locale!r}, which does not match requested "
+                    f"locale {locale!r}. Windows SAPI has no Indonesian voice. Use Edge TTS (e.g. 'id-ID-ArdiNeural')."
+                )
+        return v
+
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path,
+        *,
+        voice: str,
+        timeout_s: int = 90,
+    ) -> tuple[list[WordBoundary], int]:
+        return synthesize_sapi(text, output_path, voice=voice, timeout_s=timeout_s)
+
+
+def get_tts_provider(name: str) -> BaseTTSProvider:
+    name_clean = (name or "").strip().lower()
+    if name_clean in ("sapi", "windows", "system"):
+        return SapiTTSProvider()
+    return EdgeTTSProvider()
+
+
+def list_available_voices(locale: str | None = None, provider: str | None = None) -> list[TTSVoice]:
+    prov = (provider or "").strip().lower()
+    voices: list[TTSVoice] = []
+    if not prov or prov == "edge-tts":
+        voices.extend(EdgeTTSProvider().list_voices(locale=locale))
+    if not prov or prov in ("sapi", "windows"):
+        voices.extend(SapiTTSProvider().list_voices(locale=locale))
+    return voices
+
+
+def resolve_tts(
+    language: str = "id",
+    requested_voice: str | None = None,
+    requested_provider: str | None = None,
+) -> tuple[BaseTTSProvider, TTSVoice]:
+    lang_clean = (language or "id").strip().lower()
+    is_id = lang_clean in ("id", "id-id", "indonesian")
+    req_voice = (requested_voice or "").strip()
+    req_provider = (requested_provider or "").strip().lower()
+
+    if is_id:
+        target_locale = "id-ID"
+        if req_provider in ("sapi", "windows"):
+            sapi = SapiTTSProvider()
+            voice_obj = sapi.validate_voice(req_voice or "system-default", locale=target_locale)
+            return sapi, voice_obj
+
+        edge = EdgeTTSProvider()
+        if not req_voice or req_voice in ("system-default", "default", "auto"):
+            target_voice = "id-ID-ArdiNeural"
+        elif "gadis" in req_voice.lower():
+            target_voice = "id-ID-GadisNeural"
+        elif "ardi" in req_voice.lower():
+            target_voice = "id-ID-ArdiNeural"
+        else:
+            target_voice = req_voice
+        voice_obj = edge.validate_voice(target_voice, locale=target_locale)
+        return edge, voice_obj
+
+    # Non-Indonesian
+    target_locale = "en-US" if lang_clean in ("en", "en-us") else lang_clean
+    if req_provider in ("sapi", "windows") or (req_voice and not req_voice.endswith("Neural") and req_voice != "system-default"):
+        sapi = SapiTTSProvider()
+        voice_obj = sapi.validate_voice(req_voice or "system-default", locale=target_locale)
+        return sapi, voice_obj
+
+    edge = EdgeTTSProvider()
+    target_voice = req_voice if req_voice and req_voice != "system-default" else "en-US-GuyNeural"
+    voice_obj = edge.validate_voice(target_voice, locale=target_locale)
+    return edge, voice_obj
+
 def group_subtitles(
     words: list[WordBoundary], *, duration_ms: int, max_chars: int = 42
 ) -> list[SubtitleCue]:
@@ -586,16 +968,20 @@ def _sha256_paths(paths: list[Path]) -> str:
 
 
 def build_asset_stage(state: Any, *, video_dir: Path) -> Stage:
-    """Record only built-in Maya source bytes that really exist in packages/video."""
+    """Record the verified visual sources a job's storyboard actually asks the renderer to draw.
+
+    The renderer draws objects, not characters, so this stage hashes the object library, the
+    palette and the backdrop module, and lists one entry per object kind and per environment the
+    storyboard names. A storyboard that names a kind with no source file fails here rather than
+    rendering an empty box.
+    """
     from ..orchestration.runner import Stage, StageContext, StageError, StageOutcome
 
     source = Path(video_dir) / "src"
-    rig_paths = [
-        source / "character" / "rig.ts",
-        source / "character" / "assets" / "maya" / "manifest.ts",
-        source / "character" / "assets" / "maya" / "art.ts",
-    ]
+    kinds_path = source / "art" / "object-kinds.ts"
+    library_path = source / "art" / "objects.tsx"
     palette_path = source / "art" / "palette.ts"
+    env_path = source / "art" / "Environment.tsx"
 
     def run(ctx: StageContext) -> StageOutcome:
         job_id = ctx.job_id
@@ -603,24 +989,65 @@ def build_asset_stage(state: Any, *, video_dir: Path) -> Stage:
 
         _emit(state, job_id, JobState.ASSETS_READY.value, "stage_started", "AssetAgent mulai", agent=ASSET_AGENT)
         try:
-            missing = [str(path) for path in [*rig_paths, palette_path] if not path.is_file()]
+            missing = [str(path) for path in (kinds_path, library_path, palette_path, env_path) if not path.is_file()]
             if missing:
-                raise RuntimeError("built-in Maya source missing: " + ", ".join(missing))
-            artifact = AssetsArtifact(
-                characters=[{
-                    "id": "maya",
-                    "rig_hash": _sha256_paths(rig_paths),
-                    "palette_hash": _sha256_paths([palette_path]),
-                    "poses": [],
-                    "expressions": [],
-                }],
-                backgrounds=[],
-                audio=[],
-            )
+                raise RuntimeError("informative renderer source missing: " + ", ".join(missing))
+
+            storyboard = None
+            try:
+                storyboard = ctx.store.read_artifact(job_id, "storyboard.json")
+            except Exception:
+                pass
+
+            kinds: set[str] = set()
+            environments: set[str] = set()
+            scenes = storyboard.get("scenes") if isinstance(storyboard, dict) else None
+            if isinstance(scenes, list):
+                for sc in scenes:
+                    if not isinstance(sc, dict):
+                        continue
+                    raw = sc.get("data")
+                    data: dict[str, Any] = raw if isinstance(raw, dict) else {}
+                    env = data.get("environment")
+                    if isinstance(env, str) and env:
+                        environments.add(env)
+                    for item in data.get("objects") or []:
+                        if isinstance(item, dict) and isinstance(item.get("kind"), str):
+                            kinds.add(item["kind"])
+
+            library_hash = _sha256_paths([kinds_path, library_path])
+            palette_hash = _sha256_paths([palette_path])
+            objects = [
+                {
+                    "id": kind,
+                    "library_hash": library_hash,
+                    "palette_hash": palette_hash,
+                    "source": "packages/video/src/art/objects.tsx",
+                    "license": "project-original",
+                }
+                for kind in sorted(kinds)
+            ]
+
+            env_hash = _sha256_paths([env_path])
+            backgrounds = [
+                {
+                    "id": f"env:{environment}",
+                    "environment": environment,
+                    "source": "packages/video/src/art/Environment.tsx",
+                    "sha256": env_hash,
+                    "license": "project-original",
+                }
+                for environment in sorted(environments or {"abstract"})
+            ]
+
+            artifact = AssetsArtifact(objects=objects, backgrounds=backgrounds, audio=[])
             payload = artifact.model_dump()
-            payload["manifest_sha256"] = hashlib.sha256(
-                json.dumps(payload["characters"], sort_keys=True, separators=(",", ":")).encode()
-            ).hexdigest()
+            manifest_bytes = json.dumps(
+                [payload["objects"], payload["backgrounds"], payload["audio"]],
+                sort_keys=True,
+                separators=(",", ":")
+            ).encode()
+            payload["manifest_sha256"] = hashlib.sha256(manifest_bytes).hexdigest()
             validate_artifact(AssetsArtifact, payload)
             ctx.write_artifact(ASSETS_NAME, payload)
         except Exception as exc:
@@ -631,7 +1058,6 @@ def build_asset_stage(state: Any, *, video_dir: Path) -> Stage:
         return StageOutcome(ok=True, artifacts=[ASSETS_NAME])
 
     return Stage(name=ASSET_AGENT, state=JobState.ASSETS_READY, produces=(ASSETS_NAME,), run=run, contract=AssetsArtifact, contract_artifact=ASSETS_NAME)
-
 
 def _concat_pcm_wavs(inputs: list[Path], output: Path) -> None:
     if not inputs:
@@ -673,6 +1099,18 @@ def _clamp_cues(cues: list[SubtitleCue], *, duration_ms: int) -> list[SubtitleCu
         if end <= start:
             continue
         clamped.append(SubtitleCue(startMs=start, endMs=end, text=cue.text))
+    return clamped
+
+
+def _clamp_words(words: list[WordTimestamp], *, duration_ms: int) -> list[WordTimestamp]:
+    """Drop words that fall outside the narration and pull the rest back inside it."""
+    clamped: list[WordTimestamp] = []
+    for w in words:
+        start = min(w.startMs, duration_ms)
+        end = min(w.endMs, duration_ms)
+        if end <= start:
+            continue
+        clamped.append(WordTimestamp(word=w.word, startMs=start, endMs=end))
     return clamped
 
 
@@ -750,9 +1188,11 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
         scratch: list[Path] = []
         try:
             job = store.get(job_id)
-            voice = str(job.payload.get("voice") or "")
-            if not voice or "Neural" in voice:
-                voice = "system-default"
+            lang = str(job.payload.get("language") or "id")
+            req_voice = str(job.payload.get("voice") or "")
+            req_provider = str(job.payload.get("tts_provider") or "")
+            tts_provider, tts_voice = resolve_tts(lang, requested_voice=req_voice, requested_provider=req_provider)
+            voice = tts_voice.id
             script = store.read_artifact(job_id, "script.json")
             storyboard = store.read_artifact(job_id, "storyboard.json")
             script_segs = [item for item in script.get("segments", []) if isinstance(item, dict)]
@@ -782,7 +1222,7 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
                 raw_scene = job_dir / f".narration-scene-{index + 1}.raw.wav"
                 trimmed_scene = job_dir / f".narration-scene-{index + 1}.wav"
                 scratch.extend((raw_scene, trimmed_scene, raw_scene.with_suffix(".words.json")))
-                words, _ = synthesize_sapi(text, raw_scene, voice=voice, timeout_s=timeout_s)
+                words, _ = tts_provider.synthesize(text, raw_scene, voice=voice, timeout_s=timeout_s)
                 trim = trim_scene_wav(raw_scene, trimmed_scene)
                 scene_ids.append(scene_id)
                 trims.append(trim)
@@ -807,11 +1247,20 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
 
             timings: list[dict[str, Any]] = []
             subtitles: list[SubtitleCue] = []
+            all_words: list[WordTimestamp] = []
             for scene_id, trim, raw_words, (start_ms, end_ms) in zip(
                 scene_ids, trims, scene_words, boundaries, strict=True
             ):
                 scene_duration = end_ms - start_ms
                 rebased = rebase_boundaries(raw_words, trim, duration_ms=scene_duration)
+                for word in rebased:
+                    all_words.append(
+                        WordTimestamp(
+                            word=word.text,
+                            startMs=word.start_ms + start_ms,
+                            endMs=word.end_ms + start_ms,
+                        )
+                    )
                 # Grouped per scene, never across a boundary: a cue that spans two scenes would
                 # outlive the picture it was written for.
                 for cue in group_subtitles(rebased, duration_ms=scene_duration):
@@ -844,10 +1293,18 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
                     f"narration true peak {observed} exceeds {NARRATION_TRUE_PEAK_MAX_DBTP:+.1f} dBTP"
                 )
             subtitles = _clamp_cues(subtitles, duration_ms=duration_ms)
+            word_timestamps = _clamp_words(all_words, duration_ms=duration_ms)
             artifact = AudioArtifact(
-                narration={"src": NARRATION_NAME, "durationMs": duration_ms, "voice": voice},
+                narration={
+                    "src": NARRATION_NAME,
+                    "durationMs": duration_ms,
+                    "voice": voice,
+                    "provider": tts_provider.provider_id,
+                    "locale": tts_voice.locale,
+                },
                 scenes=timings,
                 subtitles=subtitles,
+                words=word_timestamps,
                 mix={
                     "music": None,
                     "music_gain_db": None,
@@ -880,25 +1337,33 @@ __all__ = [
     "SCENE_LEAD_IN_MS",
     "SCENE_TAIL_MS",
     "SILENCE_FLOOR_DB",
+    "BaseTTSProvider",
+    "EdgeTTSProvider",
     "Loudness",
     "PcmFormat",
+    "SapiTTSProvider",
     "SceneTrim",
     "SpeechExtent",
+    "TTSVoice",
     "WordBoundary",
     "build_asset_stage",
     "build_audio_stage",
     "build_mix_argv",
     "build_normalise_argv",
+    "get_tts_provider",
     "group_subtitles",
+    "list_available_voices",
     "measure_loudness",
     "measure_loudness_lufs",
     "measure_speech_extent",
     "normalise_narration",
+    "normalize_indonesian_pronunciation",
     "parse_loudness",
     "parse_loudness_lufs",
     "read_pcm_format",
     "rebase_boundaries",
     "reconcile_timings",
+    "resolve_tts",
     "scene_timings",
     "synthesize_sapi",
     "trim_scene_wav",
