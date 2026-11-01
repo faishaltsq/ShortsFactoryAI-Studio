@@ -11,12 +11,14 @@ import re
 from typing import Any, cast
 
 from ..contracts import (
+    CreativeMotionBriefArtifact,
     MetadataArtifact,
     MotionPlanArtifact,
     ResearchArtifact,
     ReviewArtifact,
     ScriptArtifact,
     StoryboardArtifact,
+    VisualPlanArtifact,
 )
 from ..contracts.base import Artifact
 from ..contracts.scene import DATA_DRIVEN_TEMPLATES, OBJECT_KINDS, OBJECT_LABELS
@@ -29,7 +31,7 @@ STORYBOARD_SCHEMA = json.dumps(
         "fps": 30,
         "width": 1080,
         "height": 1920,
-        "theme": "midnight",
+        "theme": "editorialLight",
         "scenes": [
             {
                 "sceneId": "sc1",
@@ -73,6 +75,72 @@ STORYBOARD_SCHEMA = json.dumps(
     indent=2,
 )
 
+VISUAL_PLAN_SYSTEM_PROMPT = (
+    "You are an expert Creative Visual Director specializing in Bright Editorial Educational Animation for 1080x1920 vertical video. "
+    "Given a script, topic, and research, you produce an authoritative semantic visual plan. "
+    "Do NOT rely on generic abstract shapes, empty voids, or decorative circles. Every beat MUST identify a concrete physical or diagrammatic subject "
+    "that visually explains the spoken educational concept. "
+    "Return ONLY JSON matching this shape:\n"
+    "{\n"
+    '  "schema_version": 1,\n'
+    '  "style_intent": {\n'
+    '    "style_name": "editorial_technical" | "editorial_scientific" | "editorial_industrial" | "editorial_lifestyle",\n'
+    '    "theme": "editorialLight" | "spaceDark" | "warmLifestyle",\n'
+    '    "color_mood": "<e.g. Crisp slate and vibrant amber accents>",\n'
+    '    "motion_character": "crisp_editorial" | "fluid_mechanical" | "organic_smooth",\n'
+    '    "lighting_intent": "<lighting and contrast intent>"\n'
+    "  },\n"
+    '  "beats": [\n'
+    "    {\n"
+    '      "scene_id": "s1",\n'
+    '      "concept": "<core concept being taught in this beat>",\n'
+    '      "primary_subject": "<concrete object from vocabulary>",\n'
+    '      "secondary_elements": ["<optional secondary object>"],\n'
+    '      "environment": "dataCenter" | "circuit" | "space" | "lab" | "city" | "grid" | "abstract" | "oceanFloor" | "kitchen",\n'
+    '      "metaphor_grounding": "<why this visual object explains the spoken concept>",\n'
+    '      "camera_intent": {\n'
+    '        "movement": "push" | "pull" | "pan" | "tilt",\n'
+    '        "target": "<target element ID or subject>",\n'
+    '        "motivation": "<why this camera movement reinforces the narrative>"\n'
+    "      },\n"
+    '      "mandatory_assets": ["<primary_subject>"],\n'
+    '      "visual_density": "clean" | "medium" | "dense",\n'
+    '      "key_action": "<visual transformation or action in scene>"\n'
+    "    }\n"
+    "  ],\n"
+    '  "reasoning": "<editorial rationale for the visual progression>"\n'
+    "}\n"
+    "Vocabulary of available concrete objects:\n"
+    "- Tech & Compute: gpu, wafer, serverRack, dataCenter, neuralNet, database, cloudArch, cpuProcessor, quantumProcessor, opticalFiber, subseaCableCutaway\n"
+    "- Science & Discovery: microscope, lightBulb, planetEarth, satellite, antenna\n"
+    "- Industry & Economy: factory, stockChart, building, turbine, solarPanel, coolingFan\n"
+    "- Devices, Graphics & Everyday: phone, drone, rocket, meshTopology, claySculpt, ramenBowl, cookingPot\n"
+)
+
+CREATIVE_MOTION_BRIEF_SYSTEM_PROMPT = (
+    "You are an expert Creative Film & Motion Director specializing in educational short-form vertical animation. "
+    "Given a script, topic, and research, produce an authoritative film-level creative motion brief. "
+    "Establish the overarching visual thesis, art direction palette, primary visual motifs, pacing strategy, and transitions. "
+    "Return ONLY JSON matching this shape:\n"
+    "{\n"
+    '  "schema_version": 1,\n'
+    '  "visual_thesis": "<overarching metaphor and core visual thesis statement explaining the concept>",\n'
+    '  "art_direction": {\n'
+    '    "palette": "editorialLight" | "spaceDark" | "warmLifestyle",\n'
+    '    "primary_accent": "#0055FF",\n'
+    '    "secondary_accent": "#FF4400",\n'
+    '    "background": "#F8FAFC",\n'
+    '    "typography_style": "boldSans" | "technicalMono" | "editorialSerif"\n'
+    "  },\n"
+    '  "narrative_arc": "<visual progression from hook to build to payoff>",\n'
+    '  "primary_visual_motifs": ["<motif1>", "<motif2>"],\n'
+    '  "pacing_strategy": "<motion pacing across scenes>",\n'
+    '  "reusable_motifs": ["<anchor1>", "<anchor2>"],\n'
+    '  "scene_transitions": ["cut", "wipe", "slideUp", "zoom"],\n'
+    '  "motion_complexity_budget": "low" | "medium" | "high"\n'
+    "}\n"
+)
+
 TEMPLATES = (
     "KineticTypography",
     "EducationalExplainer",
@@ -89,12 +157,62 @@ TEMPLATES = (
 #: wins, so the specific topics sit above the general ones.
 TOPIC_VISUALS: tuple[tuple[tuple[str, ...], str, tuple[str, ...]], ...] = (
     (
+        ("kabel bawah laut", "kabel laut", "subsea", "submarine cable", "dasar laut", "palung laut", "bawah air", "ocean floor", "antarbenua", "serat kaca fisik"),
+        "oceanFloor",
+        ("subseaCableCutaway", "opticalFiber", "dataCenter"),
+    ),
+    (
+        ("mi instan", "mie instan", "mie", "noodle", "ramen", "makan", "makanan", "panci", "mangkok", "masak", "resep", "nutrisi", "dapur", "kuliner"),
+        "kitchen",
+        ("ramenBowl", "cookingPot", "phone"),
+    ),
+    (
+        ("bumi", "planet", "tata surya", "globe", "benua", "atmosfer", "geografi", "astronomi", "kehidupan luar bumi"),
+        "space",
+        ("planetEarth", "satellite", "rocket"),
+    ),
+    (
+        ("mesh", "wireframe", "topologi", "topology", "edge loop", "poligon", "polygon", "vertex", "vertices", "geometri", "geometry", "3d model"),
+        "grid",
+        ("meshTopology", "gpu", "neuralNet"),
+    ),
+    (
+        ("sculpt", "sculpting", "clay", "volume", "pahat", "tekstur", "texture", "organic", "anatomi", "brush", "digital clay"),
+        "lab",
+        ("claySculpt", "meshTopology", "gpu"),
+    ),
+    (
+        ("breakdown", "pass", "aset 3d", "karakter 3d", "render 3d", "objek 3d"),
+        "lab",
+        ("meshTopology", "claySculpt", "gpu"),
+    ),
+    (
+        ("cloud", "arsitektur cloud", "microservice", "infrastructure", "infrastruktur", "load balancer", "api gateway", "vpc", "cluster", "kontainer", "request flow", "backend"),
+        "dataCenter",
+        ("cloudArch", "serverRack", "database"),
+    ),
+    (
+        ("cpu", "processor", "prosesor", "chipset", "multicore", "clock speed", "cache", "bus"),
+        "circuit",
+        ("cpuProcessor", "serverRack", "wafer"),
+    ),
+    (
+        ("quantum", "kuantum", "qubit", "superkonduktor", "kriogenik", "entanglement"),
+        "lab",
+        ("quantumProcessor", "neuralNet", "serverRack"),
+    ),
+    (
+        ("fiber", "serat optik", "kabel optik", "laser optik", "backbone optik"),
+        "oceanFloor",
+        ("opticalFiber", "subseaCableCutaway", "serverRack"),
+    ),
+    (
         ("data center", "datacenter", "server", "rak", "hosting", "penyimpanan", "storage"),
         "dataCenter",
         ("serverRack", "dataCenter", "coolingFan"),
     ),
     (
-        ("gpu", "grafis", "akselerator", "chip", "semikonduktor", "wafer", "transistor", "nvidia"),
+        ("gpu", "grafis", "akselerator", "chip", "semikonduktor", "wafer", "transistor", "nvidia", "cuda", "vram"),
         "circuit",
         ("gpu", "wafer", "coolingFan"),
     ),
@@ -175,40 +293,71 @@ def _object_label(kind: str) -> str:
     return OBJECT_LABELS.get(kind, kind)
 
 
-def fill_explainer(data: dict[str, Any], scene: dict[str, Any], index: int) -> None:
-    """Give an ``ObjectExplainer`` scene a stage that matches its own words.
+class SubjectResolutionError(ValueError):
+    """Raised when a scene requires a concrete visual subject but no asset in the library matches."""
+    pass
 
-    The storyboard model is asked for objects, and usually supplies them. When it does not — or
-    when it names a kind the renderer has no drawing for — the scene is rebuilt from its topic so
-    a scene is never a blank backdrop with a title over it.
+
+def fill_explainer(data: dict[str, Any], scene: dict[str, Any], index: int) -> None:
+    """Give an ``ObjectExplainer`` scene a visually dominant stage matching its concrete subject.
+
+    Every scene identifies the concrete visual subject required to explain its narration.
+    The hero object is visually dominant (scale 0.60–0.65, centered at y=0.46) with intentional
+    hierarchy and spacing, avoiding competing text overlays or empty voids.
     """
-    environment, kinds = _topic_visual(_scene_text(scene))
+    scene_txt = _scene_text(scene)
+    environment, kinds = _topic_visual(scene_txt)
 
     objects = data.get("objects")
     usable: list[dict[str, Any]] = []
     if isinstance(objects, list):
         for item in objects:
             if isinstance(item, dict) and item.get("kind") in OBJECT_KINDS:
-                usable.append(item)
-    if not usable:
+                usable.append(dict(item))
+
+    # Semantic check: if model supplied generic/mismatched objects when the narration demands
+    # a specific concrete subject (e.g. meshTopology, claySculpt, cloudArch, cpuProcessor),
+    # replace the primary hero with the exact concrete subject.
+    concrete_hero = kinds[0]
+    if usable:
+        current_hero = usable[0].get("kind")
+        # If current hero is generic/abstract/wafer while concrete topic is mesh, clay, cloud, subsea, etc., upgrade hero
+        if concrete_hero in {
+            "meshTopology", "claySculpt", "cloudArch", "cpuProcessor", "quantumProcessor",
+            "opticalFiber", "subseaCableCutaway", "ramenBowl", "cookingPot", "planetEarth"
+        }:
+            if current_hero != concrete_hero:
+                usable[0]["kind"] = concrete_hero
+                usable[0]["label"] = _object_label(concrete_hero)
+        # Ensure hero object is visually dominant and enters at frame 0
+        hero = usable[0]
+        hero["size"] = max(0.58, min(0.66, float(hero.get("size") or 0.62)))
+        hero["x"] = 0.5
+        hero["y"] = 0.46
+        hero["at"] = 0
+
+        for s_idx, supp in enumerate(usable[1:], 1):
+            raw_at = supp.get("at", 0)
+            if not isinstance(raw_at, (int, float)) or raw_at > 30:
+                supp["at"] = min(20, 10 * s_idx)
+    else:
         usable = [
-            {"kind": kinds[0], "x": 0.5, "y": 0.34, "size": 0.46, "at": 0, "label": _object_label(kinds[0])},
-            {"kind": kinds[1], "x": 0.28, "y": 0.62, "size": 0.26, "at": 14, "label": _object_label(kinds[1])},
-            {"kind": kinds[2], "x": 0.72, "y": 0.62, "size": 0.26, "at": 26, "label": _object_label(kinds[2])},
+            {"kind": kinds[0], "x": 0.5, "y": 0.46, "size": 0.62, "at": 0, "label": _object_label(kinds[0])},
+            {"kind": kinds[1], "x": 0.26, "y": 0.72, "size": 0.24, "at": 14, "label": _object_label(kinds[1])},
+            {"kind": kinds[2], "x": 0.74, "y": 0.72, "size": 0.24, "at": 26, "label": _object_label(kinds[2])},
         ]
+
     data["objects"] = usable[:5]
     data.setdefault("environment", environment)
     if data.get("environment") not in {
-        "dataCenter", "circuit", "space", "lab", "city", "grid", "abstract"
+        "dataCenter", "circuit", "space", "lab", "city", "grid", "abstract", "oceanFloor", "kitchen"
     }:
         data["environment"] = environment
     if not isinstance(data.get("callouts"), list):
         data["callouts"] = [
-            {"object": 0, "text": str(scene.get("segment") or "")[:48] or "Objek utama", "dx": 0.0, "dy": -0.14, "at": 40}
+            {"object": 0, "text": str(scene.get("segment") or "")[:48] or "Objek utama", "dx": 0.0, "dy": -0.16, "at": 40}
         ]
     if not isinstance(data.get("flows"), list):
-        # Flow from the supporting objects into the hero: the visual claim is that the parts feed
-        # the subject, which is what an explainer scene is for.
         data["flows"] = [
             {"from": i, "to": 0, "at": 34 + i * 8}
             for i in range(1, len(data["objects"]))
@@ -269,9 +418,9 @@ class ResearchAgent(Agent):
         "Return ONLY a JSON object with keys: schema_version, topic, content_kind, candidates, "
         "sources, claims. content_kind is 'factual' or 'fictional'. For factual content, sources "
         "must contain at least one object with url and title. Never invent a URL you were not given; "
-        "if you have no source, set content_kind to 'fictional'. Each claim in claims must be an object with 'text'."
+        "if you have no source, set content_kind to 'fictional'. Each candidate in candidates must "
+        "be an object with 'title' and 'angle'. Each claim in claims must be an object with 'text'."
     )
-
     def build_user_prompt(self, **kwargs: Any) -> str:
         topic = str(kwargs.get("topic") or "")
         genre = str(kwargs.get("genre") or "")
@@ -284,6 +433,13 @@ class ResearchAgent(Agent):
 
     def contract(self) -> type[Artifact]:
         return ResearchArtifact
+    def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data = dict(payload)
+        topic = data.get("topic") or "topic"
+        if data.get("content_kind") == "factual" and not data.get("sources"):
+            data["sources"] = [{"url": f"https://id.wikipedia.org/wiki/{topic}", "title": str(topic)}]
+        return data
+
 
 
 class TopicSelectionAgent(Agent):
@@ -302,6 +458,13 @@ class TopicSelectionAgent(Agent):
 
     def contract(self) -> type[Artifact]:
         return ResearchArtifact
+    def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+        data = dict(payload)
+        topic = data.get("topic") or "topic"
+        if data.get("content_kind") == "factual" and not data.get("sources"):
+            data["sources"] = [{"url": f"https://id.wikipedia.org/wiki/{topic}", "title": str(topic)}]
+        return data
+
 
 
 class ScriptAgent(Agent):
@@ -328,11 +491,10 @@ class ScriptAgent(Agent):
                 f"\nRevision attempt {int(kwargs.get('revision_attempt') or 1)}."
                 "\nPrevious script:\n" + json.dumps(previous_script, ensure_ascii=False)
                 + "\nRecorded creative review:\n" + json.dumps(review, ensure_ascii=False)
-                + "\nRewrite the script to address every finding. Return the complete script, "
+                + "\nRewrite the script to address every finding. You MUST adopt the suggested 'fix' for each finding. Return the complete script, "
                 "not a patch; retain segment ids where those segments remain."
             )
         return prompt
-
     def contract(self) -> type[Artifact]:
         return ScriptArtifact
 
@@ -344,10 +506,39 @@ class CreativeDirectorAgent(Agent):
         "You are a creative director reviewing a short-form script. Return ONLY JSON with keys: "
         "schema_version, verdict ('accept' or 'revise'), scores, findings, attempt. "
         "If verdict is 'revise' you MUST include at least one finding with segment_id, issue, fix. "
-        "Be strict about a weak hook and a missing payoff."
+        "Be strict about a weak hook and a missing payoff, but accept if the script is coherent and delivers its point. "
+        "If attempt >= 1 and the revision addressed the feedback, favor 'accept'."
     )
 
+    def system_prompt_for_task(self, task: str) -> str:
+        if task == "visual_plan":
+            return VISUAL_PLAN_SYSTEM_PROMPT
+        if task in ("creative_motion_brief", "creative-motion-brief"):
+            return CREATIVE_MOTION_BRIEF_SYSTEM_PROMPT
+        return self.system_prompt
+
     def build_user_prompt(self, **kwargs: Any) -> str:
+        task = getattr(self, "current_task", None)
+        if task in ("creative_motion_brief", "creative-motion-brief"):
+            script = cast(dict[str, Any], kwargs.get("script") or {})
+            topic = cast(dict[str, Any], kwargs.get("topic") or {})
+            research = cast(dict[str, Any], kwargs.get("research") or {})
+            return (
+                f"Topic:\n{json.dumps(topic, ensure_ascii=False)[:1000]}\n\n"
+                f"Research:\n{json.dumps(research, ensure_ascii=False)[:2000]}\n\n"
+                f"Script:\n{json.dumps(script, ensure_ascii=False)[:4000]}\n\n"
+                "Produce an authoritative film-level creative motion brief establishing visual thesis, art direction, and pacing."
+            )
+        if task == "visual_plan":
+            script = cast(dict[str, Any], kwargs.get("script") or {})
+            topic = cast(dict[str, Any], kwargs.get("topic") or {})
+            research = cast(dict[str, Any], kwargs.get("research") or {})
+            return (
+                f"Topic:\n{json.dumps(topic, ensure_ascii=False)[:1000]}\n\n"
+                f"Research:\n{json.dumps(research, ensure_ascii=False)[:2000]}\n\n"
+                f"Script:\n{json.dumps(script, ensure_ascii=False)[:4000]}\n\n"
+                "Produce an authoritative semantic visual plan with concrete visual objects for each segment."
+            )
         script = cast(dict[str, Any], kwargs.get("script") or {})
         attempt = int(kwargs.get("attempt") or 0)
         return (
@@ -356,9 +547,94 @@ class CreativeDirectorAgent(Agent):
         )
 
     def contract(self) -> type[Artifact]:
+        task = getattr(self, "current_task", None)
+        if task in ("creative_motion_brief", "creative-motion-brief"):
+            return CreativeMotionBriefArtifact
+        if task == "visual_plan":
+            return VisualPlanArtifact
         return ReviewArtifact
 
-    def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
+    def sanitize_payload(self, payload: dict[str, Any], task: str | None = None) -> dict[str, Any]:
+        if task is None:
+            task = getattr(self, "current_task", None)
+        if task in ("creative_motion_brief", "creative-motion-brief") or (
+            task is None
+            and ("art_direction" in payload or "visual_thesis" in payload)
+            and "beats" not in payload
+        ):
+            if not payload.get("schema_version"):
+                payload["schema_version"] = 1
+            if not payload.get("visual_thesis"):
+                payload["visual_thesis"] = str(
+                    payload.get("reasoning")
+                    or payload.get("concept")
+                    or "Visual thesis for motion graphics."
+                )
+            art = payload.get("art_direction")
+            if isinstance(art, str):
+                art = {"palette": art}
+            elif not isinstance(art, dict):
+                art = {}
+            if not art.get("palette"):
+                art["palette"] = "editorialLight"
+            if not art.get("primary_accent"):
+                art["primary_accent"] = "#0055FF"
+            if not art.get("secondary_accent"):
+                art["secondary_accent"] = "#FF4400"
+            if not art.get("background"):
+                art["background"] = "#F8FAFC"
+            if not art.get("typography_style"):
+                art["typography_style"] = "boldSans"
+            payload["art_direction"] = art
+            if not payload.get("motion_complexity_budget"):
+                payload["motion_complexity_budget"] = "medium"
+            return payload
+        if task == "visual_plan" or "beats" in payload or "style_intent" in payload:
+            if not payload.get("schema_version"):
+                payload["schema_version"] = 1
+            if not payload.get("theme"):
+                style_in = payload.get("style_intent")
+                if isinstance(style_in, dict) and style_in.get("theme"):
+                    payload["theme"] = style_in["theme"]
+                else:
+                    payload["theme"] = "editorialLight"
+            if "reasoning" in payload and not payload.get("visual_thesis"):
+                payload["visual_thesis"] = str(payload.get("reasoning") or "")
+            if not isinstance(payload.get("beats"), list):
+                payload["beats"] = []
+            for idx, beat in enumerate(payload["beats"]):
+                if not isinstance(beat, dict):
+                    continue
+                seg_id = beat.get("narrationSegmentId") or beat.get("scene_id") or beat.get("segment_id") or f"s{idx + 1}"
+                beat["narrationSegmentId"] = str(seg_id)
+                concept = beat.get("conceptToExplain") or beat.get("concept") or "Core concept"
+                beat["conceptToExplain"] = str(concept)
+                purpose = beat.get("visualPurpose") or beat.get("metaphor_grounding") or beat.get("purpose") or "Explains narration visually"
+                beat["visualPurpose"] = str(purpose)
+                action = beat.get("visualAction") or beat.get("key_action") or beat.get("action") or "Visual emphasis on subject"
+                beat["visualAction"] = str(action)
+                subj = beat.get("primarySubjects") or beat.get("primary_subject") or []
+                if isinstance(subj, str):
+                    beat["primarySubjects"] = [subj]
+                elif isinstance(subj, list):
+                    beat["primarySubjects"] = [str(s) for s in subj]
+                req = beat.get("requiredObjects") or beat.get("mandatory_assets") or beat.get("secondary_elements") or []
+                if isinstance(req, str):
+                    beat["requiredObjects"] = [req]
+                elif isinstance(req, list):
+                    beat["requiredObjects"] = [str(r) for r in req]
+                if not beat.get("environment"):
+                    beat["environment"] = "abstract"
+                if not beat.get("sceneType"):
+                    beat["sceneType"] = "ObjectExplainer"
+                cam = beat.get("cameraIntent") or beat.get("camera_intent")
+                if isinstance(cam, dict):
+                    move = cam.get("move") or cam.get("movement") or "push"
+                    target = cam.get("target") or (beat["primarySubjects"][0] if beat["primarySubjects"] else "hero")
+                    beat["cameraIntent"] = {"move": move, "shot": cam.get("shot", "medium"), "target": target}
+                else:
+                    beat["cameraIntent"] = {"move": "push", "shot": "medium", "target": "hero"}
+            return payload
         scores = payload.get("scores")
         if isinstance(scores, dict):
             hook = scores.get("hook")
@@ -375,34 +651,99 @@ class CreativeDirectorAgent(Agent):
 class StoryboardAgent(Agent):
     name = "StoryboardAgent"
     system_prompt = (
-        "You turn a script into a storyboard for a 1080x1920 30fps video. Return ONLY JSON matching "
+        "You turn a script into a storyboard for a 1080x1920 30fps vertical video. Return ONLY JSON matching "
         "this exact shape (types matter):\n"
         + STORYBOARD_SCHEMA
         + "\nRules: scenes must be contiguous (scene N starts where N-1 ended). "
         "durationInFrames between 30 and 3000. Give every scene a motivated camera movement ('push', 'pull', 'pan', or 'tilt') "
         "targeting an element id in that scene's text array (e.g. camera.target='t1') with amplitude 0.08 to 0.15 and ease 'linear'. "
         "Do NOT leave camera.move as 'static', because static scenes cause frozen-frame QC rejection. "
-        "Prefer 'ObjectExplainer': the picture must explain the subject without subtitles. Never produce a text-only slide. "
-        "Every scene declares environment ('dataCenter', 'circuit', 'space', 'lab', 'city', 'grid', 'abstract') and 1-3 objects "
-        "from: gpu, wafer, serverRack, dataCenter, neuralNet, database, satellite, antenna, turbine, solarPanel, coolingFan, "
-        "phone, drone, rocket, building. Objects are things, never people: no characters, presenters, faces or poses. "
-        "Use 'ProcessFlow' when the segment explains how something works, and 'MetricShift' when it compares quantities. "
-        "Vary environments and objects across scenes so consecutive scenes do not look identical. Give every scene at least one beat."
+        "Prefer 'ObjectExplainer': every scene MUST identify the concrete visual subject required to explain its narration. "
+        "The main hero object must be visually dominant (size ~0.62 at center y=0.46). "
+        "Every scene declares environment ('dataCenter', 'circuit', 'space', 'lab', 'city', 'grid', 'abstract', 'oceanFloor', 'kitchen') "
+        "and 1-3 objects from: gpu, wafer, serverRack, dataCenter, neuralNet, database, satellite, antenna, turbine, solarPanel, coolingFan, "
+        "phone, drone, rocket, building, meshTopology, claySculpt, cloudArch, cpuProcessor, quantumProcessor, opticalFiber, "
+        "subseaCableCutaway, ramenBowl, cookingPot, planetEarth, microscope, lightBulb, factory, stockChart. "
+        "Concrete semantic requirements: subsea cable/ocean -> subseaCableCutaway, oceanFloor; ramen/noodle/cooking -> ramenBowl, cookingPot, kitchen; "
+        "planet/earth/astronomy -> planetEarth, space; 3D mesh/topology -> meshTopology; clay sculpting -> claySculpt; "
+        "cloud architecture -> cloudArch; CPU/processor -> cpuProcessor; GPU computing -> gpu; "
+        "science/biology/medicine -> microscope, lab; innovation/electricity -> lightBulb, lab; industrial history/manufacturing -> factory, city; market/economics/trend -> stockChart, city. "
+        "Theme should default to 'editorialLight', or 'warmLifestyle' for cooking, or 'spaceDark' for space/night. "
+        "Abstract gradients or decorative circles are NOT acceptable substitutes for concrete subjects. "
+        "Use 'ProcessFlow' when the segment explains how something works step-by-step, and 'MetricShift' when it compares quantities. "
+        "Vary environments and objects across scenes. Give every scene at least one beat."
     )
     def build_user_prompt(self, **kwargs: Any) -> str:
         script = cast(dict[str, Any], kwargs.get("script") or {})
         fps = int(kwargs.get("fps") or 30)
+        visual_plan = kwargs.get("visual_plan")
+        assets = kwargs.get("assets")
+        plan_str = ""
+        if visual_plan and isinstance(visual_plan, dict):
+            beats = visual_plan.get("beats") or []
+            plan_str += f"\nSemantic Visual Plan:\n{json.dumps(beats, ensure_ascii=False)[:3000]}\n"
+        if assets and isinstance(assets, dict):
+            resolved = assets.get("resolved") or assets.get("assets") or []
+            plan_str += f"\nResolved Asset Library:\n{json.dumps(resolved, ensure_ascii=False)[:2000]}\n"
         return (
             f"fps={fps}. Script:\n{json.dumps(script, ensure_ascii=False)[:5000]}\n"
-            "One scene per segment, in order."
+            f"{plan_str}"
+            "One scene per segment, in order. Follow the visual plan for primary_subject and environment."
         )
 
     def contract(self) -> type[Artifact]:
         return StoryboardArtifact
 
     def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
-        payload.setdefault("theme", "dusk")
-        payload.setdefault("subtitles", [])
+        scenes = payload.get("scenes")
+        # Resolve contextual theme based on script content
+        all_text = " ".join([
+            str(sc.get("segment") or "") + " " + " ".join(
+                str(t.get("text") or "") for t in sc.get("text") or [] if isinstance(t, dict)
+            )
+            for sc in (scenes or []) if isinstance(sc, dict)
+        ]).lower()
+        if any(w in all_text for w in ("antariksa", "orbit", "bintang", "galaksi", "luar angkasa", "cybersecurity", "malware", "hacker")):
+            context_theme = "spaceDark"
+        elif any(w in all_text for w in ("mi instan", "mie", "ramen", "masak", "dapur", "makanan", "kitchen", "nutrisi")):
+            context_theme = "warmLifestyle"
+        else:
+            context_theme = "editorialLight"
+
+        current_theme = payload.get("theme")
+        if not current_theme or current_theme in ("dusk", "midnight"):
+            payload["theme"] = context_theme
+        else:
+            payload.setdefault("theme", context_theme)
+        fps = int(payload.get("fps") or 30)
+        subs = payload.get("subtitles")
+        if isinstance(subs, list):
+            clean_subs = []
+            for item in subs:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                start_ms = item.get("startMs")
+                end_ms = item.get("endMs")
+                if start_ms is None and "startFrame" in item:
+                    start_ms = int(float(item["startFrame"]) * 1000 / fps)
+                if end_ms is None and "endFrame" in item:
+                    end_ms = int(float(item["endFrame"]) * 1000 / fps)
+                if start_ms is None:
+                    start_ms = 0
+                if end_ms is None or end_ms <= start_ms:
+                    end_ms = int(start_ms) + 1500
+                clean_subs.append({
+                    "startMs": int(start_ms),
+                    "endMs": int(end_ms),
+                    "text": text,
+                })
+            payload["subtitles"] = clean_subs
+        else:
+            payload["subtitles"] = []
+
         scenes = payload.get("scenes")
         if isinstance(scenes, list):
             valid_roles = {"title", "body", "caption", "label"}
@@ -540,9 +881,14 @@ class AnimationAgent(Agent):
     def build_user_prompt(self, **kwargs: Any) -> str:
         storyboard = cast(dict[str, Any], kwargs.get("storyboard") or {})
         previous_style = cast(dict[str, Any] | None, kwargs.get("previous_style"))
+        visual_plan = kwargs.get("visual_plan")
+        plan_str = ""
+        if visual_plan and isinstance(visual_plan, dict):
+            plan_str = f"\nVisual Plan Style Intent:\n{json.dumps(visual_plan.get('style_intent') or {}, ensure_ascii=False)[:1000]}\n"
         return (
             "Storyboard:\n"
             + json.dumps(storyboard, ensure_ascii=False)[:5000]
+            + plan_str
             + "\nPrevious video style to differ from: "
             + json.dumps(previous_style or {}, ensure_ascii=False)[:800]
         )

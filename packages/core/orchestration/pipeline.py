@@ -274,9 +274,31 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
         revisions = _load_revisions(store, job_id)
         return {"script": store.read_artifact(job_id, "script.json"), "attempt": len(revisions.attempts)}
 
-    def storyboard_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
-        return {"script": store.read_artifact(job_id, "script.json"), "fps": 30}
+    def visual_plan_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
+        return {
+            "script": store.read_artifact(job_id, "script.json"),
+            "topic": store.read_artifact(job_id, "topic.json") if store.has_artifact(job_id, "topic.json") else {},
+            "research": store.read_artifact(job_id, "research.json") if store.has_artifact(job_id, "research.json") else {},
+        }
 
+    def storyboard_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
+        script = store.read_artifact(job_id, "script.json")
+        visual_plan = store.read_artifact(job_id, "visual-plan.json") if store.has_artifact(job_id, "visual-plan.json") else {}
+        brief = (
+            store.read_artifact(job_id, "creative-motion-brief.json")
+            if store.has_artifact(job_id, "creative-motion-brief.json")
+            else {}
+        )
+        from ..agents.asset_registry import AssetResolver
+        assets_res, _ = AssetResolver.resolve_visual_plan(visual_plan, script) if visual_plan else ({}, [])
+        return {
+            "script": script,
+            "visual_plan": visual_plan,
+            "creative_motion_brief": brief,
+            "brief": brief,
+            "assets": assets_res,
+            "fps": 30,
+        }
     def metadata_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
         # MetadataAgent reads the script; the topic and language come from the job payload, so the
         # title is written in the video's language rather than the operator's.
@@ -286,8 +308,17 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
             "language": language,
         }
     def motion_plan_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
+        visual_plan = store.read_artifact(job_id, "visual-plan.json") if store.has_artifact(job_id, "visual-plan.json") else {}
+        brief = (
+            store.read_artifact(job_id, "creative-motion-brief.json")
+            if store.has_artifact(job_id, "creative-motion-brief.json")
+            else {}
+        )
         return {
             "storyboard": store.read_artifact(job_id, "storyboard.json"),
+            "visual_plan": visual_plan,
+            "creative_motion_brief": brief,
+            "brief": brief,
             "previous_style": None,
         }
 
@@ -324,6 +355,14 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
             produces="review.json",
             task="review",
             kwargs_fn=review_prompt,
+        ),
+        _dynamic_stage(
+            state,
+            agent_name="CreativeDirectorAgent",
+            stage_state=JobState.CREATIVE_REVIEW,
+            produces="visual-plan.json",
+            task="visual_plan",
+            kwargs_fn=visual_plan_prompt,
         ),
         _dynamic_stage(
             state,
@@ -469,15 +508,15 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
                    task: str, kwargs_fn: Callable[[JobStore, str], dict[str, Any]]) -> Stage:
     from ..agents.registry import AGENTS as _AGENTS
 
-    contract = _AGENTS[agent_name](_null_context()).contract()
-
+    agent_inst = _AGENTS[agent_name](_null_context())
+    agent_inst.current_task = task
+    contract = agent_inst.contract()
     def run(ctx: StageContext) -> StageOutcome:
         store, job_id = ctx.store, ctx.job_id
         job = store.get(job_id)
         # A recorded revise decision is not permission to buy the same review again. The
         # controller consumes its findings; changed scripts explicitly invalidate this file.
-        if agent_name == "CreativeDirectorAgent" and store.has_artifact(job_id, produces):
-            recorded: ReviewArtifact | None
+        if agent_name == "CreativeDirectorAgent" and produces == "review.json" and store.has_artifact(job_id, produces):
             try:
                 recorded = ReviewArtifact.model_validate(store.read_artifact(job_id, produces))
             except (ValueError, OSError):
@@ -532,6 +571,14 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
             )
 
         ctx.write_artifact(produces, _with_provenance(artifact.to_json(), agent_name, ctxp, state))
+        out_artifacts = [produces]
+        if produces == "visual-plan.json":
+            brief_dict = _derive_creative_motion_brief(artifact)
+            ctx.write_artifact(
+                "creative-motion-brief.json",
+                _with_provenance(brief_dict, agent_name, ctxp, state),
+            )
+            out_artifacts.append("creative-motion-brief.json")
         _emit(
             state,
             job_id,
@@ -542,7 +589,7 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
             progress=1.0,
             model=ctx.call.model,
         )
-        return StageOutcome(ok=True, artifacts=[produces])
+        return StageOutcome(ok=True, artifacts=out_artifacts)
 
     return Stage(
         name=agent_name,
@@ -553,9 +600,124 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
         contract_artifact=produces,
         done_when=(
             (lambda artifact, _job_id: artifact.get("verdict") == "accept")
-            if agent_name == "CreativeDirectorAgent" else None
+            if (agent_name == "CreativeDirectorAgent" and produces == "review.json") else None
         ),
     )
+
+
+def _derive_creative_motion_brief(visual_plan: Any) -> dict[str, Any]:
+    from ..contracts.artifacts import CreativeMotionBriefArtifact
+
+    if isinstance(visual_plan, dict):
+        from ..contracts.artifacts import VisualPlanArtifact
+
+        try:
+            visual_plan = VisualPlanArtifact.model_validate(visual_plan)
+        except Exception:
+            pass
+
+    def _get(obj: Any, *keys: str, default: Any = None) -> Any:
+        if isinstance(obj, dict):
+            for k in keys:
+                if k in obj and obj[k] is not None:
+                    return obj[k]
+            return default
+        for k in keys:
+            v = getattr(obj, k, None)
+            if v is not None:
+                return v
+        return default
+
+    beats = _get(visual_plan, "beats", default=[]) or []
+    visual_thesis = _get(
+        visual_plan, "visual_thesis", "visualThesis", "reasoning", default=""
+    ) or "Educational visual progression for short-form animation."
+
+    theme = _get(visual_plan, "theme", default="editorialLight") or "editorialLight"
+    style_intent = _get(visual_plan, "style_intent", "styleIntent")
+    if style_intent:
+        if isinstance(style_intent, dict) and style_intent.get("theme"):
+            theme = style_intent["theme"]
+        elif hasattr(style_intent, "model_fields_set") and "theme" in style_intent.model_fields_set:
+            theme = style_intent.theme
+        elif theme == "editorialLight" and getattr(style_intent, "theme", None):
+            theme = style_intent.theme
+
+    primary_motifs: list[str] = list(
+        _get(visual_plan, "primary_visual_motifs", "primaryVisualMotifs", default=[]) or []
+    )
+    reusable: list[str] = list(
+        _get(visual_plan, "reusable_motifs", "reusableMotifs", default=[]) or []
+    )
+    arc_parts: list[str] = []
+
+    for beat in beats:
+        subjs = _get(beat, "primarySubjects", "primary_subjects", default=[]) or []
+        if isinstance(subjs, str):
+            subjs = [p.strip() for p in subjs.split(",") if p.strip()]
+        for subj in subjs:
+            if subj and subj not in primary_motifs:
+                primary_motifs.append(str(subj))
+
+        objs = _get(beat, "requiredObjects", "required_objects", default=[]) or []
+        if isinstance(objs, str):
+            objs = [p.strip() for p in objs.split(",") if p.strip()]
+        for obj in objs:
+            if obj and obj not in reusable:
+                reusable.append(str(obj))
+
+        concept = _get(beat, "conceptToExplain", "concept_to_explain", "concept", default="")
+        if concept:
+            arc_parts.append(str(concept))
+
+    narrative_arc = (
+        _get(visual_plan, "narrative_arc", "narrativeArc")
+        or (" -> ".join(arc_parts) if arc_parts else "Input -> Analysis -> Resolution")
+    )
+    if not primary_motifs:
+        primary_motifs = ["diagram", "conceptNode"]
+
+    art_dir = _get(visual_plan, "art_direction", "artDirection")
+    art_dict: dict[str, Any] = {
+        "palette": theme,
+        "primary_accent": "#0055FF",
+        "secondary_accent": "#FF4400",
+        "background": "#F8FAFC",
+        "typography_style": "boldSans",
+    }
+    if isinstance(art_dir, dict):
+        for k, v in art_dir.items():
+            if v is not None:
+                art_dict[k] = v
+    elif hasattr(art_dir, "model_dump"):
+        for k, v in art_dir.model_dump().items():
+            if v is not None:
+                art_dict[k] = v
+
+    pacing_strategy = (
+        _get(visual_plan, "pacing_strategy", "pacingStrategy")
+        or "Dynamic pacing matched to visual beats."
+    )
+    scene_transitions = (
+        _get(visual_plan, "scene_transitions", "sceneTransitions")
+        or ["cut", "wipe", "slideUp", "zoom"]
+    )
+    motion_complexity_budget = (
+        _get(visual_plan, "motion_complexity_budget", "motionComplexityBudget")
+        or "medium"
+    )
+
+    brief = CreativeMotionBriefArtifact(
+        visual_thesis=visual_thesis,
+        art_direction=art_dict,
+        narrative_arc=narrative_arc,
+        primary_visual_motifs=primary_motifs,
+        pacing_strategy=pacing_strategy,
+        reusable_motifs=reusable or primary_motifs[:2],
+        scene_transitions=scene_transitions,
+        motion_complexity_budget=motion_complexity_budget,
+    )
+    return brief.to_json()
 
 
 def _review_type() -> type[Any]:

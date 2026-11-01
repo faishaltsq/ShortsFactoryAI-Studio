@@ -27,6 +27,32 @@ class ResearchArtifact(Artifact):
     sources: list[dict[str, Any]] = Field(default_factory=list)
     claims: list[dict[str, Any]] = Field(default_factory=list)
 
+    @field_validator("candidates", mode="before")
+    @classmethod
+    def _coerce_candidates(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            coerced: list[Any] = []
+            for item in value:
+                if isinstance(item, str):
+                    coerced.append({"title": item, "angle": item})
+                else:
+                    coerced.append(item)
+            return coerced
+        return value
+
+    @field_validator("sources", mode="before")
+    @classmethod
+    def _coerce_sources(cls, value: Any) -> Any:
+        if isinstance(value, list):
+            coerced: list[Any] = []
+            for item in value:
+                if isinstance(item, str):
+                    coerced.append({"url": item, "title": item})
+                else:
+                    coerced.append(item)
+            return coerced
+        return value
+
     @field_validator("claims", mode="before")
     @classmethod
     def _coerce_claims(cls, value: Any) -> Any:
@@ -148,6 +174,131 @@ class RevisionArtifact(Artifact):
             if index < len(self.attempts) and attempt.phase != "applied":
                 raise ValueError("an unfinished revision cannot be followed by another attempt")
         return self
+
+class CameraIntent(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    shot: str = "medium"
+    move: str = "push"
+    target: str = ""
+    amplitude: float = Field(default=0.1, ge=0.0, le=1.0)
+
+
+class StyleIntent(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    theme: str = "editorialLight"
+    energy: float = Field(default=0.5, ge=0.0, le=1.0)
+    lighting: str = "balanced"
+
+
+class VisualBeatPlan(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    narrationSegmentId: str = Field(min_length=1)
+    conceptToExplain: str = Field(min_length=1)
+    visualPurpose: str = Field(min_length=1)
+    primarySubjects: list[str] = Field(default_factory=list)
+    environment: str = "abstract"
+    requiredObjects: list[str] = Field(default_factory=list)
+    visualAction: str = Field(min_length=1)
+    sceneType: str = "ObjectExplainer"
+    cameraIntent: CameraIntent = Field(default_factory=CameraIntent)
+    styleIntent: StyleIntent = Field(default_factory=StyleIntent)
+    narrationAlignment: str = Field(default="")
+    evidenceReferences: list[str] = Field(default_factory=list)
+
+    @field_validator("primarySubjects", "requiredObjects", "evidenceReferences", mode="before")
+    @classmethod
+    def _coerce_list(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            parts = [p.strip() for p in value.split(",") if p.strip()]
+            return parts or ([value.strip()] if value.strip() else [])
+        if isinstance(value, (list, tuple)):
+            return [str(v) for v in value if str(v).strip()]
+        return []
+
+    @field_validator("cameraIntent", mode="before")
+    @classmethod
+    def _coerce_camera(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            return {"move": value, "shot": "medium"}
+        return {}
+
+    @field_validator("styleIntent", mode="before")
+    @classmethod
+    def _coerce_style(cls, value: Any) -> dict[str, Any]:
+        if isinstance(value, dict):
+            return value
+        if isinstance(value, str):
+            return {"theme": value}
+        return {}
+
+
+class VisualPlanArtifact(Artifact):
+    kind = "visual-plan"
+    model_config = ConfigDict(extra="ignore")
+
+    theme: str = "editorialLight"
+    visual_thesis: str = Field(default="")
+    style_intent: StyleIntent = Field(default_factory=StyleIntent)
+    beats: list[VisualBeatPlan] = Field(default_factory=list, min_length=1)
+
+
+class ArtDirectionSpec(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    palette: str = "editorialLight"
+    primary_accent: str = "#0055FF"
+    secondary_accent: str = "#FF4400"
+    background: str = "#F8FAFC"
+    typography_style: str = "boldSans"
+
+
+class CreativeMotionBriefArtifact(Artifact):
+    kind = "creative-motion-brief"
+    model_config = ConfigDict(extra="ignore")
+
+    visual_thesis: str = Field(min_length=1)
+    art_direction: ArtDirectionSpec = Field(default_factory=ArtDirectionSpec)
+    narrative_arc: str = Field(default="")
+    primary_visual_motifs: list[str] = Field(default_factory=list)
+    pacing_strategy: str = Field(default="")
+    reusable_motifs: list[str] = Field(default_factory=list)
+    scene_transitions: list[str] = Field(default_factory=list)
+    motion_complexity_budget: str = "medium"
+
+    @field_validator("visual_thesis", mode="before")
+    @classmethod
+    def _clean_visual_thesis(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return value.strip()
+        return value
+
+    @field_validator("art_direction", mode="before")
+    @classmethod
+    def _coerce_art_direction(cls, value: Any) -> Any:
+        if isinstance(value, (dict, ArtDirectionSpec)):
+            return value
+        if isinstance(value, str):
+            return {"palette": value}
+        return {}
+
+    @field_validator(
+        "primary_visual_motifs",
+        "reusable_motifs",
+        "scene_transitions",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_list(cls, value: Any) -> list[str]:
+        if isinstance(value, str):
+            return [p.strip() for p in value.split(",") if p.strip()]
+        if isinstance(value, (list, tuple)):
+            return [str(v) for v in value if str(v).strip()]
+        return []
 
 
 class StoryboardArtifact(Artifact):

@@ -6,8 +6,11 @@ to JSON Schema from here. If a field is not in a contract, it does not exist.
 
 from .artifacts import (
     ApprovalArtifact,
+    ArtDirectionSpec,
     AssetsArtifact,
     AudioArtifact,
+    CameraIntent,
+    CreativeMotionBriefArtifact,
     MetadataArtifact,
     MotionPlanArtifact,
     PublicationArtifact,
@@ -18,6 +21,9 @@ from .artifacts import (
     RevisionArtifact,
     ScriptArtifact,
     StoryboardArtifact,
+    StyleIntent,
+    VisualBeatPlan,
+    VisualPlanArtifact,
 )
 from .base import Artifact, ArtifactValidationError, content_hash, validate_artifact
 from .scene import CameraSpec, MotionSpec, SceneSpec, SubtitleCue, TemplateId, WordTimestamp
@@ -25,11 +31,14 @@ from .state import JobState, StudioStatus, allowed_transitions, assert_transitio
 
 __all__ = [
     "ApprovalArtifact",
+    "ArtDirectionSpec",
     "Artifact",
     "ArtifactValidationError",
     "AssetsArtifact",
     "AudioArtifact",
+    "CameraIntent",
     "CameraSpec",
+    "CreativeMotionBriefArtifact",
     "JobState",
     "MetadataArtifact",
     "MotionPlanArtifact",
@@ -44,8 +53,11 @@ __all__ = [
     "ScriptArtifact",
     "StoryboardArtifact",
     "StudioStatus",
+    "StyleIntent",
     "SubtitleCue",
     "TemplateId",
+    "VisualBeatPlan",
+    "VisualPlanArtifact",
     "WordTimestamp",
     "allowed_transitions",
     "assert_transition",
