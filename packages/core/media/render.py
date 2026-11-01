@@ -19,6 +19,7 @@ import shutil
 import socket
 import subprocess
 import time
+import wave
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
@@ -350,7 +351,12 @@ def _speech_windows(raw: Any, *, duration_ms: int) -> list[dict[str, int]]:
     return windows
 
 
-def mux_argv(video_path: Path, narration_path: Path, output_path: Path) -> list[str]:
+def mux_argv(
+    video_path: Path,
+    narration_path: Path,
+    output_path: Path,
+    sample_rate: int = 16000,
+) -> list[str]:
     """Build the fixed ffmpeg argv that adds one AAC narration stream without re-encoding video.
 
     No ``-shortest``. ``update_storyboard_from_audio`` rounds every scene end *up*, so the picture
@@ -367,24 +373,34 @@ def mux_argv(video_path: Path, narration_path: Path, output_path: Path) -> list[
     out near 96 kb/s; requesting 192k made ffmpeg print ``Too many bits 12288 > 6144 per frame
     requested, clamping to max`` and deliver 67 524 b/s on a real render. A constant the encoder
     cannot honour is a lie in the argv. 64k is ample for mono speech and is a rate the format can
-    actually reach.
+    actually reach. Higher sample rates (>= 24 kHz) use 128k.
 
-    ``-ar 16000`` is a real resample, not a no-op: ``narration.wav`` measures 192 kHz mono, so this
-    is a 12:1 conversion. Stating it keeps the delivered format a decision rather than an ffmpeg
+    ``-ar`` is a real resample, not a no-op: ``narration.wav`` measures 192 kHz mono, so this
+    is a conversion. Stating it keeps the delivered format a decision rather than an ffmpeg
     default that would move if the TTS voice changed rate.
     """
+    if not isinstance(sample_rate, int) or sample_rate <= 0:
+        raise ValueError(f"sample_rate must be a positive integer, got {sample_rate!r}")
+    bitrate = "128k" if sample_rate >= 24000 else "64k"
     return [
         "ffmpeg", "-y", "-i", str(video_path), "-i", str(narration_path),
         "-map", "0:v:0", "-map", "1:a:0", "-c:v", "copy", "-c:a", "aac",
-        "-ar", "16000", "-ac", "1", "-b:a", "64k", "-movflags",
+        "-ar", str(sample_rate), "-ac", "1", "-b:a", bitrate, "-movflags",
         "+faststart", str(output_path),
     ]
 
 
-def mux_narration(video_path: Path, narration_path: Path, output_path: Path, *, timeout_s: int = 120) -> None:
+def mux_narration(
+    video_path: Path,
+    narration_path: Path,
+    output_path: Path,
+    *,
+    sample_rate: int = 16000,
+    timeout_s: int = 120,
+) -> None:
     try:
         proc = subprocess.run(  # noqa: S603 - fixed ffmpeg argv, no shell
-            mux_argv(video_path, narration_path, output_path), capture_output=True, text=True,
+            mux_argv(video_path, narration_path, output_path, sample_rate=sample_rate), capture_output=True, text=True,
             encoding="utf-8", errors="replace", timeout=timeout_s, check=False,
         )
     except FileNotFoundError as exc:
@@ -1146,7 +1162,15 @@ def build_render_stage(
                 raise RuntimeError(f"renderer produced no file at {raw_video_path}")
             if not narration_path.is_file() or narration_path.stat().st_size == 0:
                 raise RuntimeError(f"audio stage produced no narration at {narration_path}")
-            mux_narration(raw_video_path, narration_path, out_path, timeout_s=min(timeout_s, 120))
+            sample_rate = 16000
+            try:
+                with wave.open(str(narration_path), "rb") as wf:
+                    sr = wf.getframerate()
+                    if sr > 0:
+                        sample_rate = sr
+            except Exception:
+                pass
+            mux_narration(raw_video_path, narration_path, out_path, sample_rate=sample_rate, timeout_s=min(timeout_s, 120))
 
             payload_out = _finalize_render(
                 ctx=ctx,

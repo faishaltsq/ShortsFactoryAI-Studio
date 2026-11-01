@@ -399,14 +399,58 @@ class TTSVoice:
 def normalize_indonesian_pronunciation(text: str) -> str:
     """Safe normalization for Indonesian scripts without mutating technical terms.
 
-    Expands percentage signs (e.g. '50%' -> '50 persen') and normalizes common symbols,
-    while leaving technical/scientific terms (REM, MCH, DNA, neuron) intact.
+    Expands percentage signs, technical acronyms (AI, GPU, CPU, etc.), and normalizes
+    common symbols and punctuation for natural sentence pacing, rhythm and clear pauses.
     """
-    normalized = re.sub(r"(\d+)%", r"\1 persen", text)
-    normalized = re.sub(r"\bProf\.", "Profesor", normalized)
-    normalized = re.sub(r"\bdr\.", "Dokter", normalized)
+    normalized = text
+    # Strip markdown bold/italic
     normalized = re.sub(r"\*\*([^*]+)\*\*", r"\1", normalized)
     normalized = re.sub(r"\*([^*]+)\*", r"\1", normalized)
+
+    # Honorifics
+    normalized = re.sub(r"\bProf\.", "Profesor", normalized)
+    normalized = re.sub(r"\bdr\.", "Dokter", normalized)
+
+    # Percentages
+    normalized = re.sub(r"(\d+)%", r"\1 persen", normalized)
+
+    # Ampersand
+    normalized = re.sub(r"\s*&\s*", " dan ", normalized)
+
+    # Natural pacing: convert em-dashes, double hyphens, and ellipses to commas for breathing pauses
+    normalized = re.sub(r"\s*[—–]\s*", ", ", normalized)
+    normalized = re.sub(r"\s+--\s+", ", ", normalized)
+    normalized = re.sub(r"\.{3,}", ", ", normalized)
+
+    # Dimensions
+    normalized = re.sub(r"\b3D\b", "3-D", normalized)
+    normalized = re.sub(r"\b2D\b", "2-D", normalized)
+    normalized = re.sub(r"\b3d\b", "3-D", normalized)
+    normalized = re.sub(r"\b2d\b", "2-D", normalized)
+
+    # Technical acronyms to phonetic hyphenated form so neural voice articulates each letter clearly
+    # without slurring into accidental Indonesian syllables (e.g. AI -> A-I, GPU -> G-P-U)
+    acronyms = {
+        r"\bAI\b": "A-I",
+        r"\bGPU\b": "G-P-U",
+        r"\bCPU\b": "C-P-U",
+        r"\bAPI\b": "A-P-I",
+        r"\bLLM\b": "L-L-M",
+        r"\bRAM\b": "R-A-M",
+        r"\bVRAM\b": "V-R-A-M",
+        r"\bFPS\b": "F-P-S",
+        r"\bSSD\b": "S-S-D",
+        r"\bHDD\b": "H-D-D",
+        r"\bUI\b": "U-I",
+        r"\bUX\b": "U-X",
+        r"\bVPC\b": "V-P-C",
+        r"\bURL\b": "U-R-L",
+    }
+    for pattern, replacement in acronyms.items():
+        normalized = re.sub(pattern, replacement, normalized)
+
+    # Clean redundant whitespace
+    normalized = re.sub(r"[ \t]+", " ", normalized).strip()
     return normalized
 
 
@@ -443,7 +487,9 @@ class BaseTTSProvider:
         output_path: Path,
         *,
         voice: str,
+        rate: str | None = None,
         timeout_s: int = 90,
+        **kwargs: Any,
     ) -> tuple[list[WordBoundary], int]:
         raise NotImplementedError
 
@@ -548,7 +594,9 @@ class EdgeTTSProvider(BaseTTSProvider):
         output_path: Path,
         *,
         voice: str,
+        rate: str | None = "-3%",
         timeout_s: int = 90,
+        **kwargs: Any,
     ) -> tuple[list[WordBoundary], int]:
         import asyncio
 
@@ -562,17 +610,33 @@ class EdgeTTSProvider(BaseTTSProvider):
         output_path.parent.mkdir(parents=True, exist_ok=True)
         raw_mp3 = output_path.with_suffix(".tmp.mp3")
 
-        async def _run() -> list[Any]:
-            communicate = edge_tts.Communicate(normalized, voice, boundary="WordBoundary")
-            words_raw: list[Any] = []
-            with open(raw_mp3, "wb") as f:
-                async for chunk in communicate.stream():
-                    if chunk["type"] == "audio":
-                        f.write(chunk["data"])
-                    elif chunk["type"] == "WordBoundary":
-                        words_raw.append(chunk)
-            return words_raw
+        comm_kwargs: dict[str, Any] = {"boundary": "WordBoundary"}
+        if rate:
+            comm_kwargs["rate"] = rate
 
+        async def _run() -> list[Any]:
+            last_exc: Exception | None = None
+            for attempt in range(3):
+                try:
+                    communicate = edge_tts.Communicate(normalized, voice, **comm_kwargs)
+                    words_raw: list[Any] = []
+                    audio_received = False
+                    with open(raw_mp3, "wb") as f:
+                        async for chunk in communicate.stream():
+                            if chunk["type"] == "audio":
+                                f.write(chunk["data"])
+                                audio_received = True
+                            elif chunk["type"] == "WordBoundary":
+                                words_raw.append(chunk)
+                    if audio_received and raw_mp3.is_file() and raw_mp3.stat().st_size > 0:
+                        return words_raw
+                except Exception as exc:
+                    last_exc = exc
+                if attempt < 2:
+                    await asyncio.sleep(0.6 * (attempt + 1))
+            if last_exc:
+                raise last_exc
+            raise RuntimeError("Edge TTS produced empty audio output")
         try:
             try:
                 loop = None
@@ -595,10 +659,18 @@ class EdgeTTSProvider(BaseTTSProvider):
 
             cmd = [
                 "ffmpeg", "-y", "-i", str(raw_mp3),
-                "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+                "-ar", "24000", "-ac", "1", "-c:a", "pcm_s16le",
                 str(output_path),
             ]
-            proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout_s, check=False)
+            proc = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=timeout_s,
+                check=False,
+            )
             if proc.returncode != 0:
                 raise RuntimeError(f"ffmpeg conversion failed: {proc.stderr[-STDERR_LIMIT:]}")
 
@@ -705,25 +777,133 @@ class SapiTTSProvider(BaseTTSProvider):
         output_path: Path,
         *,
         voice: str,
+        rate: str | None = None,
         timeout_s: int = 90,
+        **kwargs: Any,
     ) -> tuple[list[WordBoundary], int]:
         return synthesize_sapi(text, output_path, voice=voice, timeout_s=timeout_s)
 
 
+class VoiceStudioProvider(BaseTTSProvider):
+    name = "voicestudio"
+    provider_id = "voicestudio"
+
+    _standard_voices: tuple[TTSVoice, ...] = (
+        TTSVoice(id="alloy", name="VoiceStudio Alloy", locale="id-ID", gender="Neutral", provider="voicestudio", description="VoiceStudio Alloy"),
+        TTSVoice(id="echo", name="VoiceStudio Echo", locale="id-ID", gender="Male", provider="voicestudio", description="VoiceStudio Echo"),
+        TTSVoice(id="fable", name="VoiceStudio Fable", locale="id-ID", gender="Neutral", provider="voicestudio", description="VoiceStudio Fable"),
+        TTSVoice(id="onyx", name="VoiceStudio Onyx", locale="id-ID", gender="Male", provider="voicestudio", description="VoiceStudio Onyx"),
+        TTSVoice(id="nova", name="VoiceStudio Nova", locale="id-ID", gender="Female", provider="voicestudio", description="VoiceStudio Nova"),
+        TTSVoice(id="shimmer", name="VoiceStudio Shimmer", locale="id-ID", gender="Female", provider="voicestudio", description="VoiceStudio Shimmer"),
+    )
+
+    def __init__(self, adapter: Any = None) -> None:
+        self.adapter = adapter
+
+    def list_voices(self, locale: str | None = None) -> list[TTSVoice]:
+        voices = list(self._standard_voices)
+        if locale:
+            loc = locale.lower()
+            norm = "id" if loc in ("id", "id-id", "indonesian") else loc[:2]
+            return [v for v in voices if v.locale.lower().startswith(norm)]
+        return voices
+
+    def validate_voice(self, voice: str, locale: str | None = None) -> TTSVoice:
+        clean = (voice or "").strip().lower()
+        if not clean or clean in ("system-default", "default", "auto"):
+            clean = "alloy"
+        voices = self.list_voices()
+        found = next((v for v in voices if v.id.lower() == clean), None)
+        if not found:
+            found = TTSVoice(
+                id=voice,
+                name=f"VoiceStudio {voice}",
+                locale="id-ID",
+                gender="Unknown",
+                provider="voicestudio",
+                description=f"VoiceStudio {voice}",
+            )
+        if locale:
+            loc = locale.lower()
+            norm = "id" if loc in ("id", "id-id", "indonesian") else loc[:2]
+            if not found.locale.lower().startswith(norm):
+                raise ValueError(
+                    f"VoiceStudio voice {voice!r} (locale {found.locale}) does not match required locale {locale!r}"
+                )
+        return found
+
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path,
+        *,
+        voice: str,
+        rate: str | None = None,
+        timeout_s: int = 90,
+        **kwargs: Any,
+    ) -> tuple[list[WordBoundary], int]:
+        from .voicestudio import VoiceStudioAdapter
+
+        adapter = self.adapter or VoiceStudioAdapter(timeout_s=float(timeout_s))
+        synth_kwargs: dict[str, Any] = {"voice": voice}
+        if "model" in kwargs:
+            synth_kwargs["model"] = kwargs["model"]
+        if "language" in kwargs:
+            synth_kwargs["language"] = kwargs["language"]
+        if "speed" in kwargs:
+            synth_kwargs["speed"] = float(kwargs["speed"])
+        elif rate is not None:
+            if isinstance(rate, (int, float)):
+                synth_kwargs["speed"] = float(rate)
+            elif isinstance(rate, str) and rate.endswith("%"):
+                try:
+                    pct = float(rate.rstrip("%"))
+                    synth_kwargs["speed"] = max(0.25, min(4.0, 1.0 + pct / 100.0))
+                except ValueError:
+                    pass
+
+        res = adapter.synthesize(text, **synth_kwargs)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(res.audio_bytes)
+        duration_ms = int(round(res.duration_s * 1000.0))
+        boundaries = [
+            WordBoundary(text=w["word"], start_ms=w["startMs"], end_ms=w["endMs"])
+            for w in res.word_timestamps
+        ]
+        return boundaries, duration_ms
+
+
+def select_tts_provider(provider_name: str | None) -> str:
+    """Normalize TTS provider name.
+
+    Returns "voicestudio" for VoiceStudio/local, "sapi" for Windows SAPI, else "edge-tts".
+    """
+    prov = (provider_name or "").strip().lower()
+    if prov in ("voicestudio", "voice-studio", "omnivioce", "omnivoice", "local"):
+        return "voicestudio"
+    if prov in ("sapi", "windows"):
+        return "sapi"
+    return "edge-tts"
+
+
 def get_tts_provider(name: str) -> BaseTTSProvider:
-    name_clean = (name or "").strip().lower()
-    if name_clean in ("sapi", "windows", "system"):
+    selected = select_tts_provider(name)
+    if selected == "sapi":
         return SapiTTSProvider()
+    if selected == "voicestudio":
+        return VoiceStudioProvider()
     return EdgeTTSProvider()
 
 
 def list_available_voices(locale: str | None = None, provider: str | None = None) -> list[TTSVoice]:
     prov = (provider or "").strip().lower()
     voices: list[TTSVoice] = []
-    if not prov or prov == "edge-tts":
+    if not prov or prov in ("edge-tts", "edge"):
         voices.extend(EdgeTTSProvider().list_voices(locale=locale))
     if not prov or prov in ("sapi", "windows"):
         voices.extend(SapiTTSProvider().list_voices(locale=locale))
+    if not prov or prov in ("voicestudio", "voice-studio", "omnivioce", "omnivoice", "local"):
+        voices.extend(VoiceStudioProvider().list_voices(locale=locale))
     return voices
 
 
@@ -736,6 +916,13 @@ def resolve_tts(
     is_id = lang_clean in ("id", "id-id", "indonesian")
     req_voice = (requested_voice or "").strip()
     req_provider = (requested_provider or "").strip().lower()
+
+    if req_provider in ("voicestudio", "voice-studio", "omnivioce", "omnivoice", "local"):
+        vs = VoiceStudioProvider()
+        target_locale = "id-ID" if is_id else ("en-US" if lang_clean in ("en", "en-us") else lang_clean)
+        target_voice = req_voice if req_voice and req_voice not in ("system-default", "default", "auto") else "alloy"
+        voice_obj = vs.validate_voice(target_voice, locale=target_locale if is_id else None)
+        return vs, voice_obj
 
     if is_id:
         target_locale = "id-ID"
@@ -805,6 +992,7 @@ def build_normalise_argv(
     output_path: Path,
     *,
     gain_db: float,
+    sample_rate: int = 16000,
 ) -> list[str]:
     """Build the narration-only argv that lands the file on ``NARRATION_TARGET_LUFS``.
 
@@ -816,13 +1004,15 @@ def build_normalise_argv(
     first, then applies a gain the caller measured from the actual output of this exact chain, then
     brickwalls at -2 dBFS. Every element is an argv entry; nothing is a shell string.
     """
+    if not isinstance(sample_rate, int) or sample_rate <= 0:
+        raise ValueError(f"sample_rate must be a positive integer, got {sample_rate!r}")
     filters = ",".join(
         (NARRATION_COMPRESSOR, f"volume={gain_db:.2f}dB", NARRATION_LIMITER)
     )
     return [
         "ffmpeg", "-y", "-i", str(narration_path),
         "-af", filters,
-        "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+        "-ar", str(sample_rate), "-ac", "1", "-c:a", "pcm_s16le",
         str(output_path),
     ]
 
@@ -834,14 +1024,17 @@ def build_mix_argv(
     music_path: Path | None = None,
     music_gain_db: float = -18.0,
     gain_db: float = 0.0,
+    sample_rate: int = 16000,
 ) -> list[str]:
     """Build the narration-only normalisation or a real music ducking mix.
 
     ``gain_db`` is the measured gain from :func:`normalise_narration`; with music present it is
     applied to the narration leg before the duck, so the music is not lifted with it.
     """
+    if not isinstance(sample_rate, int) or sample_rate <= 0:
+        raise ValueError(f"sample_rate must be a positive integer, got {sample_rate!r}")
     if music_path is None:
-        return build_normalise_argv(narration_path, output_path, gain_db=gain_db)
+        return build_normalise_argv(narration_path, output_path, gain_db=gain_db, sample_rate=sample_rate)
     narration_chain = f"[0:a]{NARRATION_COMPRESSOR},volume={gain_db:.2f}dB[voice]"
     music_chain = f"[1:a]volume={music_gain_db}dB[music]"
     duck = "[music][voice]sidechaincompress=threshold=0.03:ratio=10[ducked]"
@@ -850,7 +1043,7 @@ def build_mix_argv(
         "ffmpeg", "-y", "-i", str(narration_path), "-i", str(music_path),
         "-filter_complex", f"{narration_chain};{music_chain};{duck};{mix}",
         "-map", "[out]",
-        "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le",
+        "-ar", str(sample_rate), "-ac", "1", "-c:a", "pcm_s16le",
         str(output_path),
     ]
 
@@ -924,6 +1117,7 @@ def normalise_narration(
     source: Path,
     target: Path,
     *,
+    sample_rate: int | None = None,
     timeout_s: int = 90,
     max_passes: int = 4,
 ) -> Loudness:
@@ -936,11 +1130,24 @@ def normalise_narration(
     """
     if not source.is_file():
         raise RuntimeError(f"normalisation source {source} does not exist")
+    target_sample_rate = sample_rate
+    if target_sample_rate is None:
+        try:
+            with wave.open(str(source), "rb") as wf:
+                sr = wf.getframerate()
+                if sr > 0:
+                    target_sample_rate = sr
+        except Exception:
+            pass
+    if target_sample_rate is None or target_sample_rate <= 0:
+        target_sample_rate = 16000
+
     gain_db = 0.0
     measured = Loudness(integrated=0.0, true_peak=None, range=None)
     for _ in range(max_passes):
         _run_audio_argv(
-            build_normalise_argv(source, target, gain_db=gain_db), timeout_s=timeout_s
+            build_normalise_argv(source, target, gain_db=gain_db, sample_rate=target_sample_rate),
+            timeout_s=timeout_s,
         )
         measured = measure_loudness(target, timeout_s=timeout_s)
         error = NARRATION_TARGET_LUFS - measured.integrated
@@ -998,6 +1205,29 @@ def build_asset_stage(state: Any, *, video_dir: Path) -> Stage:
                 storyboard = ctx.store.read_artifact(job_id, "storyboard.json")
             except Exception:
                 pass
+            # Validate against semantic visual plan if present
+            visual_plan = None
+            try:
+                visual_plan = ctx.store.read_artifact(job_id, "visual-plan.json")
+            except Exception:
+                pass
+            if visual_plan and isinstance(visual_plan, dict):
+                from ..agents.asset_registry import AssetResolver
+                script = None
+                try:
+                    script = ctx.store.read_artifact(job_id, "script.json")
+                except Exception:
+                    pass
+                _assets_payload, missing_reports = AssetResolver.resolve_visual_plan(visual_plan, script)
+                if missing_reports:
+                    unresolved: list[str] = [
+                        str(m.get("concept") or m.get("subject") or "unknown") for m in missing_reports
+                    ]
+                    raise RuntimeError(
+                        f"AssetAgent blocked: missing mandatory visual assets for concepts: {unresolved}. "
+                        "Cannot proceed without concrete visual representation."
+                    )
+
 
             kinds: set[str] = set()
             environments: set[str] = set()
@@ -1014,6 +1244,14 @@ def build_asset_stage(state: Any, *, video_dir: Path) -> Stage:
                     for item in data.get("objects") or []:
                         if isinstance(item, dict) and isinstance(item.get("kind"), str):
                             kinds.add(item["kind"])
+
+            from ..contracts.scene import OBJECT_KINDS
+            unknown_kinds = sorted({k for k in kinds if k not in OBJECT_KINDS})
+            if unknown_kinds:
+                raise RuntimeError(
+                    f"Storyboard names unresolvable visual objects {unknown_kinds}. "
+                    f"Supported drawable library assets: {sorted(OBJECT_KINDS)}"
+                )
 
             library_hash = _sha256_paths([kinds_path, library_path])
             palette_hash = _sha256_paths([palette_path])
@@ -1222,7 +1460,8 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
                 raw_scene = job_dir / f".narration-scene-{index + 1}.raw.wav"
                 trimmed_scene = job_dir / f".narration-scene-{index + 1}.wav"
                 scratch.extend((raw_scene, trimmed_scene, raw_scene.with_suffix(".words.json")))
-                words, _ = tts_provider.synthesize(text, raw_scene, voice=voice, timeout_s=timeout_s)
+                rate = str(job.payload.get("speech_rate") or "-3%")
+                words, _ = tts_provider.synthesize(text, raw_scene, voice=voice, rate=rate, timeout_s=timeout_s)
                 trim = trim_scene_wav(raw_scene, trimmed_scene)
                 scene_ids.append(scene_id)
                 trims.append(trim)
@@ -1236,7 +1475,7 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
             boundaries = scene_timings([trim.frames for trim in trims], sample_rate)
 
             _concat_pcm_wavs([trim.path for trim in trims], raw_path)
-            measured = normalise_narration(raw_path, narration_path, timeout_s=timeout_s)
+            measured = normalise_narration(raw_path, narration_path, sample_rate=sample_rate, timeout_s=timeout_s)
             duration_ms = _audio_duration_ms(probe_media(narration_path))
             expected_ms = boundaries[-1][1]
             if abs(duration_ms - expected_ms) > 2:
@@ -1294,6 +1533,14 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
                 )
             subtitles = _clamp_cues(subtitles, duration_ms=duration_ms)
             word_timestamps = _clamp_words(all_words, duration_ms=duration_ms)
+            tts_metadata = {
+                "voice": voice,
+                "provider": tts_provider.provider_id,
+                "locale": tts_voice.locale,
+                "gender": tts_voice.gender,
+                "rate": str(job.payload.get("speech_rate") or "-3%"),
+                "description": tts_voice.description,
+            }
             artifact = AudioArtifact(
                 narration={
                     "src": NARRATION_NAME,
@@ -1301,6 +1548,8 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
                     "voice": voice,
                     "provider": tts_provider.provider_id,
                     "locale": tts_voice.locale,
+                    "rate": str(job.payload.get("speech_rate") or "-3%"),
+                    "gender": tts_voice.gender,
                 },
                 scenes=timings,
                 subtitles=subtitles,
@@ -1315,6 +1564,7 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
             payload = artifact.model_dump()
             validate_artifact(AudioArtifact, payload)
             ctx.write_artifact(AUDIO_NAME, payload)
+            ctx.write_artifact("tts_metadata.json", tts_metadata)
             ctx.stage_file(NARRATION_NAME, narration_path)
         except Exception as exc:
             narration_path.unlink(missing_ok=True)
@@ -1345,6 +1595,7 @@ __all__ = [
     "SceneTrim",
     "SpeechExtent",
     "TTSVoice",
+    "VoiceStudioProvider",
     "WordBoundary",
     "build_asset_stage",
     "build_audio_stage",
@@ -1365,6 +1616,7 @@ __all__ = [
     "reconcile_timings",
     "resolve_tts",
     "scene_timings",
+    "select_tts_provider",
     "synthesize_sapi",
     "trim_scene_wav",
 ]
