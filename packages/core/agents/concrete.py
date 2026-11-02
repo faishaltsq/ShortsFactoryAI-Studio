@@ -1045,11 +1045,32 @@ class MotionCoderAgent(Agent):
         scenes_summary = []
         for s in storyboard.get("scenes", []):
             if isinstance(s, dict):
+                data = s.get("data") if isinstance(s.get("data"), dict) else {}
+                title = data.get("title") or s.get("title") or s.get("heading") or ""
+                caption = data.get("caption") or s.get("visual_description") or s.get("description") or ""
+                causal = s.get("causal_state") if isinstance(s.get("causal_state"), dict) else {}
+                objects = [
+                    f"{obj.get('label') or obj.get('kind')} (kind: {obj.get('kind')})"
+                    for obj in data.get("objects", [])
+                    if isinstance(obj, dict)
+                ]
+                callouts = [
+                    str(c.get("text"))
+                    for c in data.get("callouts", [])
+                    if isinstance(c, dict) and c.get("text")
+                ]
                 scenes_summary.append({
                     "sceneId": s.get("sceneId"),
-                    "durationFrames": s.get("durationFrames", 120),
-                    "title": s.get("title") or s.get("heading") or "",
-                    "description": s.get("visual_description") or s.get("description") or "",
+                    "durationFrames": s.get("durationInFrames") or s.get("durationFrames") or 120,
+                    "title": title,
+                    "caption": caption,
+                    "causal_transformation": {
+                        "from": causal.get("initial_state", ""),
+                        "action": causal.get("causal_action", ""),
+                        "to": causal.get("resulting_state", ""),
+                    } if causal else None,
+                    "visual_elements": objects,
+                    "callouts": callouts,
                 })
 
         art_dir = brief.get("art_direction") if isinstance(brief, dict) else {}
@@ -1059,10 +1080,18 @@ class MotionCoderAgent(Agent):
             f"Art Direction: {json.dumps(art_dir, ensure_ascii=False) if art_dir else 'Modern minimal clean animation'}\n"
             f"Visual Beats: {len(beats)} planned beats\n"
             f"Scenes to build:\n{json.dumps(scenes_summary, ensure_ascii=False, indent=2)}\n\n"
-            "Generate RootComposition.tsx as the entry point and individual Scene components (e.g. Scene01.tsx, Scene02.tsx, etc.) for each scene. "
-            "Ensure all imports are strictly allowed (react, remotion, @remotion/*, or local ./ modules). "
-            "Animate elements smoothly using interpolate() and useCurrentFrame(). "
-            "Do not import fs, path, os, child_process, or any Node builtins. "
+            "Requirements:\n"
+            "1. Generate RootComposition.tsx as the entry point and individual Scene components (e.g. Scene01.tsx, Scene02.tsx, etc.) for each scene.\n"
+            "2. In RootComposition.tsx, compose all scenes in a <Series> using <Series.Sequence> with durationInFrames matching each scene.\n"
+            "3. B/M/E Three-Phase Visual Dynamics across the ENTIRE duration of each scene:\n"
+            "   Quality Control strictly validates dynamic pixel movement across Beginning (frame 6), Middle (frame = duration / 2), and End (frame = duration - 6).\n"
+            "   Both delta(B -> M) and delta(M -> E) MUST exceed threshold (min delta >= 0.005 / 0.5% pixel change). To guarantee this:\n"
+            "   - Phase 1 (Beginning, frames 0 to duration * 0.4): Entrance animations (spring-driven scale, opacity, slide-in) establishing the initial state.\n"
+            "   - Phase 2 (Middle, frames duration * 0.3 to duration * 0.7): Active causal transformation, data flow progression, metric charts rising, or status shift.\n"
+            "   - Phase 3 (End, frames duration * 0.6 to duration): Resolution, resulting state reveal, secondary callout badges appearing, or final value counter reaching completion.\n"
+            "   - Continuous dynamic camera or background: Animate a continuous smooth scale or translation across the full scene duration (e.g., zoom from 1.0 to 1.08 using `interpolate(frame, [0, duration], [1, 1.08])`, plus subtle ambient wave `Math.sin(frame / 15) * 8`). DO NOT clamp animations before the middle or end of the scene!\n"
+            "4. Render actual content from the storyboard: Display the scene title, caption, visual elements/cards, and callouts prominently with high visual contrast.\n"
+            "5. Ensure all imports are strictly allowed (react, remotion, @remotion/*, or local ./ modules). Do not import fs, path, os, child_process, or any Node builtins.\n"
             "Return JSON only."
         )
 

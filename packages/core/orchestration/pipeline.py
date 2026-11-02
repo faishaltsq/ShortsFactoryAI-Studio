@@ -887,7 +887,15 @@ def run_job(
                 "repaired_at": time.time(),
             })
 
-            remove_list = ["motion-plan.json", "render.json", "output.mp4", "technical-qc.json", "qc.json", "readiness.json"]
+            remove_list = [
+                "motion-plan.json",
+                "motion-code.json",
+                "render.json",
+                "output.mp4",
+                "technical-qc.json",
+                "qc.json",
+                "readiness.json",
+            ]
             state.store.commit_stage(
                 job_id,
                 token=keeper.token,
