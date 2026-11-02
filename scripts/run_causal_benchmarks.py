@@ -81,10 +81,34 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         description="Run autonomous 3-domain causal visual storytelling benchmarks.",
     )
     parser.add_argument(
+        "--mode",
+        choices=["fresh", "resume", "verify-existing"],
+        default="fresh",
+        help="Execution mode: 'fresh' creates and runs brand new jobs; 'resume' continues incomplete jobs; 'verify-existing' validates existing artifacts without re-executing (default: fresh)",
+    )
+    parser.add_argument(
         "--benchmark",
         choices=["all", "a", "b", "c"],
         default="all",
         help="Which benchmark to run (default: all)",
+    )
+    parser.add_argument(
+        "--renderer",
+        choices=["custom-motion", "remotion", "legacy-template"],
+        default="custom-motion",
+        help="Rendering engine to request (default: custom-motion)",
+    )
+    parser.add_argument(
+        "--fallback-policy",
+        choices=["strict", "allow_legacy"],
+        default="strict",
+        help="Fallback policy if custom-motion fails (default: strict)",
+    )
+    parser.add_argument(
+        "--tts-provider",
+        choices=["voicestudio", "edge-tts", "sapi"],
+        default="voicestudio",
+        help="TTS provider to use (default: voicestudio)",
     )
     parser.add_argument(
         "--mock",
@@ -106,7 +130,14 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def run_single_benchmark(
-    state: AppState, benchmark: dict[str, Any], *, mock: bool = False
+    state: AppState,
+    benchmark: dict[str, Any],
+    *,
+    mode: str = "fresh",
+    renderer: str = "custom-motion",
+    fallback_policy: str = "strict",
+    tts_provider: str = "voicestudio",
+    mock: bool = False,
 ) -> dict[str, Any]:
     store = state.store
     key = benchmark["key"]
@@ -120,33 +151,65 @@ def run_single_benchmark(
     print(f"RUNNING {name.upper()} [{domain}]")
     print(f"Judul: {title}")
     print(f"Topik: {topic}")
-    print(f"Mode: {'MOCK' if mock else 'LIVE'}")
+    print(f"Mode Runner: {mode.upper()} | Provider: {'MOCK' if mock else 'LIVE'}")
+    print(f"Engine: {renderer} (Policy: {fallback_policy}) | TTS: {tts_provider}")
     print(f"{'=' * 75}")
 
+    voice = "alloy" if tts_provider == "voicestudio" else "id-ID-ArdiNeural"
     payload = {
         "title": title,
         "topic": topic,
         "provider_mode": "mock" if mock else "live",
         "render_video": True,
-        "renderer": "remotion",
-        "voice": "id-ID-ArdiNeural",
+        "renderer": renderer,
+        "fallback_policy": fallback_policy,
+        "tts_provider": tts_provider,
+        "voice": voice,
         "language": "id",
         "target_duration_s": duration,
     }
 
-    job_id = benchmark.get("existing_job_id")
-    if job_id and (Path(store.job_dir(job_id)) / "output.mp4").is_file():
-        print(f"Reusing verified completed job: {job_id}")
-        wall_time = float(benchmark.get("wall_time_s", 274.29))
-        report = {"ok": True}
-    else:
+    job_id: str | None = None
+    existing_id = benchmark.get("existing_job_id")
+
+    if mode == "verify-existing":
+        if existing_id and (Path(store.job_dir(existing_id)) / "output.mp4").is_file():
+            print(f"Verifying existing completed job: {existing_id}")
+            job_id = existing_id
+            wall_time = float(benchmark.get("wall_time_s", 274.29))
+            report = {"ok": True}
+        else:
+            raise RuntimeError(f"verify-existing requested for {key} but existing job {existing_id} has no output.mp4")
+    elif mode == "resume":
+        if existing_id and store.get(existing_id):
+            job_id = existing_id
+            job_current = store.get(job_id)
+            if job_current and (Path(store.job_dir(job_id)) / "output.mp4").is_file():
+                print(f"Job {job_id} is already completed on disk.")
+                wall_time = float(benchmark.get("wall_time_s", 274.29))
+                report = {"ok": True}
+            else:
+                print(f"Resuming runnable job: {job_id}")
+                keeper = LeaseKeeper(state.settings.db_path, owner=f"bench-{key}-{job_id}")
+                keeper.acquire(job_id)
+                t0 = time.time()
+                try:
+                    report = run_job(state, job_id, keeper=keeper)
+                finally:
+                    keeper.release()
+                wall_time = time.time() - t0
+        else:
+            mode = "fresh"
+
+    if mode == "fresh":
+        # AGENTS §3: No silent mock / benchmark honesty: fresh mode never reuses existing job IDs.
         job = store.create(
             title=title,
             payload=payload,
             state=JobState.IDEA_DISCOVERY,
         )
         job_id = job.id
-        print(f"Job ID created: {job_id}")
+        print(f"Fresh Job ID created: {job_id}")
 
         keeper = LeaseKeeper(state.settings.db_path, owner=f"bench-{key}-{job_id}")
         keeper.acquire(job_id)
@@ -158,6 +221,7 @@ def run_single_benchmark(
             keeper.release()
         wall_time = time.time() - t0
 
+    assert job_id is not None
     job_after = store.get(job_id)
     job_dir = Path(store.job_dir(job_id))
     video_path = job_dir / "output.mp4"
@@ -174,6 +238,21 @@ def run_single_benchmark(
     )
     qc = store.read_artifact(job_id, "qc.json") if store.has_artifact(job_id, "qc.json") else {}
     audio = store.read_artifact(job_id, "audio.json") if store.has_artifact(job_id, "audio.json") else {}
+    render_art = (
+        store.read_artifact(job_id, "render.json")
+        if store.has_artifact(job_id, "render.json")
+        else {}
+    )
+    motion_code = (
+        store.read_artifact(job_id, "motion-code.json")
+        if store.has_artifact(job_id, "motion-code.json")
+        else {}
+    )
+    tts_meta = (
+        store.read_artifact(job_id, "tts_metadata.json")
+        if store.has_artifact(job_id, "tts_metadata.json")
+        else {}
+    )
     bme_dynamics = (
         (qc.get("creative") or {}).get("metrics", {}).get("bme_dynamics")
         or (qc.get("technical") or {}).get("metrics", {}).get("bme_dynamics")
@@ -214,11 +293,20 @@ def run_single_benchmark(
         "domain": domain,
         "topic": topic,
         "job_id": job_id,
+        "mode": mode,
         "final_state": final_state_val,
         "ok": report.get("ok", False),
         "wall_time_s": round(wall_time, 2),
         "video_path": str(video_path) if video_path.is_file() else None,
         "video_size_mb": video_size_mb,
+        "renderer_requested": renderer,
+        "renderer_actual": render_art.get("renderer", "remotion"),
+        "fallback_used": render_art.get("fallback_used", False),
+        "render_sha256": render_art.get("sha256", ""),
+        "motion_code_validated": motion_code.get("validated_by_codeguard", False) if motion_code else None,
+        "motion_code_skills": motion_code.get("skill_hashes", []) if motion_code else [],
+        "tts_sample_rate": tts_meta.get("sample_rate") or 16000,
+        "tts_alignment_mode": tts_meta.get("alignment_mode") or "estimated",
         "scenes": scenes_data,
         "bme_metrics": bme_dynamics.get("scene_metrics", []),
         "bme_passed": bme_dynamics.get("passed", True),
@@ -229,24 +317,38 @@ def run_single_benchmark(
 
 
 def generate_markdown_report(results: list[dict[str, Any]]) -> str:
+    import subprocess
+
+    try:
+        git_sha = subprocess.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], text=True
+        ).strip()
+    except Exception:
+        git_sha = "unknown"
+
     lines = [
         "# ShortsFactoryAI Studio — Autonomous Causal Visual Storytelling Benchmark Report",
         "",
         f"**Generated:** {time.strftime('%Y-%m-%d %H:%M:%S UTC', time.gmtime())}",
+        f"**Git Commit:** `{git_sha}`",
         "",
         "## 1. Executive Summary",
         "",
-        "| Benchmark | Domain | State | Wall Time | Video Size | B/M/E QC | Narration Status |",
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| Benchmark | Domain | State | Renderer | CodeGuard | Audio Alignment | B/M/E QC | Wall Time | Video Size |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
 
     for res in results:
         status_icon = "PASS" if res.get("ok") and res.get("video_size_mb", 0) > 0 else "FAIL"
         qc_icon = "PASS" if res.get("bme_passed") else "FLAGGED"
-        narr_status = res.get("narration_status", "UNKNOWN")
+        renderer_text = res.get("renderer_actual", "remotion")
+        if res.get("fallback_used"):
+            renderer_text += " (fallback)"
+        cg_text = "PASS" if res.get("motion_code_validated") is True else ("N/A" if res.get("motion_code_validated") is None else "FAIL")
+        audio_text = f"{res.get('tts_alignment_mode', 'estimated')} ({res.get('tts_sample_rate', 16000)}Hz)"
         lines.append(
             f"| **{res['name']}** | {res['domain']} | `{res['final_state']}` "
-            f"({status_icon}) | {res['wall_time_s']}s | {res['video_size_mb']} MB | {qc_icon} | {narr_status} |"
+            f"({status_icon}) | `{renderer_text}` | {cg_text} | {audio_text} | {qc_icon} | {res['wall_time_s']}s | {res['video_size_mb']} MB |"
         )
 
     lines.extend([
@@ -261,10 +363,13 @@ def generate_markdown_report(results: list[dict[str, Any]]) -> str:
         lines.append(f"### {res['name']}")
         lines.append(f"- **Domain:** {res['domain']}")
         lines.append(f"- **Topic:** {res['topic']}")
-        lines.append(f"- **Job ID:** `{res['job_id']}`")
+        lines.append(f"- **Job ID:** `{res['job_id']}` (Mode: `{res.get('mode', 'fresh')}`)")
         lines.append(f"- **Final State:** `{res['final_state']}`")
-        lines.append(f"- **Video Output:** `{res['video_path']}` ({res['video_size_mb']} MB)")
-        lines.append(f"- **Narration Status:** {res['narration_status']} ({res['narration_duration_s']}s)")
+        lines.append(f"- **Renderer:** `{res.get('renderer_actual')}` (Requested: `{res.get('renderer_requested')}`, Fallback used: `{res.get('fallback_used')}`)")
+        lines.append(f"- **CodeGuard Validated:** `{res.get('motion_code_validated')}` (Skills bundled: {len(res.get('motion_code_skills', []))})")
+        lines.append(f"- **Audio Synthesis:** `{res.get('voice')}` ({res.get('tts_sample_rate')}Hz, Alignment: `{res.get('tts_alignment_mode')}`, Duration: {res['narration_duration_s']}s)")
+        lines.append(f"- **Video Output:** `{res['video_path']}` ({res['video_size_mb']} MB, SHA256: `{res.get('render_sha256', '')[:16]}...`)")
+        lines.append(f"- **Narration Status:** {res['narration_status']}")
         lines.append("")
         lines.append("#### Causal Scene Architecture & Layout Modes")
         lines.append("| Scene | Layout Mode | Causal Transformation |")
@@ -340,7 +445,15 @@ def main(argv: list[str] | None = None) -> int:
             cached = {}
 
     for bench in selected:
-        res = run_single_benchmark(state, bench, mock=args.mock)
+        res = run_single_benchmark(
+            state,
+            bench,
+            mode=args.mode,
+            renderer=args.renderer,
+            fallback_policy=args.fallback_policy,
+            tts_provider=args.tts_provider,
+            mock=args.mock,
+        )
         cached[res["key"]] = res
 
     results = [cached[b["key"]] for b in BENCHMARKS if b["key"] in cached]
