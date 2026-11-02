@@ -301,7 +301,7 @@ def build_editorial_qc_stage(state: Any) -> Stage:
             bme_dynamics = None
             if video.is_file():
                 try:
-                    scenes = storyboard.get("scenes", [])
+                    scenes = props.get("scenes", []) if isinstance(props, dict) and props.get("scenes") else storyboard.get("scenes", [])
                     if isinstance(scenes, list) and scenes:
                         valid_scenes = [
                             s

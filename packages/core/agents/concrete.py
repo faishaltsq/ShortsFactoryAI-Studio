@@ -177,9 +177,14 @@ TOPIC_VISUALS: tuple[tuple[tuple[str, ...], str, tuple[str, ...]], ...] = (
         ("subseaCableCutaway", "opticalFiber", "dataCenter"),
     ),
     (
-        ("mi instan", "mie instan", "mie", "noodle", "ramen", "makan", "makanan", "panci", "mangkok", "masak", "resep", "nutrisi", "dapur", "kuliner"),
+        ("mi instan", "mie instan", "mie", "noodle", "ramen", "makan", "makanan", "panci", "mangkok", "masak", "resep", "nutrisi", "dapur", "kuliner", "adonan", "goreng", "minyak", "rebus", "keriting", "pengawet", "spons"),
         "kitchen",
-        ("ramenBowl", "cookingPot", "phone"),
+        ("ramenBowl", "cookingPot", "factory"),
+    ),
+    (
+        ("bakteri", "mikroba", "sel", "virus", "kuman", "mikroskop", "biologi", "kelembaban", "kelembapan", "organisme", "higienis"),
+        "lab",
+        ("microscope", "cookingPot", "ramenBowl"),
     ),
     (
         ("bumi", "planet", "tata surya", "globe", "benua", "atmosfer", "geografi", "astronomi", "kehidupan luar bumi"),
@@ -299,8 +304,9 @@ def _scene_text(scene: dict[str, Any]) -> str:
 
 def _topic_visual(text: str) -> tuple[str, tuple[str, ...]]:
     for keywords, environment, kinds in TOPIC_VISUALS:
-        if any(word in text for word in keywords):
-            return environment, kinds
+        for word in keywords:
+            if re.search(r"\b" + re.escape(word) + r"\b", text):
+                return environment, kinds
     return DEFAULT_VISUAL
 
 
@@ -339,7 +345,8 @@ def fill_explainer(data: dict[str, Any], scene: dict[str, Any], index: int) -> N
         # If current hero is generic/abstract/wafer while concrete topic is mesh, clay, cloud, subsea, etc., upgrade hero
         if concrete_hero in {
             "meshTopology", "claySculpt", "cloudArch", "cpuProcessor", "quantumProcessor",
-            "opticalFiber", "subseaCableCutaway", "ramenBowl", "cookingPot", "planetEarth"
+            "opticalFiber", "subseaCableCutaway", "ramenBowl", "cookingPot", "planetEarth",
+            "microscope", "factory"
         }:
             if current_hero != concrete_hero:
                 usable[0]["kind"] = concrete_hero

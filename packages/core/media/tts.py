@@ -945,7 +945,7 @@ def resolve_tts(
 
     # Non-Indonesian
     target_locale = "en-US" if lang_clean in ("en", "en-us") else lang_clean
-    if req_provider in ("sapi", "windows") or (req_voice and not req_voice.endswith("Neural") and req_voice != "system-default"):
+    if req_provider in ("sapi", "windows") or (req_voice and not req_voice.endswith("Neural")):
         sapi = SapiTTSProvider()
         voice_obj = sapi.validate_voice(req_voice or "system-default", locale=target_locale)
         return sapi, voice_obj
@@ -1426,9 +1426,15 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
         scratch: list[Path] = []
         try:
             job = store.get(job_id)
-            lang = str(job.payload.get("language") or "id")
+            raw_lang = job.payload.get("language")
             req_voice = str(job.payload.get("voice") or "")
             req_provider = str(job.payload.get("tts_provider") or "")
+            if raw_lang:
+                lang = str(raw_lang)
+            elif req_voice == "system-default" or req_provider in ("sapi", "windows"):
+                lang = "en"
+            else:
+                lang = "id"
             tts_provider, tts_voice = resolve_tts(lang, requested_voice=req_voice, requested_provider=req_provider)
             voice = tts_voice.id
             script = store.read_artifact(job_id, "script.json")

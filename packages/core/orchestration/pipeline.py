@@ -1004,6 +1004,13 @@ def apply_scene_repairs(
         if "causal_state" in scene and isinstance(scene["causal_state"], dict):
             scene["causal_state"]["causal_action"] = data["causal_action"]
             scene["causal_state"]["resulting_state"] = data["resulting_state"]
+        else:
+            scene["causal_state"] = {
+                "initial_state": "Initial state prior to motion enhancement",
+                "causal_action": data["causal_action"],
+                "resulting_state": data["resulting_state"],
+                "transition": "Continuous dynamic transformation across keyframes",
+            }
 
     return revised
 

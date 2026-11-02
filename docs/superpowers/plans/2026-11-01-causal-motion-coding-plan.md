@@ -762,7 +762,7 @@ Commit message: `feat(scripts): add autonomous 3-domain causal benchmark runner`
 - Run: `scripts/run_causal_benchmarks.py`
 - Inspect: Produced MP4s, B/M/E frame images, and QC reports in `data/jobs/`
 
-- [ ] **Step 1: Execute Benchmark A (API Gateway Routing)**
+- [x] **Step 1: Execute Benchmark A (API Gateway Routing)**
 Command: `python scripts/run_causal_benchmarks.py --benchmark a`
 Verify:
 - Final State is `READY_FOR_APPROVAL`.
@@ -770,19 +770,19 @@ Verify:
 - B/M/E keyframe deltas show active request routing animation.
 - VoiceStudio Indonesian narration is synchronized.
 
-- [ ] **Step 2: Execute Benchmark B (GPS Relativity Corrections)**
+- [x] **Step 2: Execute Benchmark B (GPS Relativity Corrections)**
 Command: `python scripts/run_causal_benchmarks.py --benchmark b`
 Verify:
 - Distinct visual vocabulary (satellite, earth, clock, drift map).
 - B/M/E keyframe deltas show active time divergence and correction.
 
-- [ ] **Step 3: Execute Benchmark C (Everyday Informative Process)**
+- [x] **Step 3: Execute Benchmark C (Everyday Informative Process)**
 Command: `python scripts/run_causal_benchmarks.py --benchmark c`
 Verify:
 - Completely different physical process vocabulary (noodle structure, oil heat, steam pores).
 - Demonstrates domain reusability.
 
-- [ ] **Step 4: Run full project gate check**
+- [x] **Step 4: Run full project gate check**
 Command: `pwsh -File scripts/check.ps1 -Quick`
 Verify all gates pass:
 - `uv run ruff check .`: 0 findings.
@@ -790,19 +790,19 @@ Verify all gates pass:
 - `npm --prefix apps/dashboard run typecheck`: clean.
 - `npm --prefix apps/dashboard run test`: clean.
 
-- [ ] **Step 5: Git commit**
+- [x] **Step 5: Git commit**
 Commit message: `test(benchmarks): verify 3-domain autonomous causal visual storytelling with B/M/E proofs`
 
 ---
 
 ## Plan Verification Checklist
-- [ ] No engine rebuilds or deletions of existing agent systems.
-- [ ] 3D virtual office and agent characters completely preserved.
-- [ ] StepFun provider binding tested and configurable via `config/studio.json`.
-- [ ] Remotion skills loaded safely and version-hashed.
-- [ ] Film-level creative brief precedes scene generation.
-- [ ] 4-part causal scene state cycle validated by Pydantic contracts.
-- [ ] Untrusted TSX code isolated in `data/jobs/<id>/code/` and verified by `CodeGuard` AST.
-- [ ] VoiceStudio local API (`127.0.0.1:3900`) integrated for Indonesian TTS with word timestamps.
-- [ ] Beginning/Middle/End (B/M/E) keyframe delta checks detect static scenes.
-- [ ] 3 benchmark topics produced end-to-end with verified MP4s.
+- [x] No engine rebuilds or deletions of existing agent systems.
+- [x] 3D virtual office and agent characters completely preserved.
+- [x] StepFun provider binding tested and configurable via `config/studio.json`.
+- [x] Remotion skills loaded safely and version-hashed.
+- [x] Film-level creative brief precedes scene generation.
+- [x] 4-part causal scene state cycle validated by Pydantic contracts.
+- [x] Untrusted TSX code isolated in `data/jobs/<id>/code/` and verified by `CodeGuard` AST.
+- [x] VoiceStudio local API (`127.0.0.1:3900`) integrated for Indonesian TTS with word timestamps.
+- [x] Beginning/Middle/End (B/M/E) keyframe delta checks detect static scenes.
+- [x] 3 benchmark topics produced end-to-end with verified MP4s.

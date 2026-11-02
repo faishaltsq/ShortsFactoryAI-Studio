@@ -161,6 +161,13 @@ export function validateExplainerData(raw: unknown): ExplainerData {
     'layout_mode',
     'causalState',
     'causal_state',
+    'causal_action',
+    'causalAction',
+    'resulting_state',
+    'resultingState',
+    'initial_state',
+    'initialState',
+    'transition',
   ]);
   const out: ExplainerData = {environment: environment(d.environment), objects: [], callouts: [], flows: []};
   text(d.title, 70, true);
