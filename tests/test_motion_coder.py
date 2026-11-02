@@ -77,6 +77,77 @@ def test_motion_coder_agent_prompt_and_contract() -> None:
     assert "Remotion" in sys_prompt
 
 
+def test_motion_coder_agent_skill_hashes_and_ast_codeguard(tmp_path: Path) -> None:
+    from packages.core.agents import CallContext
+    from packages.core.agents.skill_loader import MotionSkillLoader
+    from packages.core.providers.base import Capability, ResolvedCall
+    from packages.core.providers.mock import MockProvider
+
+    # Setup dummy skills directory
+    skills_dir = tmp_path / ".agents" / "skills"
+    remotion_dir = skills_dir / "remotion-best-practices"
+    remotion_dir.mkdir(parents=True, exist_ok=True)
+    (remotion_dir / "SKILL.md").write_text("# Remotion Best Practices\nUse spring() and interpolate().", encoding="utf-8")
+
+    call = ResolvedCall(
+        provider="mock",
+        transport="mock",
+        base_url="",
+        model="mock-1",
+        temperature=None,
+        max_tokens=None,
+        timeout_s=5.0,
+        max_retries=0,
+        capabilities=frozenset({Capability.CHAT}),
+        allow_private_hosts=False,
+    )
+    ctx = CallContext(call=call, provider=MockProvider())
+    agent = MotionCoderAgent(ctx)
+    agent.skill_loader = MotionSkillLoader(skills_dir=skills_dir)
+
+    sys_prompt = agent.system_prompt_for_task("motion_code")
+    assert "Remotion Best Practices" in sys_prompt
+    assert agent._skills_bundle is not None
+    assert len(agent._skills_bundle.sha256_hash) == 64
+
+    # Sanitize payload with AST CodeGuard: safe files
+    safe_payload = {
+        "files": {
+            "RootComposition.tsx": "import React from 'react';\nimport { Composition } from 'remotion';\nexport const RootComposition = () => null;\n",
+            "Scene01.tsx": "import React from 'react';\nimport { interpolate, useCurrentFrame } from 'remotion';\nexport const Scene01: React.FC = () => { const frame = useCurrentFrame(); return <div style={{ opacity: interpolate(frame, [0, 10], [0, 1]) }}>Motion</div>; };\n",
+        }
+    }
+    sanitized = agent.sanitize_payload(safe_payload)
+    assert sanitized["validated_by_codeguard"] is True
+    assert sanitized["issues"] == []
+    assert len(sanitized["skill_hashes"]) == 1
+    assert sanitized["skill_hashes"][0] == agent._skills_bundle.sha256_hash
+
+    # Sanitize payload with AST CodeGuard: AST evasion attempt (eval)
+    evil_payload = {
+        "files": {
+            "RootComposition.tsx": "import React from 'react';\nexport const RootComposition = () => null;\n",
+            "Scene01.tsx": "import React from 'react';\nexport const Scene01 = () => { eval('window.leak()'); return null; };\n",
+        }
+    }
+    evil_sanitized = agent.sanitize_payload(evil_payload)
+    assert evil_sanitized["validated_by_codeguard"] is False
+    assert any("eval" in issue.lower() for issue in evil_sanitized["issues"])
+
+
+def test_studio_json_binds_motion_coder_agent_to_stepfun() -> None:
+    import json
+
+    config_path = Path("config/studio.json")
+    assert config_path.is_file(), "config/studio.json must exist"
+    data = json.loads(config_path.read_text(encoding="utf-8"))
+    bindings = {b["agent"]: b for b in data.get("bindings", [])}
+    assert "MotionCoderAgent" in bindings, "MotionCoderAgent must be bound in config/studio.json"
+    motion_binding = bindings["MotionCoderAgent"]
+    assert motion_binding["primary"] == "stepfun"
+    assert motion_binding.get("model") == "om/step-5-preview"
+
+
 def test_build_stages_includes_motion_code_when_custom_renderer(tmp_path: Path) -> None:
     from packages.core.orchestration.jobstore import JobStore
     from packages.core.orchestration.pipeline import build_stages
