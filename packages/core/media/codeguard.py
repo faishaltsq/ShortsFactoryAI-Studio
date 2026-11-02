@@ -219,6 +219,8 @@ class CodeGuard:
                     [node, str(ast_script), filename],
                     input=source,
                     text=True,
+                    encoding="utf-8",
+                    errors="replace",
                     capture_output=True,
                     timeout=15,
                     check=False,
