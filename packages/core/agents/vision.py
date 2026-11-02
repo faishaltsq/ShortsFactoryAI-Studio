@@ -38,23 +38,31 @@ from ..security.redact import redact
 BLOCKING_SEVERITIES = frozenset({"blocker", "major"})
 SEVERITIES = frozenset({"blocker", "major", "minor"})
 
+FINDING_CATEGORIES = frozenset({"technical", "semantic_missing", "layout", "subjective_aesthetic"})
+
 SYSTEM_PROMPT = """\
 You are the visual inspector for a vertical short video. You receive ONE contact sheet: a grid of
 stills taken from the finished render, in reading order.
 
-Rules:
 - Report only what you can see in the sheet. Do not guess at anything outside it.
-- Every finding must name the tile it came from (atMs is the still's timestamp) and the visible
-  consequence: a missing character, text clipped by the frame, a black or blank tile, two scenes
-  that are visually identical.
+- Classify any finding category as one of:
+  - "technical": render artifacts, frozen/corrupt frame, text clipped by frame border, unreadable tile.
+  - "semantic_missing": required concrete subject missing or replaced by generic abstract circle/shape/gradient.
+  - "layout": huge empty voids, hero object pushed off-screen or too tiny (<20% screen), text obscuring hero object.
+  - "subjective_aesthetic": color preference, stylistic nuance. NOTE: subjective_aesthetic is NEVER a blocker or major issue. Aesthetics are not reasons to fail.
+- Every finding must name the tile it came from (atMs is the still's timestamp), category, and the visible consequence: a missing character, text clipped by the frame, a black or blank tile, two scenes that are visually identical.
+- Check concrete subjects: verify that the scenes depict concrete visual subjects (e.g. 3D polygon mesh wireframes, clay sculpting volume, cloud network nodes, CPU hardware, microscope, light bulb, factory, stock chart) rather than generic circuit patterns, abstract shapes or circles standing in for them.
+- Check composition and layout: flag huge unintentional empty voids, hero objects rendered too small or pushed off-screen, or text overlapping hero objects.
+- Check safe zones: flag title/subtitle text clipped at top (<180px) or bottom (>1600px).
+- Check text layers: flag redundant text where title, body or subtitle repeat identical phrases.
 - If a tile is unreadable, say so as a finding rather than assuming it is fine.
 - frames_inspected must equal the number of tiles in the sheet. You will be told that number; an
   answer that reports a different count is discarded.
 - Aesthetics are not findings. This pass exists to catch what is broken, not what is plain.
-- status must be "passed" unless there is a blocker or major defect. If there are only minor observations or no defects, status MUST be "passed".
+- status must be "passed" unless there is a blocker or major defect in technical, semantic_missing, or layout. If there are only minor observations, subjective aesthetics, or no defects, status MUST be "passed".
 Return ONLY JSON:
 {"status": "passed" | "failed", "frames_inspected": <int>, "findings": [
-  {"atMs": <int>, "issue": "<what is visibly wrong>", "severity": "blocker" | "major" | "minor"}
+  {"atMs": <int>, "category": "technical" | "semantic_missing" | "layout" | "subjective_aesthetic", "issue": "<what is visibly wrong>", "severity": "blocker" | "major" | "minor"}
 ]}
 """
 
@@ -237,8 +245,9 @@ def inspect_frames(
     findings = [
         {
             "atMs": int(finding.get("atMs") or 0),
+            "category": str(finding.get("category") or "technical"),
             "issue": str(finding["issue"])[:400],
-            "severity": str(finding["severity"]),
+            "severity": "minor" if str(finding.get("category")) == "subjective_aesthetic" else str(finding["severity"]),
         }
         for finding in payload["findings"]
     ]

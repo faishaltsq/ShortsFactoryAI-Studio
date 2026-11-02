@@ -717,3 +717,42 @@ def test_technical_thresholds_are_declared_constants():
     assert TECHNICAL_THRESHOLDS["loudness"] == "-16 +/- 2 LUFS"
     assert TECHNICAL_THRESHOLDS["true_peak"] == "<= -1.0 dBTP"
     assert TECHNICAL_THRESHOLDS["duration"] == "within 120 ms of narration"
+
+
+def test_qc_flags_missing_concrete_subject():
+    script = {
+        "segments": [
+            {"id": "s1", "text": "Lihat struktur mesh dan wireframe poligon 3D."},
+            {"id": "s2", "text": "Dua"},
+            {"id": "s3", "text": "Tiga"},
+        ]
+    }
+    # PROPS uses serverRack, gpu, database — missing meshTopology
+    result = _creative(script=script)
+    assert result.checks["concrete_subjects"] is False
+    assert "meshTopology" in result.metrics["missing_concrete_subjects"]
+
+
+def test_qc_passes_when_concrete_subject_present():
+    import copy
+    props_with_mesh = copy.deepcopy(PROPS)
+    props_with_mesh["storyboard"]["scenes"][0]["data"]["objects"][0]["kind"] = "meshTopology"
+    script = {
+        "segments": [
+            {"id": "s1", "text": "Lihat struktur mesh dan wireframe poligon 3D."},
+            {"id": "s2", "text": "Dua"},
+            {"id": "s3", "text": "Tiga"},
+        ]
+    }
+    result = _creative(props=props_with_mesh, script=script)
+    assert result.checks["concrete_subjects"] is True
+    assert len(result.metrics["missing_concrete_subjects"]) == 0
+
+
+def test_qc_flags_safe_zone_violation():
+    import copy
+    props_bad_pos = copy.deepcopy(PROPS)
+    props_bad_pos["storyboard"]["scenes"][0]["data"]["objects"][0]["y"] = 0.95
+    result = _creative(props=props_bad_pos)
+    assert result.checks["safe_zones"] is False
+    assert result.metrics["safe_zone_violations"] > 0

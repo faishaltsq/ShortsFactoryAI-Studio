@@ -133,22 +133,30 @@ class Agent:
     def contract(self) -> type[Artifact]:
         raise NotImplementedError
 
+    def system_prompt_for_task(self, task: str) -> str:
+        """Subclasses can provide a task-specific system prompt."""
+        return self.system_prompt
+
     def sanitize_payload(self, payload: dict[str, Any]) -> dict[str, Any]:
         """Hook for subclasses to normalize minor payload deviations before validation."""
         return payload
     # -- machinery --------------------------------------------------------------------------
     def call(self, *, task: str, **kwargs: Any) -> str:
+        self.current_task = task
+        self.current_kwargs = kwargs
         user = self.build_user_prompt(**kwargs)
+        sys_prompt = self.system_prompt_for_task(task)
         try:
             result = self.ctx.provider.complete(
-                self.ctx.call, system=self.system_prompt, user=user, task=task
+                self.ctx.call, system=sys_prompt, user=user, task=task
             )
         except ProviderError as exc:
             raise ModelOutputError(exc.code, exc.detail, retryable=exc.retryable) from exc
         return result.content
-
     def produce(self, *, task: str, **kwargs: Any) -> Artifact:
         """Call, parse, validate. One repair attempt on a schema violation, then fail."""
+        self.current_task = task
+        self.current_kwargs = kwargs
         raw = self.call(task=task, **kwargs)
         try:
             payload = self.sanitize_payload(extract_json(raw))
@@ -160,9 +168,10 @@ class Agent:
                 f"{getattr(first, 'problems', None) or first}\n"
                 "Return ONLY a corrected JSON object. No prose, no markdown."
             )
+            sys_prompt = self.system_prompt_for_task(task)
             try:
                 result = self.ctx.provider.complete(
-                    self.ctx.call, system=self.system_prompt, user=repair_prompt, task=task + ":repair"
+                    self.ctx.call, system=sys_prompt, user=repair_prompt, task=task + ":repair"
                 )
             except ProviderError as exc:
                 raise ModelOutputError(exc.code, exc.detail, retryable=exc.retryable) from exc

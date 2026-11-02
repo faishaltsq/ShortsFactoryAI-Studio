@@ -48,7 +48,6 @@ PROOF_PAYLOAD: dict[str, Any] = {
     "renderer": "remotion",
     "voice": "system-default",
     "target_duration_s": 10,
-    "characters": ["maya"],
 }
 
 TERMINAL = {"READY_FOR_APPROVAL", "BLOCKED", "FAILED", "CANCELLED"}
@@ -97,8 +96,15 @@ def render_job(*, timeout_s: int) -> int:
         if state != last:
             print(f"  {state}", flush=True)
             last = state
-        if state in TERMINAL:
+        if state in {"READY_FOR_APPROVAL", "FAILED", "CANCELLED"}:
             break
+        if state == "BLOCKED":
+            # Revisions transition through BLOCKED momentarily before reopening.
+            # Wait a few seconds to verify if it is a transient revision or a true hard block.
+            time.sleep(5)
+            refreshed = _get(f"/api/jobs/{job_id}")
+            if refreshed["state"] == "BLOCKED":
+                break
         time.sleep(2)
     else:
         print(f"FAIL job {job_id} did not settle within {timeout_s}s", file=sys.stderr)

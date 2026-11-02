@@ -292,6 +292,26 @@ def test_a_minor_finding_does_not_fail_the_pass_but_is_recorded():
     assert result.findings[0]["severity"] == "minor"
 
 
+def test_subjective_aesthetic_finding_is_downgraded_to_minor_and_passes():
+    answer = json.dumps(
+        {
+            "status": "passed",
+            "frames_inspected": 3,
+            "findings": [
+                {
+                    "atMs": 0,
+                    "category": "subjective_aesthetic",
+                    "issue": "Warna kurang menyala menurut selera saya",
+                    "severity": "major",
+                }
+            ],
+        }
+    )
+    result = _run(_StubProvider([answer]))
+    assert result.status == "passed"
+    assert result.findings[0]["severity"] == "minor"
+    assert result.findings[0]["category"] == "subjective_aesthetic"
+
 def test_a_model_that_says_failed_fails_even_with_no_findings():
     provider = _StubProvider(['{"status": "failed", "frames_inspected": 3, "findings": []}'])
     assert _run(provider).status == "failed"
