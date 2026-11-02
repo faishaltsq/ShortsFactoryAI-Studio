@@ -15,6 +15,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -982,7 +983,7 @@ def render_custom_motion(
     node = shutil.which("node")
     if not node:
         raise RuntimeError("node is not on PATH; the renderer needs it to run packages/video")
-    cli = Path(video_dir) / CLI_RELATIVE
+    cli = Path(video_dir).resolve() / CLI_RELATIVE
     if not cli.is_file():
         raise RuntimeError(f"Remotion CLI missing at {cli}; run npm install in packages/video")
     entry_file = Path(code_dir) / f"{composition}.tsx"
@@ -990,13 +991,50 @@ def render_custom_motion(
         entry_file = Path(code_dir) / "RootComposition.tsx"
     if not entry_file.is_file():
         raise RuntimeError(f"entry component not found in {code_dir}")
+
+    content = entry_file.read_text(encoding="utf-8")
+    comp_match = re.search(r'<Composition\b[^>]*\bid=[\x22\x27]([^\x22\x27]+)[\x22\x27]', content, re.DOTALL)
+    comp_name = comp_match.group(1) if comp_match else composition
+
+    target_entry = entry_file
+    if "registerRoot(" not in content:
+        index_file = Path(code_dir) / "index.ts"
+        stem = entry_file.stem
+        if comp_match:
+            index_code = (
+                f"import {{ registerRoot }} from 'remotion';\n"
+                f"import * as RootModule from './{stem}';\n\n"
+                f"const RootComponent = (RootModule as any).{stem} || (RootModule as any).default || Object.values(RootModule)[0];\n"
+                f"registerRoot(RootComponent);\n"
+            )
+        else:
+            index_code = (
+                f"import React from 'react';\n"
+                f"import {{ registerRoot, Composition }} from 'remotion';\n"
+                f"import * as RootModule from './{stem}';\n\n"
+                f"const RootComponent = (RootModule as any).{stem} || (RootModule as any).default || Object.values(RootModule)[0];\n"
+                f"const WrappedRoot: React.FC = () => (\n"
+                f"  <Composition\n"
+                f"    id=\"{comp_name}\"\n"
+                f"    component={{RootComponent}}\n"
+                f"    durationInFrames={{480}}\n"
+                f"    fps={{30}}\n"
+                f"    width={{1080}}\n"
+                f"    height={{1920}}\n"
+                f"  />\n"
+                f");\n"
+                f"registerRoot(WrappedRoot);\n"
+            )
+        index_file.write_text(index_code, encoding="utf-8")
+        target_entry = index_file
+
     port = free_tcp_port()
     argv = [
         node,
         str(cli),
         "render",
-        str(entry_file.resolve()),
-        composition,
+        str(target_entry.resolve()),
+        comp_name,
         str(Path(out_path).resolve()),
         f"--props={Path(props_path).resolve()}",
         "--overwrite",
