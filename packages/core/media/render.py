@@ -1066,6 +1066,7 @@ def _finalize_render(
     out_path: Path,
     renderer: RendererId,
     renderer_version_value: str,
+    fallback_used: bool = False,
 ) -> dict[str, Any]:
     """Probe the finished file and stage ``render.json``. Shared by both renderers.
 
@@ -1101,6 +1102,7 @@ def _finalize_render(
         pix_fmt=str(video.get("pix_fmt") or ""),
         renderer=renderer,
         renderer_version=renderer_version_value,
+        fallback_used=fallback_used,
         scene_hashes=_scene_hashes(storyboard),
     )
     payload = artifact.model_dump()
@@ -1129,7 +1131,12 @@ def _render_remotion(
 
 
 def build_render_stage(
-    state: Any, *, video_dir: Path, renderer: str = "remotion", timeout_s: int = 900
+    state: Any,
+    *,
+    video_dir: Path,
+    renderer: str = "remotion",
+    timeout_s: int = 900,
+    fallback_policy: str | None = None,
 ) -> Stage:
     """The RENDERING stage: render, prove it with ffprobe, then and only then write render.json.
 
@@ -1170,6 +1177,9 @@ def build_render_stage(
                 job_payload = {}
             payload = dict(job_payload)
             payload.setdefault("renderer", renderer)
+            if fallback_policy:
+                payload.setdefault("fallback_policy", fallback_policy)
+            policy = payload.get("fallback_policy", "allow_legacy")
             # Enforce renderer_kind check on the actual runtime payload: typos must fail loudly!
             renderer_kind(payload)
 
@@ -1250,6 +1260,7 @@ def build_render_stage(
                 concat_parts(list(parts), raw_video_path)
 
             actual_renderer: RendererId
+            fallback_used = False
             if active_strategy == "custom-motion":
                 try:
                     _emit(
@@ -1269,6 +1280,23 @@ def build_render_stage(
                     )
                     actual_renderer = "custom-motion"
                 except Exception as exc:
+                    if policy == "strict":
+                        raw_video_path.unlink(missing_ok=True)
+                        shutil.rmtree(staging, ignore_errors=True)
+                        detail = redact(f"{type(exc).__name__}: {exc}", limit=400)
+                        _emit(
+                            state,
+                            job_id,
+                            JobState.RENDERING.value,
+                            "failed",
+                            f"custom-motion render failed in strict mode: {detail}",
+                            agent=RENDER_AGENT,
+                        )
+                        raise StageError(
+                            "render_failed",
+                            f"custom-motion render failed in strict mode: {detail}",
+                            retryable=False,
+                        ) from exc
                     _emit(
                         state,
                         job_id,
@@ -1281,8 +1309,25 @@ def build_render_stage(
                     shutil.rmtree(staging, ignore_errors=True)
                     _render_legacy()
                     actual_renderer = "legacy-template"
+                    fallback_used = True
             else:
                 if payload.get("renderer") == "custom-motion":
+                    if policy == "strict":
+                        raw_video_path.unlink(missing_ok=True)
+                        shutil.rmtree(staging, ignore_errors=True)
+                        _emit(
+                            state,
+                            job_id,
+                            JobState.RENDERING.value,
+                            "failed",
+                            "custom-motion strategy unavailable or rejected in strict mode",
+                            agent=RENDER_AGENT,
+                        )
+                        raise StageError(
+                            "render_failed",
+                            "custom-motion strategy unavailable or rejected in strict mode",
+                            retryable=False,
+                        )
                     _emit(
                         state,
                         job_id,
@@ -1293,6 +1338,7 @@ def build_render_stage(
                         agent=RENDER_AGENT,
                     )
                     actual_renderer = "legacy-template"
+                    fallback_used = True
                 elif renderer == "legacy-template" or payload.get("renderer") == "legacy-template":
                     actual_renderer = "legacy-template"
                 else:
@@ -1319,7 +1365,14 @@ def build_render_stage(
                 out_path=out_path,
                 renderer=actual_renderer,
                 renderer_version_value=renderer_version(Path(video_dir)),
+                fallback_used=fallback_used,
             )
+        except StageError as exc:
+            raw_video_path.unlink(missing_ok=True)
+            shutil.rmtree(staging, ignore_errors=True)
+            detail = redact(f"{exc}", limit=400)
+            _emit(state, job_id, JobState.RENDERING.value, "failed", detail, agent=RENDER_AGENT)
+            raise
         except Exception as exc:  # noqa: BLE001 - any render failure is a stage failure
             raw_video_path.unlink(missing_ok=True)
             shutil.rmtree(staging, ignore_errors=True)

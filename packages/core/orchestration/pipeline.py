@@ -436,10 +436,11 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
                 )
             )
         renderer = payload.get("renderer", "remotion")
+        fallback_policy = payload.get("fallback_policy", "allow_legacy")
         from ..media.render import RENDERERS
 
         render_engine = renderer if renderer in RENDERERS else "remotion"
-        stages.extend(_render_stages(state, renderer=render_engine))
+        stages.extend(_render_stages(state, renderer=render_engine, fallback_policy=fallback_policy))
     return stages
 
 
@@ -450,7 +451,9 @@ def _video_dir() -> Any:
     return Path(__file__).resolve().parents[3] / "packages" / "video"
 
 
-def _render_stages(state: Any, *, renderer: str = "remotion") -> list[Stage]:
+def _render_stages(
+    state: Any, *, renderer: str = "remotion", fallback_policy: str = "allow_legacy"
+) -> list[Stage]:
     """The local Phase 2 chain: assets, audio, render, technical QC, editorial QC, readiness.
 
     Both QC gates are owned by ``QualityAgent`` because both answer questions about the same
@@ -480,7 +483,15 @@ def _render_stages(state: Any, *, renderer: str = "remotion") -> list[Stage]:
     return [
         build_asset_stage(state, video_dir=video_dir),
         build_audio_stage(state),
-        admit_render_stage(state, build_render_stage(state, video_dir=video_dir, renderer=renderer)),
+        admit_render_stage(
+            state,
+            build_render_stage(
+                state,
+                video_dir=video_dir,
+                renderer=renderer,
+                fallback_policy=fallback_policy,
+            ),
+        ),
         _qa_decision_stage(
             build_technical_qc_stage(state),
             lambda artifact, _job_id: artifact.get("passed") is True,

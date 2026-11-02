@@ -473,6 +473,7 @@ class RenderArtifact(Artifact):
     pix_fmt: str = "yuv420p"
     renderer: RendererId = "remotion"
     renderer_version: str = ""
+    fallback_used: bool = False
     scene_hashes: dict[str, str] = Field(default_factory=dict)
 
 

@@ -20,7 +20,10 @@ class CreateJobBody(BaseModel):
     audience: str = Field(default="umum", max_length=80)
     intensity: str = Field(default="sedang", max_length=80)
     music: str = Field(default="none", max_length=80)
-    renderer: Literal["remotion"] = "remotion"
+    renderer: Literal["remotion", "custom-motion", "legacy-template"] = "remotion"
+    tts_provider: Literal["edge-tts", "voicestudio", "sapi"] = "edge-tts"
+    fallback_policy: Literal["strict", "allow_legacy"] = "allow_legacy"
+    motion_provider: str | None = Field(default=None, max_length=80)
     provider_mode: Literal["live", "mock"] = "mock"
     #: A job-level request for the Phase 2 render chain. Not a provider setting: it decides
     #: whether the pipeline appends the Remotion + technical-QC stages at all.

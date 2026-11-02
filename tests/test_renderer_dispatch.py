@@ -390,6 +390,7 @@ def test_stage_custom_motion_renders_and_records_custom_motion(
     assert calls == ["custom-motion"]
     written = dict(ctx.json_pending)[RENDER_NAME]
     assert written["renderer"] == "custom-motion"
+    assert written.get("fallback_used") is False
 
 
 def test_stage_custom_motion_fallback_on_render_failure(
@@ -449,6 +450,7 @@ def test_stage_custom_motion_fallback_on_render_failure(
     assert calls == ["custom-motion-fail", "remotion-fallback"]
     written = dict(ctx.json_pending)[RENDER_NAME]
     assert written["renderer"] == "legacy-template"
+    assert written.get("fallback_used") is True
 
 
 def test_stage_custom_motion_prerender_fallback_emits_warning(
@@ -498,6 +500,7 @@ def test_stage_custom_motion_prerender_fallback_emits_warning(
     assert calls == ["remotion-fallback"]
     written = dict(ctx.json_pending)[RENDER_NAME]
     assert written["renderer"] == "legacy-template"
+    assert written.get("fallback_used") is True
     fallback_events = [
         r for r in state.events.rows
         if "falling back to legacy-template" in r.get("description", "")
@@ -552,6 +555,70 @@ def test_runtime_invalid_payload_renderer_rejected(
 
     with pytest.raises(StageError, match="unknown renderer 'unknown_renderer_typo'"):
         stage.run(ctx)
+
+
+def test_stage_custom_motion_strict_fallback_raises_stage_error_on_render_failure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import packages.core.media.render as render_mod
+    from packages.core.orchestration.runner import StageError
+
+    store = _FakeStore(tmp_path, payload=_payload(renderer="custom-motion", fallback_policy="strict"))
+    code_dir = store.job_dir("job1") / "code"
+    code_dir.mkdir(parents=True, exist_ok=True)
+    (code_dir / "RootComposition.tsx").write_text(
+        "import React from 'react';\nexport const RootComposition: React.FC = () => null;\n",
+        encoding="utf-8",
+    )
+
+    def fake_custom(**kwargs: Any) -> dict[str, Any]:
+        raise RuntimeError("simulated custom motion render error")
+
+    monkeypatch.setattr(render_mod, "render_custom_motion", fake_custom)
+
+    stage = build_render_stage(
+        _State(store), video_dir=_stub_video_dir(tmp_path), renderer="custom-motion"
+    )
+    ctx = stage_ctx(store, "job1")
+    with pytest.raises(StageError, match="custom-motion render failed in strict mode"):
+        stage.run(ctx)
+
+
+def test_stage_custom_motion_strict_fallback_raises_stage_error_on_missing_code(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from packages.core.orchestration.runner import StageError
+
+    store = _FakeStore(tmp_path, payload=_payload(renderer="custom-motion", fallback_policy="strict"))
+    stage = build_render_stage(
+        _State(store), video_dir=_stub_video_dir(tmp_path), renderer="custom-motion"
+    )
+    ctx = stage_ctx(store, "job1")
+    with pytest.raises(StageError, match="custom-motion strategy unavailable or rejected in strict mode"):
+        stage.run(ctx)
+
+
+def test_create_job_body_schema_validation() -> None:
+    import pydantic
+
+    from apps.api.schemas import CreateJobBody
+
+    body = CreateJobBody(
+        title="Demo",
+        renderer="custom-motion",
+        fallback_policy="strict",
+        tts_provider="voicestudio",
+    )
+    assert body.renderer == "custom-motion"
+    assert body.fallback_policy == "strict"
+    assert body.tts_provider == "voicestudio"
+
+    with pytest.raises(pydantic.ValidationError):
+        CreateJobBody(title="Demo", renderer="unknown-renderer")
+
+    with pytest.raises(pydantic.ValidationError):
+        CreateJobBody(title="Demo", fallback_policy="invalid-policy")
+
 
 
 def stage_ctx(store, job_id: str) -> Any:
