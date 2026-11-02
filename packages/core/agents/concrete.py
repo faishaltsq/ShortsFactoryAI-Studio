@@ -1031,7 +1031,7 @@ class MotionCoderAgent(Agent):
         base = super().system_prompt_for_task(task)
         loader = getattr(self, "skill_loader", None) or MotionSkillLoader()
         skills = loader.list_available_skills()
-        bundle = loader.load_bundle(skills, max_tokens=2000)
+        bundle = loader.load_bundle(skills, max_tokens=1000)
         self._skills_bundle = bundle
         if bundle.content:
             return f"{base}\n\nRemotion Motion Skills Reference:\n{bundle.content}"
@@ -1041,13 +1041,27 @@ class MotionCoderAgent(Agent):
         storyboard = kwargs.get("storyboard") or {}
         brief = kwargs.get("creative_motion_brief") or kwargs.get("brief") or {}
         visual_plan = kwargs.get("visual_plan") or {}
+
+        scenes_summary = []
+        for s in storyboard.get("scenes", []):
+            if isinstance(s, dict):
+                scenes_summary.append({
+                    "sceneId": s.get("sceneId"),
+                    "durationFrames": s.get("durationFrames", 120),
+                    "title": s.get("title") or s.get("heading") or "",
+                    "description": s.get("visual_description") or s.get("description") or "",
+                })
+
+        art_dir = brief.get("art_direction") if isinstance(brief, dict) else {}
+        beats = visual_plan.get("beats", []) if isinstance(visual_plan, dict) else []
         return (
-            "Generate modular Remotion TSX code for the following vertical short.\n"
-            f"Creative Motion Brief:\n{json.dumps(brief, ensure_ascii=False)[:2000]}\n\n"
-            f"Visual Plan:\n{json.dumps(visual_plan, ensure_ascii=False)[:2000]}\n\n"
-            f"Storyboard:\n{json.dumps(storyboard, ensure_ascii=False)[:4000]}\n\n"
-            "Generate RootComposition.tsx as the entry point and individual Scene components. "
+            "Generate modular Remotion TSX code for the following vertical short (1080x1920, 30fps).\n"
+            f"Art Direction: {json.dumps(art_dir, ensure_ascii=False) if art_dir else 'Modern minimal clean animation'}\n"
+            f"Visual Beats: {len(beats)} planned beats\n"
+            f"Scenes to build:\n{json.dumps(scenes_summary, ensure_ascii=False, indent=2)}\n\n"
+            "Generate RootComposition.tsx as the entry point and individual Scene components (e.g. Scene01.tsx, Scene02.tsx, etc.) for each scene. "
             "Ensure all imports are strictly allowed (react, remotion, @remotion/*, or local ./ modules). "
+            "Animate elements smoothly using interpolate() and useCurrentFrame(). "
             "Do not import fs, path, os, child_process, or any Node builtins. "
             "Return JSON only."
         )
