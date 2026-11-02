@@ -1099,7 +1099,14 @@ class MotionCoderAgent(Agent):
         return MotionCodeArtifact
 
     def sanitize_payload(self, payload: dict[str, Any], task: str | None = None) -> dict[str, Any]:
-        payload.setdefault("schema_version", 1)
+        raw_version = payload.get("schema_version")
+        if isinstance(raw_version, str):
+            cleaned = raw_version.lstrip("vV").split(".")[0].strip()
+            payload["schema_version"] = int(cleaned) if cleaned.isdigit() else 1
+        elif isinstance(raw_version, (int, float)):
+            payload["schema_version"] = int(raw_version)
+        else:
+            payload["schema_version"] = 1
         entry = str(payload.get("entry_component") or "RootComposition").strip()
         payload["entry_component"] = entry or "RootComposition"
 
