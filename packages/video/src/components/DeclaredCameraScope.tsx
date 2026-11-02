@@ -3,6 +3,7 @@ import {useCurrentFrame, useVideoConfig} from 'remotion';
 import type {SceneSpec} from '../types';
 import {declaredCameraAt, textAnchorOf, type CameraTransform} from '../camera';
 import {DeclaredCamera} from '../art/DeclaredCamera';
+import {CameraStateContext} from './CameraPinning';
 
 /**
  * Declared camera for every template.
@@ -45,5 +46,9 @@ export const DeclaredCameraScope: React.FC<{
     // file bypassed both, and rendering the unmoving base state is more honest than a 500.
     return <>{children}</>;
   }
-  return <DeclaredCamera state={state}>{children}</DeclaredCamera>;
+  return (
+    <CameraStateContext.Provider value={state}>
+      <DeclaredCamera state={state}>{children}</DeclaredCamera>
+    </CameraStateContext.Provider>
+  );
 };

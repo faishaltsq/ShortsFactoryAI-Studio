@@ -32,6 +32,30 @@ export interface CameraTransform {
   originY: number;
 }
 
+/**
+ * The transform that cancels one camera state for content pinned to the frame edge.
+ *
+ * The declared camera owns the *stage*; the type over it is an annotation, not part of the scene.
+ * Applying this inverse to an overlay keeps the title band where the storyboard placed it while
+ * the picture pans behind it. Order matters: the camera is `translate → scale → rotate` about the
+ * anchor, so the cancellation is `rotate⁻¹ → scale⁻¹ → translate⁻¹` about the same origin, applied
+ * inside the camera's own transformed element — a fixed overlay inside a moved frame.
+ */
+export const invertCamera = (state: CameraTransform): {
+  scale: number;
+  x: number;
+  y: number;
+  rotate: number;
+} => {
+  const theta = (-state.rotate * Math.PI) / 180;
+  const cos = Math.cos(theta);
+  const sin = Math.sin(theta);
+  // Rotate the camera's screen-space offset by the inverse rotation, then divide it out.
+  const invX = (state.x * cos + state.y * sin) / state.scale;
+  const invY = (-state.x * sin + state.y * cos) / state.scale;
+  return {scale: 1 / state.scale, x: -invX, y: -invY, rotate: -state.rotate};
+};
+
 /** Framing scale per declared shot size. Gentle: the stage anchors on the subject's ground line. */
 export const SHOT_SCALE: Record<ShotSize, number> = {wide: 1, medium: 1.1, close: 1.24};
 

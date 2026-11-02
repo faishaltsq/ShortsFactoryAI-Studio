@@ -22,11 +22,11 @@ export const Subtitles: React.FC<{cues: SubtitleCue[]; theme: ThemeSpec; current
         fontFamily: theme.fontHeading,
         fontSize: 58,
         lineHeight: 1.25,
-        color: theme.primary,
-        textShadow: '0 4px 18px rgba(0,0,0,0.85)',
+        color: '#ffffff',
+        textShadow: '0 2px 8px rgba(0,0,0,0.6)',
       }}
     >
-      <span style={{backgroundColor: 'rgba(0,0,0,0.35)', borderRadius: 12, padding: '6px 16px'}}>{active.text}</span>
+      <span style={{backgroundColor: 'rgba(15, 23, 42, 0.72)', borderRadius: 14, padding: '8px 20px'}}>{active.text}</span>
     </div>
   );
 };

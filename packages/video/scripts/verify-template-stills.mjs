@@ -62,6 +62,23 @@ const CAMERA = {
 /** Templates whose renderer consumes motion beats. All others must leave beats pixels untouched. */
 const BEAT_DRIVEN = new Set(['ObjectExplainer']);
 
+/** Mean luma of the left/right 24px text margins. Text bleeding into the frame edge is a QC
+ * failure (visual QC caught the title clipped by a pan on the first live vision run), so this
+ * gate fails loud instead of shipping a video with the first letters missing. */
+const edgeLuma = (png) => {
+  const result = spawnSync(
+    'ffmpeg',
+    ['-hide_banner', '-nostats', '-i', png, '-vf',
+      'crop=24:300:0:236,signalstats,metadata=print:key=lavfi.signalstats.YAVG',
+      '-f', 'null', '-'],
+    {encoding: 'utf8', timeout: 60000},
+  );
+  if (result.status !== 0) throw new Error(`ffmpeg failed: ${result.stderr.slice(-600)}`);
+  const match = /YAVG=([\d.]+)/.exec(result.stderr);
+  if (!match) throw new Error('signalstats produced no YAVG');
+  return Number(match[1]);
+};
+
 const templateScene = (template) => {
   const scene = structuredClone(fixture.scenes.find((s) => s.template === template));
   if (!scene) throw new Error(`fixture has no scene for ${template}`);
@@ -166,9 +183,21 @@ for (const template of TEMPLATE_IDS) {
       throw new Error(`template that reads no beats invented motion (PSNR ${beatPsnr.toFixed(1)} dB)`);
     }
 
+    // Text clipping: informative templates pin their title overlay to the frame (see
+    // CameraPinning). The left text margin (x 0..24, the title's y band) must stay near the
+    // theme's background luma (~30) — bright text bleeding to the frame edge fails the check.
+    const INFORMATIVE_TEMPLATES = new Set(['ObjectExplainer', 'ProcessFlow', 'MetricShift']);
+    const edge = edgeLuma(pushed);
+    if (INFORMATIVE_TEMPLATES.has(template) && edge > 32) {
+      throw new Error(
+        `title text is clipped at the left frame edge (edge luma ${edge.toFixed(1)} > 32; ` +
+          'the camera transform must not carry the pinned overlay)',
+      );
+    }
+
     console.log(
       `${template}: luma=${luma.toFixed(1)} push-PSNR=${psnr === Number.POSITIVE_INFINITY ? 'inf' : psnr.toFixed(1)}dB` +
-        ` beat-PSNR=${beatPsnr === Number.POSITIVE_INFINITY ? 'inf' : beatPsnr.toFixed(1)}dB`,
+        ` beat-PSNR=${beatPsnr === Number.POSITIVE_INFINITY ? 'inf' : beatPsnr.toFixed(1)}dB edge=${edge.toFixed(1)}`,
     );
   } catch (error) {
     failures.push(`${template}: ${error.message}`);

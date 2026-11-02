@@ -23,7 +23,7 @@ interface CaptionPage {
 
 export const TiktokCaptions: React.FC<TiktokCaptionsProps> = ({
   words,
-  wordsPerPage = 4,
+  wordsPerPage = 3,
   highlightColor = '#facc15',
   fontFamily = 'Montserrat, Inter, system-ui, sans-serif',
 }) => {
@@ -78,9 +78,9 @@ export const TiktokCaptions: React.FC<TiktokCaptionsProps> = ({
       style={{
         justifyContent: 'flex-end',
         alignItems: 'center',
-        paddingBottom: 460, // Clear of TikTok/Reels description & audio marquee
+        paddingBottom: 420, // Clear of YouTube Shorts bottom controls & audio title
         paddingLeft: 60,
-        paddingRight: 140, // Clear of Like/Comment/Share buttons
+        paddingRight: 130, // Clear of Like/Comment/Share buttons
         pointerEvents: 'none',
       }}
     >
@@ -118,13 +118,12 @@ export const TiktokCaptions: React.FC<TiktokCaptionsProps> = ({
               style={{
                 display: 'inline-block',
                 fontFamily,
-                fontSize: 60,
-                fontWeight: 900,
-                textTransform: 'uppercase',
+                fontSize: 48,
+                fontWeight: 800,
                 color: isCurrentWord ? '#0f172a' : '#ffffff',
                 backgroundColor: isCurrentWord ? highlightColor : 'rgba(0, 0, 0, 0.45)',
-                padding: '6px 18px',
-                borderRadius: 16,
+                padding: '6px 16px',
+                borderRadius: 14,
                 transform: `scale(${wordScale})`,
                 textShadow: isCurrentWord
                   ? 'none'

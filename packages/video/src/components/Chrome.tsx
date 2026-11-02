@@ -1,6 +1,7 @@
 import React from 'react';
 import {useCurrentFrame} from 'remotion';
 import type {ThemeSpec} from '../types';
+import {pinnedOverlayStyle} from './CameraPinning';
 
 export const Background: React.FC<{theme: ThemeSpec; variant?: 'gradient' | 'radial' | 'split'}> = ({
   theme,
@@ -73,20 +74,26 @@ export const AccentBar: React.FC<{theme: ThemeSpec; width?: number}> = ({theme, 
   <div style={{width, height: 14, borderRadius: 7, backgroundColor: theme.accent}} />
 );
 
-export const Watermark: React.FC<{text: string; theme: ThemeSpec; opacity?: number}> = ({text, theme, opacity = 0.55}) => (
-  <div
-    style={{
-      position: 'absolute',
-      top: 150,
-      left: 72,
-      fontFamily: theme.fontBody,
-      fontSize: 34,
-      letterSpacing: 4,
-      textTransform: 'uppercase',
-      color: theme.secondary,
-      opacity,
-    }}
-  >
-    {text}
-  </div>
-);
+export const Watermark: React.FC<{text: string; theme: ThemeSpec; opacity?: number}> = ({text, theme, opacity = 0.55}) => {
+  // The watermark is an annotation like the title band: pinned to the frame while the camera
+  // moves the stage, so it cannot slide off-screen on a pan.
+  const pinned = pinnedOverlayStyle();
+  return (
+    <div
+      style={{
+        position: 'absolute',
+        top: 150,
+        left: 72,
+        fontFamily: theme.fontBody,
+        fontSize: 34,
+        letterSpacing: 4,
+        textTransform: 'uppercase',
+        color: theme.secondary,
+        opacity,
+        ...pinned,
+      }}
+    >
+      {text}
+    </div>
+  );
+};
