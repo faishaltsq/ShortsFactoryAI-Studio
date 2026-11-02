@@ -28,9 +28,16 @@ export const alpha = (hex: string, a: number): string => {
 export const shade = (hex: string, amount: number): string => mix(hex, '#000000', amount);
 export const tint = (hex: string, amount: number): string => mix(hex, '#ffffff', amount);
 
+export const isLight = (hex: string): boolean => {
+  try {
+    const [r, g, b] = parse(hex);
+    return 0.299 * r + 0.587 * g + 0.114 * b > 135;
+  } catch {
+    return false;
+  }
+};
 /**
  * The colour vocabulary of the informative engine.
- *
  * `primary` and `accent` are the two object tones (a rack's chassis and its LEDs, a chip's
  * substrate and its die). `prop` is the third tone for supporting geometry — cable trays, struts,
  * lattice. There is deliberately no figure/character tone: nothing in this engine is a person.
@@ -52,7 +59,17 @@ export interface ArtPalette {
  * the scene names one and gets a consistent place, so two scenes about the same subject from
  * different scenes still look like one film.
  */
-export const ENVIRONMENTS = ['dataCenter', 'circuit', 'space', 'lab', 'city', 'grid', 'abstract'] as const;
+export const ENVIRONMENTS = [
+  'dataCenter',
+  'circuit',
+  'space',
+  'lab',
+  'city',
+  'grid',
+  'abstract',
+  'oceanFloor',
+  'kitchen',
+] as const;
 export type EnvironmentKind = (typeof ENVIRONMENTS)[number];
 
 const ENV_LIGHT: Record<EnvironmentKind, number> = {
@@ -63,15 +80,31 @@ const ENV_LIGHT: Record<EnvironmentKind, number> = {
   city: 0.5,
   grid: 0.45,
   abstract: 0.6,
+  oceanFloor: 0.25,
+  kitchen: 0.8,
 };
-
 /** All art colours are derived from the theme; only black/white are mixed in. */
 export const paletteFor = (theme: ThemeSpec, environment: EnvironmentKind = 'abstract'): ArtPalette => {
-  const light = ENV_LIGHT[environment];
+  const light = ENV_LIGHT[environment] ?? 0.5;
+  const lightTheme = isLight(theme.background);
+
+  if (lightTheme) {
+    return {
+      skyTop: tint(theme.backgroundAccent, 0.4),
+      skyBottom: theme.background,
+      ground: mix(theme.backgroundAccent, theme.secondary, 0.16),
+      groundFar: mix(theme.backgroundAccent, theme.accent, 0.1),
+      primary: theme.primary,
+      accent: theme.accent,
+      prop: mix(theme.secondary, theme.primary, 0.35),
+      glow: alpha(theme.accent, 0.24),
+      ink: theme.primary,
+    };
+  }
+
   return {
     skyTop: mix(shade(theme.background, 0.4), theme.backgroundAccent, 0.5),
     skyBottom: mix(theme.backgroundAccent, theme.accent, light * 0.5),
-    // Ground responds to the environment: a lab floor must not read as deep space.
     ground: mix(mix(theme.background, theme.secondary, 0.18), theme.secondary, light * 0.3),
     groundFar: mix(mix(theme.backgroundAccent, theme.secondary, 0.34), theme.accent, light * 0.16),
     primary: theme.primary,

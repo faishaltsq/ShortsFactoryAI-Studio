@@ -209,11 +209,64 @@ const GridEnv: React.FC<{palette: ArtPalette; frame: number}> = ({palette: p, fr
   );
 };
 
+/** Ocean floor: seabed contour, subtle light rays from surface, cable resting zone. */
+const OceanFloorEnv: React.FC<{palette: ArtPalette; frame: number}> = ({palette: p, frame}) => {
+  const wave = Math.sin(frame / 36) * 12;
+  return (
+    <g>
+      <defs>
+        <linearGradient id="oceanGrad" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0%" stopColor={p.skyTop} />
+          <stop offset="55%" stopColor={p.skyBottom} />
+          <stop offset="100%" stopColor={p.groundFar} />
+        </linearGradient>
+      </defs>
+      <rect width={W} height={H} fill="url(#oceanGrad)" />
+      {/* Gentle water light rays */}
+      <polygon points={`120,0 ${280 + wave},0 ${440 + wave},${H * 0.72} 80,${H * 0.72}`} fill={alpha(p.accent, 0.05)} />
+      <polygon points={`520,0 ${680 + wave},0 ${820 + wave},${H * 0.72} 460,${H * 0.72}`} fill={alpha(p.accent, 0.04)} />
+      {/* Seabed layers */}
+      <path
+        d={`M0,${H * 0.74} Q${W * 0.3},${H * 0.71} ${W * 0.6},${H * 0.75} T${W},${H * 0.73} L${W},${H} L0,${H} Z`}
+        fill={alpha(p.groundFar, 0.6)}
+      />
+      <path
+        d={`M0,${H * 0.78} Q${W * 0.4},${H * 0.76} ${W * 0.75},${H * 0.8} T${W},${H * 0.77} L${W},${H} L0,${H} Z`}
+        fill={p.ground}
+      />
+    </g>
+  );
+};
+
+/** Kitchen / warm domestic: clean countertop, soft backsplash, warm atmosphere. */
+const KitchenEnv: React.FC<{palette: ArtPalette}> = ({palette: p}) => (
+  <g>
+    <rect width={W} height={H} fill={p.skyTop} />
+    {/* Subtle wall tile lines */}
+    {Array.from({length: 8}, (_, i) => (
+      <line
+        key={`kt-${i}`}
+        x1={0}
+        y1={H * 0.2 + i * 80}
+        x2={W}
+        y2={H * 0.2 + i * 80}
+        stroke={alpha(p.prop, 0.12)}
+        strokeWidth={1.5}
+        strokeDasharray="40 2"
+      />
+    ))}
+    {/* Countertop surface */}
+    <rect y={H * 0.68} width={W} height={36} fill={p.groundFar} />
+    <rect y={H * 0.7} width={W} height={H * 0.3} fill={p.ground} />
+    <line x1={0} y1={H * 0.68} x2={W} y2={H * 0.68} stroke={alpha(p.ink, 0.08)} strokeWidth={2} />
+  </g>
+);
+
 const AbstractEnv: React.FC<{palette: ArtPalette}> = ({palette: p}) => (
   <g>
     <rect width={W} height={H} fill={p.skyTop} />
     <ellipse cx={W * 0.2} cy={H * 0.25} rx={560} ry={520} fill={alpha(p.skyBottom, 0.55)} />
-    <ellipse cx={W * 0.85} cy={H * 0.75} rx={620} ry={560} fill={alpha(p.accent, 0.12)} />
+    <ellipse cx={W * 0.85} cy={H * 0.75} rx={620} ry={560} fill={alpha(p.accent, 0.08)} />
     <rect y={H * 0.72} width={W} height={H * 0.28} fill={alpha(p.ground, 0.35)} />
   </g>
 );
@@ -236,8 +289,11 @@ export const Environment: React.FC<{
       return <CityEnv palette={palette} frame={frame} />;
     case 'grid':
       return <GridEnv palette={palette} frame={frame} />;
+    case 'oceanFloor':
+      return <OceanFloorEnv palette={palette} frame={frame} />;
+    case 'kitchen':
+      return <KitchenEnv palette={palette} />;
     case 'abstract':
-      return <AbstractEnv palette={palette} />;
     default:
       return <AbstractEnv palette={palette} />;
   }

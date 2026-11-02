@@ -22,8 +22,21 @@ export const OBJECT_KINDS = [
   'drone',
   'rocket',
   'building',
+  'meshTopology',
+  'claySculpt',
+  'cloudArch',
+  'cpuProcessor',
+  'quantumProcessor',
+  'opticalFiber',
+  'subseaCableCutaway',
+  'ramenBowl',
+  'cookingPot',
+  'planetEarth',
+  'microscope',
+  'lightBulb',
+  'factory',
+  'stockChart',
 ] as const;
-
 export type ObjectKind = (typeof OBJECT_KINDS)[number];
 
 /** Human-readable name, used for the object's default label and for prompt vocabulary. */
@@ -43,8 +56,21 @@ export const OBJECT_LABELS: Record<ObjectKind, string> = {
   drone: 'Drone',
   rocket: 'Rocket',
   building: 'Corporate HQ',
+  meshTopology: 'Mesh 3D',
+  claySculpt: 'Clay Sculpt',
+  cloudArch: 'Cloud Architecture',
+  cpuProcessor: 'CPU Processor',
+  quantumProcessor: 'Quantum Processor',
+  opticalFiber: 'Optical Fiber',
+  subseaCableCutaway: 'Kabel Bawah Laut (Cross-Section)',
+  ramenBowl: 'Mangkok Mi',
+  cookingPot: 'Panci Masak',
+  planetEarth: 'Planet Bumi',
+  microscope: 'Mikroskop Sains',
+  lightBulb: 'Bohlam Inovasi',
+  factory: 'Pabrik Industri',
+  stockChart: 'Grafik Pasar / Tren',
 };
-
 /**
  * Where each object's base sits inside its 400x400 box, 0..1.
  *
@@ -68,7 +94,20 @@ export const OBJECT_CAPTION_Y: Record<ObjectKind, number> = {
   drone: 0.88,
   rocket: 0.92,
   building: 0.95,
+  meshTopology: 0.92,
+  claySculpt: 0.94,
+  cloudArch: 0.92,
+  cpuProcessor: 0.92,
+  quantumProcessor: 0.92,
+  opticalFiber: 0.92,
+  subseaCableCutaway: 0.94,
+  ramenBowl: 0.94,
+  cookingPot: 0.94,
+  planetEarth: 0.94,
+  microscope: 0.94,
+  lightBulb: 0.94,
+  factory: 0.95,
+  stockChart: 0.92,
 };
-
 export const isObjectKind = (value: unknown): value is ObjectKind =>
   typeof value === 'string' && (OBJECT_KINDS as readonly string[]).includes(value);
