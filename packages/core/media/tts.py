@@ -498,6 +498,9 @@ class EdgeTTSProvider(BaseTTSProvider):
     provider_id = "edge-tts"
     _cached_voices: list[TTSVoice] | None = None
 
+    def __init__(self) -> None:
+        self.last_metadata: dict[str, Any] = {}
+
     def list_voices(self, locale: str | None = None) -> list[TTSVoice]:
         if self._cached_voices is None:
             self._load_voices()
@@ -687,6 +690,11 @@ class EdgeTTSProvider(BaseTTSProvider):
 
             words = parse_boundaries([{"text": w.text, "startMs": w.start_ms, "endMs": w.end_ms} for w in words], duration_ms=duration_ms)
             group_subtitles(words, duration_ms=duration_ms)
+            self.last_metadata = {
+                "alignment_mode": "aligned" if words_raw else "estimated",
+                "sample_rate": 24000,
+                "duration_s": round(duration_ms / 1000.0, 3),
+            }
             return words, duration_ms
         finally:
             raw_mp3.unlink(missing_ok=True)

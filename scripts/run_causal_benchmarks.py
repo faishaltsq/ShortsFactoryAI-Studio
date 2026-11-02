@@ -107,8 +107,8 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument(
         "--tts-provider",
         choices=["voicestudio", "edge-tts", "sapi"],
-        default="voicestudio",
-        help="TTS provider to use (default: voicestudio)",
+        default="edge-tts",
+        help="TTS provider to use (default: edge-tts)",
     )
     parser.add_argument(
         "--mock",

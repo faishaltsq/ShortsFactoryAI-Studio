@@ -12,7 +12,7 @@ def test_parse_args_defaults_to_fresh_mode() -> None:
     assert args.mode == "fresh"
     assert args.renderer == "custom-motion"
     assert args.fallback_policy == "strict"
-    assert args.tts_provider == "voicestudio"
+    assert args.tts_provider == "edge-tts"
 
 
 def test_parse_args_supports_modes_and_overrides() -> None:
