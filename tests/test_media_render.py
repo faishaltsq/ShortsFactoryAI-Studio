@@ -410,3 +410,20 @@ def test_mux_states_the_sample_rate_it_actually_produces(tmp_path: Path):
     assert "-ar" in argv
     assert argv[argv.index("-ar") + 1] == "16000"
     assert argv[argv.index("-ac") + 1] == "1"
+
+
+def test_build_isolated_environment_strips_secrets_and_api_keys(monkeypatch: pytest.MonkeyPatch) -> None:
+    from packages.core.media.render import build_isolated_environment
+
+    monkeypatch.setenv("NINEROUTER_KEY", "super-secret-key-12345")
+    monkeypatch.setenv("OPENAI_API_KEY", "sk-secret-token")
+    monkeypatch.setenv("MY_CUSTOM_SECRET", "classified")
+    monkeypatch.setenv("SYSTEMROOT", r"C:\Windows")
+
+    env = build_isolated_environment()
+    assert "NINEROUTER_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert "MY_CUSTOM_SECRET" not in env
+    assert env.get("NODE_ENV") == "production"
+    assert "SYSTEMROOT" in env
+

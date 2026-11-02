@@ -18,6 +18,7 @@ import os
 import shutil
 import socket
 import subprocess
+import sys
 import time
 import wave
 from pathlib import Path
@@ -838,6 +839,136 @@ def select_rendering_strategy(
     return "legacy-template"
 
 
+def build_isolated_environment() -> dict[str, str]:
+    """Build a scrubbed environment for Remotion execution.
+
+    Inherits only essential system paths (SYSTEMROOT, PATH, TEMP, TMP, NODE_PATH, LOCALAPPDATA, APPDATA).
+    Explicitly strips API credentials, tokens, and secret environment variables.
+    """
+    clean_keys = {
+        "SYSTEMROOT",
+        "PATH",
+        "TEMP",
+        "TMP",
+        "NODE_PATH",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "COMSPEC",
+        "PATHEXT",
+        "WINDIR",
+        "HOMEPATH",
+        "USERPROFILE",
+        "NUMBER_OF_PROCESSORS",
+        "PROCESSOR_ARCHITECTURE",
+        "OS",
+    }
+    env: dict[str, str] = {}
+    for k in clean_keys:
+        if k in os.environ:
+            env[k] = os.environ[k]
+    # Always set NODE_ENV to production
+    env["NODE_ENV"] = "production"
+    return env
+
+
+class WindowsJobSandbox:
+    """Windows Job Object wrapper to enforce process-tree termination and memory limits."""
+
+    def __init__(self, memory_limit_mb: int = 4096) -> None:
+        self.job_handle = None
+        if sys.platform == "win32":
+            try:
+                import ctypes
+                from ctypes import wintypes
+
+                kernel32 = ctypes.windll.kernel32
+                self.job_handle = kernel32.CreateJobObjectW(None, None)
+                if self.job_handle:
+
+                    class JOBOBJECT_BASIC_LIMIT_INFORMATION(ctypes.Structure):
+                        _fields_ = [
+                            ("PerProcessUserTimeLimit", wintypes.LARGE_INTEGER),
+                            ("PerJobUserTimeLimit", wintypes.LARGE_INTEGER),
+                            ("LimitFlags", wintypes.DWORD),
+                            ("MinimumWorkingSetSize", ctypes.c_size_t),
+                            ("MaximumWorkingSetSize", ctypes.c_size_t),
+                            ("ActiveProcessLimit", wintypes.DWORD),
+                            ("Affinity", ctypes.c_size_t),
+                            ("PriorityClass", wintypes.DWORD),
+                            ("SchedulingClass", wintypes.DWORD),
+                        ]
+
+                    class IO_COUNTERS(ctypes.Structure):
+                        _fields_ = [
+                            ("ReadOperationCount", wintypes.ULARGE_INTEGER),
+                            ("WriteOperationCount", wintypes.ULARGE_INTEGER),
+                            ("OtherOperationCount", wintypes.ULARGE_INTEGER),
+                            ("ReadTransferCount", wintypes.ULARGE_INTEGER),
+                            ("WriteTransferCount", wintypes.ULARGE_INTEGER),
+                            ("OtherTransferCount", wintypes.ULARGE_INTEGER),
+                        ]
+
+                    class JOBOBJECT_EXTENDED_LIMIT_INFORMATION(ctypes.Structure):
+                        _fields_ = [
+                            ("BasicLimitInformation", JOBOBJECT_BASIC_LIMIT_INFORMATION),
+                            ("IoCounters", IO_COUNTERS),
+                            ("ProcessMemoryLimit", ctypes.c_size_t),
+                            ("JobMemoryLimit", ctypes.c_size_t),
+                            ("PeakProcessMemoryLimit", ctypes.c_size_t),
+                            ("PeakJobMemoryLimit", ctypes.c_size_t),
+                        ]
+
+                    info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION()
+                    job_object_limit_kill_on_job_close = 0x2000
+                    job_object_limit_job_memory = 0x0200
+                    info.BasicLimitInformation.LimitFlags = job_object_limit_kill_on_job_close
+                    if memory_limit_mb > 0:
+                        info.BasicLimitInformation.LimitFlags |= job_object_limit_job_memory
+                        info.JobMemoryLimit = memory_limit_mb * 1024 * 1024
+
+                    job_object_extended_limit_information = 9
+                    kernel32.SetInformationJobObject(
+                        self.job_handle,
+                        job_object_extended_limit_information,
+                        ctypes.byref(info),
+                        ctypes.sizeof(info),
+                    )
+            except Exception:
+                self.job_handle = None
+
+    def assign_process(self, pid: int) -> bool:
+        if self.job_handle and sys.platform == "win32":
+            try:
+                import ctypes
+
+                kernel32 = ctypes.windll.kernel32
+                process_all_access = 0x1F0FFF
+                h_proc = kernel32.OpenProcess(process_all_access, False, pid)
+                if h_proc:
+                    res = kernel32.AssignProcessToJobObject(self.job_handle, h_proc)
+                    kernel32.CloseHandle(h_proc)
+                    return bool(res)
+            except Exception:
+                pass
+        return False
+
+    def close(self) -> None:
+        if self.job_handle and sys.platform == "win32":
+            try:
+                import ctypes
+
+                ctypes.windll.kernel32.CloseHandle(self.job_handle)
+            except Exception:
+                pass
+            self.job_handle = None
+
+    def __enter__(self) -> WindowsJobSandbox:
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        self.close()
+
+
 def render_custom_motion(
     *,
     video_dir: Path,
@@ -875,30 +1006,40 @@ def render_custom_motion(
         f"--port={port}",
         "--concurrency=1",
     ]
+    env = build_isolated_environment()
+    sandbox = WindowsJobSandbox()
     started = time.monotonic()
     try:
-        proc = subprocess.run(  # noqa: S603 - argv array, no shell
+        proc = subprocess.Popen(  # noqa: S603 - argv array, no shell
             argv,
             cwd=str(video_dir),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=timeout_s,
-            check=False,
+            env=env,
         )
-    except subprocess.TimeoutExpired as exc:
-        raise RuntimeError(f"custom motion render timed out after {timeout_s}s (port {port})") from exc
+        sandbox.assign_process(proc.pid)
+        try:
+            stdout, stderr = proc.communicate(timeout=timeout_s)
+        except subprocess.TimeoutExpired as exc:
+            proc.kill()
+            sandbox.close()
+            raise RuntimeError(f"custom motion render timed out after {timeout_s}s (port {port})") from exc
+    finally:
+        sandbox.close()
+
     elapsed_ms = int((time.monotonic() - started) * 1000)
     if proc.returncode != 0:
-        tail = (proc.stderr or proc.stdout or "").strip()[-1200:]
+        tail = (stderr or stdout or "").strip()[-1200:]
         raise RuntimeError(f"custom motion render exited {proc.returncode}: {tail}")
     if not out_path.is_file() or out_path.stat().st_size == 0:
         raise RuntimeError(f"custom motion render produced no file at {out_path}")
     return {
         "port": port,
         "elapsed_ms": elapsed_ms,
-        "stdout_tail": (proc.stdout or "").strip()[-1200:],
+        "stdout_tail": (stdout or "").strip()[-1200:],
     }
 
 
@@ -1211,6 +1352,8 @@ def build_render_stage(
 __all__ = [
     "RENDER_NAME",
     "RENDERERS",
+    "WindowsJobSandbox",
+    "build_isolated_environment",
     "build_render_stage",
     "free_tcp_port",
     "merge_motion_plan_into_storyboard",
