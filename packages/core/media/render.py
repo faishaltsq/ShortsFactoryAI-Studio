@@ -993,6 +993,39 @@ def render_custom_motion(
         raise RuntimeError(f"entry component not found in {code_dir}")
 
     content = entry_file.read_text(encoding="utf-8")
+
+    # Reconcile exact frame count and scene sequence durations from render-props
+    try:
+        props_data = json.loads(Path(props_path).read_text(encoding="utf-8")) if Path(props_path).is_file() else {}
+        storyboard = props_data.get("storyboard") or {}
+        scenes = [s for s in storyboard.get("scenes", []) if isinstance(s, dict)]
+        scene_durations = [int(s["durationInFrames"]) for s in scenes if "durationInFrames" in s]
+        total_frames = sum(scene_durations) if scene_durations else 0
+        if total_frames > 0:
+            content = re.sub(
+                r'(<Composition\b[^>]*\bdurationInFrames=\{)[0-9]+(\})',
+                rf'\g<1>{total_frames}\g<2>',
+                content,
+            )
+            if scene_durations:
+                seq_idx = 0
+                def _replace_seq(m: re.Match[str]) -> str:
+                    nonlocal seq_idx
+                    if seq_idx < len(scene_durations):
+                        dur = scene_durations[seq_idx]
+                        seq_idx += 1
+                        return f"{m.group(1)}{dur}{m.group(2)}"
+                    return m.group(0)
+
+                content = re.sub(
+                    r'(<(?:Series\.)?Sequence\b[^>]*\bdurationInFrames=\{)[0-9]+(\})',
+                    _replace_seq,
+                    content,
+                )
+            entry_file.write_text(content, encoding="utf-8")
+    except Exception:
+        total_frames = 0
+
     comp_match = re.search(r'<Composition\b[^>]*\bid=[\x22\x27]([^\x22\x27]+)[\x22\x27]', content, re.DOTALL)
     comp_name = comp_match.group(1) if comp_match else composition
 
@@ -1004,20 +1037,21 @@ def render_custom_motion(
             index_code = (
                 f"import {{ registerRoot }} from 'remotion';\n"
                 f"import * as RootModule from './{stem}';\n\n"
-                f"const RootComponent = (RootModule as any).{stem} || (RootModule as any).default || Object.values(RootModule)[0];\n"
+                f"const RootComponent = (RootModule as any).RemotionRoot || (RootModule as any).Root || (RootModule as any).{stem} || (RootModule as any).default || Object.values(RootModule)[0];\n"
                 f"registerRoot(RootComponent);\n"
             )
         else:
+            default_frames = total_frames if total_frames > 0 else 480
             index_code = (
                 f"import React from 'react';\n"
                 f"import {{ registerRoot, Composition }} from 'remotion';\n"
                 f"import * as RootModule from './{stem}';\n\n"
-                f"const RootComponent = (RootModule as any).{stem} || (RootModule as any).default || Object.values(RootModule)[0];\n"
+                f"const RootComponent = (RootModule as any).RemotionRoot || (RootModule as any).Root || (RootModule as any).{stem} || (RootModule as any).default || Object.values(RootModule)[0];\n"
                 f"const WrappedRoot: React.FC = () => (\n"
                 f"  <Composition\n"
                 f"    id=\"{comp_name}\"\n"
                 f"    component={{RootComponent}}\n"
-                f"    durationInFrames={{480}}\n"
+                f"    durationInFrames={{{default_frames}}}\n"
                 f"    fps={{30}}\n"
                 f"    width={{1080}}\n"
                 f"    height={{1920}}\n"
