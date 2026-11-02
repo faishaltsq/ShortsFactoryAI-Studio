@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -206,6 +209,37 @@ class CodeGuard:
         for pattern, label in self.DANGEROUS_PATTERNS:
             if pattern.search(clean_source):
                 issues.append(f"{filename}: Forbidden token or call: '{label}'")
+
+        # Invoke AST inspection via ast_guard.mjs when node is available
+        node = shutil.which("node")
+        ast_script = Path(__file__).resolve().parents[3] / "packages" / "video" / "scripts" / "ast_guard.mjs"
+        if node and ast_script.is_file():
+            try:
+                proc = subprocess.run(
+                    [node, str(ast_script), filename],
+                    input=source,
+                    text=True,
+                    capture_output=True,
+                    timeout=15,
+                    check=False,
+                )
+                if proc.returncode == 0 and proc.stdout.strip():
+                    data = json.loads(proc.stdout)
+                    ast_issues = data.get("issues", [])
+                    if isinstance(ast_issues, list):
+                        for iss in ast_issues:
+                            if iss not in issues:
+                                issues.append(str(iss))
+                    ast_imports = data.get("imported_modules", [])
+                    if isinstance(ast_imports, list):
+                        for imp in ast_imports:
+                            if imp not in deduped_imports:
+                                deduped_imports.append(str(imp))
+                elif proc.returncode != 0:
+                    err_msg = proc.stderr.strip() or f"Process exited with {proc.returncode}"
+                    issues.append(f"{filename}: AST validator failed: {err_msg[:300]}")
+            except Exception as exc:
+                issues.append(f"{filename}: AST validation error: {exc}")
 
         return CodeGuardResult(
             valid=len(issues) == 0,

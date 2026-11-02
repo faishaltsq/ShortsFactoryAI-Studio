@@ -297,3 +297,34 @@ def test_codeguard_validate_file_safe_and_malicious(tmp_path: Path) -> None:
     res_missing = guard.validate_file(tmp_path / "non_existent.tsx")
     assert res_missing.valid is False
     assert any("does not exist" in issue for issue in res_missing.issues)
+
+
+def test_ast_guard_blocks_dynamic_imports_and_computed_properties() -> None:
+    guard = CodeGuard()
+
+    # 1. Computed property aiming to reach constructor
+    computed_exploit = """
+    import React from 'react';
+    export const Scene = () => {
+        const key = 'const' + 'ructor';
+        const c = ({})[key];
+        return <div>Exploit</div>;
+    };
+    """
+    res = guard.validate_source(computed_exploit)
+    assert res.valid is False
+    assert any("constructor" in issue.lower() or "computed" in issue.lower() for issue in res.issues)
+
+    # 2. Dynamic import with variable
+    dyn_import = """
+    import React from 'react';
+    export const Scene = () => {
+        const mod = 'child_process';
+        import(mod);
+        return <div>Bad</div>;
+    };
+    """
+    res2 = guard.validate_source(dyn_import)
+    assert res2.valid is False
+    assert any("import" in issue.lower() or "dynamic" in issue.lower() for issue in res2.issues)
+
