@@ -799,6 +799,7 @@ class VoiceStudioProvider(BaseTTSProvider):
 
     def __init__(self, adapter: Any = None) -> None:
         self.adapter = adapter
+        self.last_metadata: dict[str, Any] = {}
 
     def list_voices(self, locale: str | None = None) -> list[TTSVoice]:
         voices = list(self._standard_voices)
@@ -840,8 +841,9 @@ class VoiceStudioProvider(BaseTTSProvider):
         voice: str,
         rate: str | None = None,
         timeout_s: int = 90,
+        return_metadata: bool = False,
         **kwargs: Any,
-    ) -> tuple[list[WordBoundary], int]:
+    ) -> tuple[list[WordBoundary], int] | tuple[list[WordBoundary], int, dict[str, Any]]:
         from .voicestudio import VoiceStudioAdapter
 
         adapter = self.adapter or VoiceStudioAdapter(timeout_s=float(timeout_s))
@@ -870,6 +872,13 @@ class VoiceStudioProvider(BaseTTSProvider):
             WordBoundary(text=w["word"], start_ms=w["startMs"], end_ms=w["endMs"])
             for w in res.word_timestamps
         ]
+        self.last_metadata = {
+            "alignment_mode": res.alignment_mode,
+            "sample_rate": res.sample_rate,
+            "duration_s": res.duration_s,
+        }
+        if return_metadata:
+            return boundaries, duration_ms, dict(self.last_metadata)
         return boundaries, duration_ms
 
 
@@ -1547,16 +1556,25 @@ def build_audio_stage(state: Any, *, timeout_s: int = 90) -> Stage:
                 "rate": str(job.payload.get("speech_rate") or "-3%"),
                 "description": tts_voice.description,
             }
+            if hasattr(tts_provider, "last_metadata"):
+                meta = getattr(tts_provider, "last_metadata", {})
+                if "alignment_mode" in meta:
+                    tts_metadata["alignment_mode"] = meta["alignment_mode"]
+                if "sample_rate" in meta:
+                    tts_metadata["sample_rate"] = meta["sample_rate"]
+            narration_dict = {
+                "src": NARRATION_NAME,
+                "durationMs": duration_ms,
+                "voice": voice,
+                "provider": tts_provider.provider_id,
+                "locale": tts_voice.locale,
+                "rate": str(job.payload.get("speech_rate") or "-3%"),
+                "gender": tts_voice.gender,
+            }
+            if "alignment_mode" in tts_metadata:
+                narration_dict["alignment_mode"] = tts_metadata["alignment_mode"]
             artifact = AudioArtifact(
-                narration={
-                    "src": NARRATION_NAME,
-                    "durationMs": duration_ms,
-                    "voice": voice,
-                    "provider": tts_provider.provider_id,
-                    "locale": tts_voice.locale,
-                    "rate": str(job.payload.get("speech_rate") or "-3%"),
-                    "gender": tts_voice.gender,
-                },
+                narration=narration_dict,
                 scenes=timings,
                 subtitles=subtitles,
                 words=word_timestamps,

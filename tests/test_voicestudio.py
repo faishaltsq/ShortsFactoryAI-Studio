@@ -3,6 +3,7 @@ from __future__ import annotations
 import io
 import unittest.mock as mock
 import wave
+from pathlib import Path
 
 import httpx
 import pytest
@@ -253,3 +254,60 @@ def test_voicestudio_netguard_blocked_target_raises_voicestudio_error() -> None:
     ):
         with pytest.raises(VoiceStudioError, match="blocked"):
             adapter.health()
+
+
+def test_voicestudio_alignment_mode_tagging_and_sample_rate() -> None:
+    adapter = VoiceStudioAdapter(base_url="http://127.0.0.1:3900")
+
+    # 1. Aligned mode with 48kHz sample rate
+    wav_48k = _make_wav_bytes(sample_rate=48000, duration_s=1.0)
+    mock_resp_aligned = httpx.Response(
+        200,
+        content=wav_48k,
+        headers={
+            "Content-Type": "audio/wav",
+            "x-word-timestamps": '[{"word": "Tes", "startMs": 0, "endMs": 500}]',
+        },
+    )
+    with mock.patch.object(httpx.Client, "request", return_value=mock_resp_aligned):
+        res = adapter.synthesize("Tes")
+        assert res.sample_rate == 48000
+        assert res.alignment_mode == "aligned"
+
+    # 2. Estimated mode with 24kHz sample rate
+    wav_24k = _make_wav_bytes(sample_rate=24000, duration_s=1.0)
+    mock_resp_estimated = httpx.Response(
+        200,
+        content=wav_24k,
+        headers={"Content-Type": "audio/wav"},
+    )
+    with mock.patch.object(httpx.Client, "request", return_value=mock_resp_estimated):
+        res2 = adapter.synthesize("Tes perkiraan")
+        assert res2.sample_rate == 24000
+        assert res2.alignment_mode == "estimated"
+
+
+def test_voicestudio_provider_metadata_preservation(tmp_path: Path) -> None:
+    from packages.core.media.tts import VoiceStudioProvider
+
+    adapter = VoiceStudioAdapter(base_url="http://127.0.0.1:3900")
+    wav_24k = _make_wav_bytes(sample_rate=24000, duration_s=1.0)
+    mock_resp = httpx.Response(
+        200,
+        content=wav_24k,
+        headers={
+            "Content-Type": "audio/wav",
+            "x-word-timestamps": '[{"word": "Tes", "startMs": 0, "endMs": 1000}]',
+        },
+    )
+    with mock.patch.object(httpx.Client, "request", return_value=mock_resp):
+        prov = VoiceStudioProvider(adapter=adapter)
+        out_wav = Path(tmp_path) / "test.wav"
+        boundaries, dur, meta = prov.synthesize("Tes", out_wav, voice="alloy", return_metadata=True)
+        assert len(boundaries) == 1
+        assert dur == 1000
+        assert meta["sample_rate"] == 24000
+        assert meta["alignment_mode"] == "aligned"
+        assert prov.last_metadata["alignment_mode"] == "aligned"
+        assert prov.last_metadata["sample_rate"] == 24000
+

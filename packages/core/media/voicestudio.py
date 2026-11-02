@@ -31,6 +31,7 @@ class VoiceStudioResult:
     sample_rate: int
     duration_s: float
     word_timestamps: list[dict[str, Any]] = field(default_factory=list)
+    alignment_mode: str = "estimated"
 
 
 class VoiceStudioAdapter:
@@ -157,6 +158,7 @@ class VoiceStudioAdapter:
             raise VoiceStudioError(f"Failed to parse WAV audio: {exc}") from exc
 
         word_timestamps: list[dict[str, Any]] = []
+        alignment_mode = "estimated"
         raw_header = resp.headers.get("x-word-timestamps")
         if raw_header:
             try:
@@ -172,10 +174,13 @@ class VoiceStudioAdapter:
                                 valid_items.append({"word": w, "startMs": s_ms, "endMs": e_ms})
                     if valid_items and len(valid_items) == len(parsed):
                         word_timestamps = valid_items
+                        alignment_mode = "aligned"
             except Exception:
                 word_timestamps = []
+                alignment_mode = "estimated"
 
         if not word_timestamps:
+            alignment_mode = "estimated"
             words = text.split()
             if words:
                 total_ms = max(1, int(duration_s * 1000))
@@ -204,4 +209,5 @@ class VoiceStudioAdapter:
             sample_rate=sample_rate,
             duration_s=duration_s,
             word_timestamps=word_timestamps,
+            alignment_mode=alignment_mode,
         )
