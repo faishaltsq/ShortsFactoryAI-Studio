@@ -26,6 +26,9 @@ export default function CreatePage() {
   const [providerMode, setProviderMode] = useState<"mock" | "live">("mock");
   const [renderVideo, setRenderVideo] = useState(false);
   const [priority, setPriority] = useState(5);
+  const [renderer, setRenderer] = useState<"remotion" | "custom-motion">("remotion");
+  const [ttsProvider, setTtsProvider] = useState<"edge-tts" | "voicestudio" | "sapi">("edge-tts");
+  const [fallbackPolicy, setFallbackPolicy] = useState<"allow_legacy" | "strict">("allow_legacy");
   const [language, setLanguage] = useState("id");
   const [voice, setVoice] = useState("id-ID-ArdiNeural");
   const [voices, setVoices] = useState<Array<{ id: string; name: string; locale: string; gender: string }>>([
@@ -114,6 +117,9 @@ export default function CreatePage() {
         provider_mode: providerMode,
         priority,
         render_video: renderVideo,
+        renderer,
+        tts_provider: ttsProvider,
+        fallback_policy: fallbackPolicy,
       });
       setCreatedId(job.id);
       setIsError(false);
@@ -242,6 +248,45 @@ export default function CreatePage() {
                   {v.name} ({v.gender === "Male" ? "Pria" : v.gender === "Female" ? "Wanita" : v.gender})
                 </option>
               ))}
+            </select>
+          </div>
+        </div>
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div>
+            <label className="label" htmlFor="create-renderer">Renderer</label>
+            <select
+              id="create-renderer"
+              className="field"
+              value={renderer}
+              onChange={(event) => setRenderer(event.target.value as "remotion" | "custom-motion")}
+            >
+              <option value="remotion">Remotion Template</option>
+              <option value="custom-motion">Custom Motion (AI Directed)</option>
+            </select>
+          </div>
+          <div>
+            <label className="label" htmlFor="create-tts-provider">Penyedia TTS</label>
+            <select
+              id="create-tts-provider"
+              className="field"
+              value={ttsProvider}
+              onChange={(event) => setTtsProvider(event.target.value as "edge-tts" | "voicestudio" | "sapi")}
+            >
+              <option value="edge-tts">Edge TTS (Cloud)</option>
+              <option value="voicestudio">VoiceStudio (Lokal CUDA)</option>
+              <option value="sapi">Windows SAPI (Lokal)</option>
+            </select>
+          </div>
+          <div>
+            <label className="label" htmlFor="create-fallback-policy">Kebijakan fallback</label>
+            <select
+              id="create-fallback-policy"
+              className="field"
+              value={fallbackPolicy}
+              onChange={(event) => setFallbackPolicy(event.target.value as "allow_legacy" | "strict")}
+            >
+              <option value="allow_legacy">Izinkan Fallback</option>
+              <option value="strict">Ketat (Strict / Tanpa Fallback)</option>
             </select>
           </div>
         </div>
