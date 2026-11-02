@@ -48,6 +48,7 @@ AGENT_IDS: tuple[str, ...] = (
     "StoryboardAgent",
     "AssetAgent",
     "AnimationAgent",
+    "MotionCoderAgent",
     "AudioAgent",
     "EditorAgent",
     "QualityAgent",
