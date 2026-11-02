@@ -1031,7 +1031,7 @@ def render_custom_motion(
 
     target_entry = entry_file
     if "registerRoot(" not in content:
-        index_file = Path(code_dir) / "index.ts"
+        index_file = Path(code_dir) / "index.tsx"
         stem = entry_file.stem
         if comp_match:
             index_code = (
