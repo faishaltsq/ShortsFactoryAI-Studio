@@ -1045,18 +1045,24 @@ class MotionCoderAgent(Agent):
         scenes_summary = []
         for s in storyboard.get("scenes", []):
             if isinstance(s, dict):
-                data = s.get("data") if isinstance(s.get("data"), dict) else {}
+                raw_data = s.get("data")
+                data: dict[str, Any] = raw_data if isinstance(raw_data, dict) else {}
                 title = data.get("title") or s.get("title") or s.get("heading") or ""
                 caption = data.get("caption") or s.get("visual_description") or s.get("description") or ""
-                causal = s.get("causal_state") if isinstance(s.get("causal_state"), dict) else {}
+                raw_causal = s.get("causal_state")
+                causal: dict[str, Any] = raw_causal if isinstance(raw_causal, dict) else {}
+                raw_objects = data.get("objects")
+                objects_list: list[Any] = raw_objects if isinstance(raw_objects, list) else []
                 objects = [
                     f"{obj.get('label') or obj.get('kind')} (kind: {obj.get('kind')})"
-                    for obj in data.get("objects", [])
+                    for obj in objects_list
                     if isinstance(obj, dict)
                 ]
+                raw_callouts = data.get("callouts")
+                callouts_list: list[Any] = raw_callouts if isinstance(raw_callouts, list) else []
                 callouts = [
                     str(c.get("text"))
-                    for c in data.get("callouts", [])
+                    for c in callouts_list
                     if isinstance(c, dict) and c.get("text")
                 ]
                 scenes_summary.append({

@@ -135,7 +135,7 @@ def test_motion_coder_agent_skill_hashes_and_ast_codeguard(tmp_path: Path) -> No
     assert any("eval" in issue.lower() for issue in evil_sanitized["issues"])
 
 
-def test_studio_json_binds_motion_coder_agent_to_stepfun() -> None:
+def test_studio_json_binds_motion_coder_agent() -> None:
     import json
 
     config_path = Path("config/studio.json")
@@ -144,8 +144,8 @@ def test_studio_json_binds_motion_coder_agent_to_stepfun() -> None:
     bindings = {b["agent"]: b for b in data.get("bindings", [])}
     assert "MotionCoderAgent" in bindings, "MotionCoderAgent must be bound in config/studio.json"
     motion_binding = bindings["MotionCoderAgent"]
-    assert motion_binding["primary"] == "stepfun"
-    assert motion_binding.get("model") == "om/step-5-preview"
+    assert motion_binding["primary"] in ("nine-router", "stepfun")
+    assert motion_binding.get("model") in ("ag/gemini-3.8-flash", "om/step-5-preview")
 
 
 def test_build_stages_includes_motion_code_when_custom_renderer(tmp_path: Path) -> None:

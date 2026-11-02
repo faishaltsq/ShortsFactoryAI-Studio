@@ -197,7 +197,8 @@ def test_studio_snapshot_has_every_agent_and_a_cursor(client):
     job = _create(client)  # creation itself writes the first event
     body = client.get("/api/studio/snapshot").json()
     assert body["cursor"] >= 1
-    assert len(body["agents"]) == 14
+    from packages.core.observability.events import AGENT_IDS
+    assert len(body["agents"]) == len(AGENT_IDS)
     assert body["job_id"] is None or body["job_id"] == job["id"]
 
 

@@ -28,6 +28,11 @@
       "title": "Duration Ms",
       "type": "integer"
     },
+    "fallback_used": {
+      "default": false,
+      "title": "Fallback Used",
+      "type": "boolean"
+    },
     "fps": {
       "exclusiveMinimum": 0,
       "title": "Fps",

@@ -14,7 +14,7 @@ import tempfile
 import wave
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal, overload
 
 from ..contracts.artifacts import AssetsArtifact, AudioArtifact
 from ..contracts.base import validate_artifact
@@ -489,8 +489,9 @@ class BaseTTSProvider:
         voice: str,
         rate: str | None = None,
         timeout_s: int = 90,
+        return_metadata: bool = False,
         **kwargs: Any,
-    ) -> tuple[list[WordBoundary], int]:
+    ) -> tuple[Any, ...]:
         raise NotImplementedError
 
 
@@ -599,6 +600,7 @@ class EdgeTTSProvider(BaseTTSProvider):
         voice: str,
         rate: str | None = "-3%",
         timeout_s: int = 90,
+        return_metadata: bool = False,
         **kwargs: Any,
     ) -> tuple[list[WordBoundary], int]:
         import asyncio
@@ -787,6 +789,7 @@ class SapiTTSProvider(BaseTTSProvider):
         voice: str,
         rate: str | None = None,
         timeout_s: int = 90,
+        return_metadata: bool = False,
         **kwargs: Any,
     ) -> tuple[list[WordBoundary], int]:
         return synthesize_sapi(text, output_path, voice=voice, timeout_s=timeout_s)
@@ -840,6 +843,32 @@ class VoiceStudioProvider(BaseTTSProvider):
                     f"VoiceStudio voice {voice!r} (locale {found.locale}) does not match required locale {locale!r}"
                 )
         return found
+
+    @overload  # type: ignore[override]
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path,
+        *,
+        voice: str,
+        rate: str | None = None,
+        timeout_s: int = 90,
+        return_metadata: Literal[False] = False,
+        **kwargs: Any,
+    ) -> tuple[list[WordBoundary], int]: ...
+
+    @overload
+    def synthesize(
+        self,
+        text: str,
+        output_path: Path,
+        *,
+        voice: str,
+        rate: str | None = None,
+        timeout_s: int = 90,
+        return_metadata: Literal[True],
+        **kwargs: Any,
+    ) -> tuple[list[WordBoundary], int, dict[str, Any]]: ...
 
     def synthesize(
         self,
