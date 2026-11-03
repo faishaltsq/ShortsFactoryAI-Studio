@@ -43,10 +43,13 @@ that need a browser. Reach for the individual commands when you are iterating on
 A change is not done because it compiles. Run the suite. If you cannot run a command, say so
 plainly and leave the tree working — do not claim a result you did not observe.
 
-**The Python type gate does not run.** `uv run mypy packages/core --strict` fails with
-`program not found`: mypy is not in the dev dependency group and there is no `[tool.mypy]` section.
-A green `pytest` therefore says nothing about types on the Python side. `docs/IMPLEMENTATION_ROADMAP.md`
-records what would make it runnable and which modules are in scope.
+**The Python type gate runs.** `uv run mypy packages/core --strict` exits 0 over all 56 core source
+files; mypy 1.18.2 is in the `dev` dependency group, `[tool.mypy]` sets `strict = true`, and both
+`scripts/check.ps1` and `check.sh` invoke it as a gate alongside ruff, pytest and the schema diff.
+Keeping it green means no blanket `# type: ignore` and no per-module `ignore_errors`; the one
+tolerated escape hatch is a single ignore with a written reason in `docs/IMPLEMENTATION_ROADMAP.md`.
+Note the narrowing trap: `x = value if isinstance(value, dict) else {}` on an `Any` is inferred as
+`Any | dict[Any, Any] | None`, so annotate the target (`x: dict[str, Any] = …`) instead.
 
 Three consecutive green runs are required before a phase gate is declared passed. One flake is a
 failure: quarantine it with a written cause in `docs/TEST_STRATEGY.md`.

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from packages.core.agents.skill_loader import MotionSkillLoader, SkillBundle
@@ -185,3 +186,57 @@ def test_skill_loader_handles_os_errors(tmp_path: Path, monkeypatch) -> None:
 
     monkeypatch.setattr(Path, "read_text", raise_oserror)
     assert loader._load_skill_text("anything") is None
+
+
+# -- relevance selection ------------------------------------------------------------------------
+
+
+def test_ranking_picks_the_skill_the_shot_needs() -> None:
+    """The selection is per shot: a caption-heavy film and a map-heavy film must not get the same
+    reference block, which is what one fixed "load some skills" call produced."""
+    loader = MotionSkillLoader()
+    captions = loader.rank(["kinetic typography captions subtitle reveal"], limit=3)
+    maps = loader.rank(["geographic map route travel"], limit=3)
+    assert "remotion-captions" in captions
+    assert "remotion-maps" in maps
+    assert captions != maps
+
+
+def test_ranking_is_deterministic() -> None:
+    """Two identical runs must select identically, or the recorded provenance describes a run
+    nobody can reproduce."""
+    loader = MotionSkillLoader()
+    request = ["animated svg path diagram geometry morph", "tracking camera mask"]
+    assert loader.rank(request, limit=4) == loader.rank(request, limit=4)
+
+
+def test_ranking_respects_its_limit_and_still_returns_something_when_nothing_matches() -> None:
+    loader = MotionSkillLoader()
+    assert len(loader.rank("zoom", limit=2)) == 2
+    assert len(loader.rank("zzzzqqqq", limit=3)) == 3, "an unrankable request still gets a block"
+    assert loader.rank("anything", limit=0) == []
+
+
+def test_summaries_read_the_declared_description() -> None:
+    loader = MotionSkillLoader()
+    by_name = {summary.name: summary.description for summary in loader.summaries()}
+    assert by_name.get("remotion-captions")
+    assert "caption" in by_name["remotion-captions"].lower()
+
+
+def test_the_bundle_records_the_digest_of_what_was_actually_sent(tmp_path: Path) -> None:
+    """A skill truncated to fit the budget is recorded as the truncated version: the provenance
+    says what the model read, not what happened to be available on disk."""
+    skills_dir = tmp_path / "skills"
+    skill = skills_dir / "long-skill"
+    skill.mkdir(parents=True)
+    (skill / "SKILL.md").write_text("---\nname: long-skill\ndescription: x\n---\n" + "A" * 5000,
+                                    encoding="utf-8")
+
+    loader = MotionSkillLoader(skills_dir=skills_dir)
+    bundle = loader.load_bundle(["long-skill"], max_tokens=200)
+    assert bundle.loaded_skills == ["long-skill"]
+    sent = bundle.skill_hashes["long-skill"]
+    full = loader.load_bundle(["long-skill"], max_tokens=10_000)
+    assert sent != full.skill_hashes["long-skill"], "a truncation must change the recorded digest"
+    assert sent == hashlib.sha256(bundle.content.encode("utf-8")).hexdigest()

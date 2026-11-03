@@ -88,60 +88,7 @@ def test_creative_director_sanitizer_normalizes_brief() -> None:
     assert sanitized["motion_complexity_budget"] == "medium"
 
 
-def test_pipeline_derives_creative_motion_brief_from_visual_plan() -> None:
-    from packages.core.contracts.artifacts import VisualPlanArtifact
-    from packages.core.orchestration.pipeline import _derive_creative_motion_brief
-
-    vp = VisualPlanArtifact.model_validate({
-        "theme": "editorialLight",
-        "visual_thesis": "Transmisi paket data secara terdistribusi.",
-        "beats": [
-            {
-                "narrationSegmentId": "s1",
-                "conceptToExplain": "Pengiriman paket",
-                "visualPurpose": "Visualisasi gateway",
-                "primarySubjects": ["serverRack"],
-                "requiredObjects": ["coolingFan"],
-                "visualAction": "Server menyala",
-            }
-        ],
-    })
-    brief_data = _derive_creative_motion_brief(vp)
-    brief = CreativeMotionBriefArtifact.model_validate(brief_data)
-    assert brief.visual_thesis == "Transmisi paket data secara terdistribusi."
-    assert "serverRack" in brief.primary_visual_motifs
-    assert "coolingFan" in brief.reusable_motifs
-
-
-def test_derive_creative_motion_brief_from_dict() -> None:
-    from packages.core.orchestration.pipeline import _derive_creative_motion_brief
-
-    vp_dict = {
-        "theme": "spaceDark",
-        "visual_thesis": "Dict thesis for motion.",
-        "beats": [
-            {
-                "narrationSegmentId": "s1",
-                "conceptToExplain": "Packet flow",
-                "visualPurpose": "Gateway routing",
-                "primarySubjects": ["gatewayHub"],
-                "requiredObjects": ["signalLine"],
-                "visualAction": "Packets stream through hub",
-            }
-        ],
-    }
-    brief_data = _derive_creative_motion_brief(vp_dict)
-    brief = CreativeMotionBriefArtifact.model_validate(brief_data)
-    assert brief.visual_thesis == "Dict thesis for motion."
-    assert brief.art_direction.palette == "spaceDark"
-    assert "gatewayHub" in brief.primary_visual_motifs
-    assert "signalLine" in brief.reusable_motifs
-    assert "Packet flow" in brief.narrative_arc
-
-
 def test_creative_motion_brief_with_model_instance_and_string_art_direction() -> None:
-    from packages.core.orchestration.pipeline import _derive_creative_motion_brief
-
     spec = ArtDirectionSpec(palette="oceanFloor", primary_accent="#00AAFF")
     brief1 = CreativeMotionBriefArtifact.model_validate({
         "visual_thesis": "Thesis with instance.",
@@ -156,22 +103,38 @@ def test_creative_motion_brief_with_model_instance_and_string_art_direction() ->
     })
     assert brief2.art_direction.palette == "circuitDark"
 
-    loose_dict = {
-        "visual_thesis": "Loose thesis.",
-        "theme": "editorialLight",
-        "beats": [
-            {
-                "conceptToExplain": "Abstract concept",
-                "primarySubjects": ["atom"],
-                "requiredObjects": ["electron"],
-            }
-        ],
-    }
-    loose_brief_data = _derive_creative_motion_brief(loose_dict)
-    loose_brief = CreativeMotionBriefArtifact.model_validate(loose_brief_data)
-    assert loose_brief.visual_thesis == "Loose thesis."
-    assert "atom" in loose_brief.primary_visual_motifs
-    assert "electron" in loose_brief.reusable_motifs
+
+def test_the_directing_fields_are_recorded_and_never_invented() -> None:
+    """The brief carries the film-identity decisions, and an unstated one stays empty.
+
+    A blank here means "the director did not decide"; filling it with a default would make a
+    guess indistinguishable from a decision at every stage downstream.
+    """
+    brief = CreativeMotionBriefArtifact.model_validate({"visual_thesis": "Only the thesis."})
+    for field in (
+        "narrative_thesis",
+        "visual_metaphor",
+        "subject_environment",
+        "palette_rationale",
+        "typography_direction",
+        "camera_language",
+        "motion_language",
+        "scene_progression",
+        "transition_strategy",
+        "visual_climax",
+        "ending_payoff",
+    ):
+        assert getattr(brief, field) == "", field
+
+    stated = CreativeMotionBriefArtifact.model_validate(
+        {
+            "visual_thesis": "Thesis.",
+            "visual_metaphor": "The signal is a river.",
+            "camera_language": ["slow push in", "hold"],  # a director answering in bullets
+        }
+    )
+    assert stated.visual_metaphor == "The signal is a river."
+    assert stated.camera_language == "slow push in, hold"
 
 
 def test_creative_motion_brief_coerce_list() -> None:

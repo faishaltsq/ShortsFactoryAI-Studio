@@ -171,6 +171,68 @@ movement" becomes a schema error instead of a taste debate.
 }
 ```
 
+### 6.1 Creative motion brief (CreativeDirectorAgent, `creative-motion-brief.json`)
+
+The film's identity, decided by the director after the visual plan and before the storyboard. Every
+field below defaults to empty, and an empty field means **the director did not decide** — the motion
+coder is told which fields are undecided rather than handed an invented default that would read
+downstream as a decision.
+
+```jsonc
+{
+  "schema_version": 1,
+  "narrative_thesis": "what the film argues",
+  "visual_thesis": "what it looks like, and the metaphor it is built on",
+  "visual_metaphor": "the organising image the film returns to",
+  "art_direction": {
+    "palette": "editorialLight" | "spaceDark" | "warmLifestyle" | "circuitDark" | "oceanFloor",
+    "primary_accent": "#0055FF", "secondary_accent": "#FF4400", "background": "#F8FAFC",
+    "typography_style": "boldSans" | "technicalMono" | "editorialSerif"
+  },
+  "subject_environment": "the world this subject lives in, and why that world",
+  "palette_rationale": "why these colours, in terms of the subject",
+  "typography_direction": "how type behaves as a design element",
+  "camera_language": "framing and movement across the film",
+  "motion_language": "what motion means here: cause, direction, scale, transformation",
+  "narrative_arc": "hook → build → payoff", "scene_progression": "how the film advances",
+  "transition_strategy": "the rule joining one shot to the next",
+  "scene_transitions": ["cut", "wipe", "slideUp", "zoom"],
+  "primary_visual_motifs": ["…"], "reusable_motifs": ["an object or treatment that survives a cut"],
+  "pacing_strategy": "…", "motion_complexity_budget": "low" | "medium" | "high",
+  "visual_climax": "the shot where the film peaks", "ending_payoff": "what the viewer is left with"
+}
+```
+
+`art_direction.palette` governs the storyboard's `theme`. The keyword heuristic in
+`StoryboardAgent.sanitize_payload` is a fallback for a job with no brief, not an override.
+
+### 6.2 Motion code (MotionCoderAgent, `motion-code.json`)
+
+```jsonc
+{
+  "schema_version": 1,
+  "entry_component": "RootComposition",
+  "files": { "RootComposition.tsx": "…", "Scene01.tsx": "…" },
+  "dependencies": ["react", "remotion"],
+  "skill_hashes": ["remotion-captions:<sha256 of the portion actually sent>"],
+  "validated_by_codeguard": true,
+  "issues": [],
+  // Written by the pipeline, never by the model.
+  "narration_timing_sha256": "<digest of audio.json scene boundaries and word timestamps>",
+  "timing_source": "measured" | "estimated"
+}
+```
+
+`narration_timing_sha256` is what makes the second pass honest. The stage's reuse predicate compares
+it against the digest recomputed from the current `audio.json`, so motion code timed against a
+narration that has since changed is regenerated rather than reused. An empty value means the code was
+written before any measurement existed — the case the field is there to make visible. See
+`ARCHITECTURE.md` ADR-011.
+
+`skill_hashes` is code-written provenance (`<skill>:<sha256>`), not a model answer: the model's own
+list is discarded, because a list echoed by the model is a claim about its context rather than a
+record of it.
+
 ## 7. Assets
 
 ```jsonc
@@ -366,6 +428,23 @@ not report success.
 | `segment_mapping` | scene `segment` vs `script.json` segment ids | complete, both directions |
 | `character_consistency` | rendered `data.actors[].character` vs `assets.json` | ≥ 1 id, all resolve to one rig/palette |
 | `repetition` | Jaccard of a style/world/shot signature against ≤ 10 prior rendered jobs | `≤ 0.8` |
+| `narration_visual_relevance` | per scene: the domain subjects its own narration names vs the objects it draws | complete, per scene |
+| `cause_effect` | a declared `causal_state`: all four parts stated, and `resulting_state ≠ initial_state` | complete and changed |
+| `transition_continuity` | a scene declaring `motion.continuity: "carry"` vs shared object kinds with the previous scene | ≥ 1 shared kind |
+| `visual_payoff` | final scene draws something; if it declares a causal cycle, it records a resulting state | non-empty |
+
+`narration_visual_relevance` is per scene while `concrete_subjects` is per film: the film-wide gate
+is satisfied when *some* scene draws a required subject, which is why a ramen shot that draws a GPU
+can pass it. Both read the same `DOMAIN_REQUIREMENTS` table, so a subject cannot be required by one
+and optional in the other.
+
+`cause_effect` is conditional on declaration, because `SceneSpec.causal_state` is optional in the
+contract and a gate that required it would make the contract's own optionality a lie. What it does
+enforce is that a storyboard which *claims* a transformation shows one.
+
+`transition_continuity` is the measured form of "a subject that survives a cut stays recognisable":
+a storyboard that says `carry` while drawing an entirely new set of objects is claiming continuity
+it did not build. Scenes declaring `cut` or `match` are not required to share anything.
 
 `shot_variety` reads `data.shots[]` and nothing else: `product-adapter.ts` forwards `data` and
 drops `camera`/`motion`, so a score derived from `camera.move` would be a number no pixel can

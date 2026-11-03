@@ -58,6 +58,7 @@ SCHEDULABLE_STATES: tuple[JobState, ...] = (
     JobState.STORYBOARD_READY,
     JobState.ASSETS_READY,
     JobState.AUDIO_READY,
+    JobState.MOTION_READY,
     JobState.RENDERING,
     JobState.TECHNICAL_QC,
     JobState.EDITORIAL_QC,

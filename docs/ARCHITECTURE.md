@@ -264,7 +264,82 @@ Brief §11 forbids claiming a text-only model inspected frames. Enforced structu
 `vision`, the job's visual QA is recorded as `skipped_no_vision_provider` — an explicit,
 visible, non-passing state. It is never recorded as passed.
 
-## 12. Runtime shape
+## 12. ADR-011 — Motion code is a second pass, timed against the measured narration
+
+**Decision.** The motion stage runs *after* `AudioAgent` and *before* `RenderAgent`, on its own
+state `MOTION_READY`. It receives the measured per-scene timing, and the artifact records the digest
+of the timing it was generated against.
+
+**Why.** The pipeline used to run the motion stage from `STORYBOARD_READY`, before `audio.json`
+existed, so every animation was timed against the storyboard's provisional frame counts and a
+spoken-word sync was never actually possible. Moving the stage later is not enough on its own: a
+resumed job would reuse animation generated in the first pass and the workflow would look
+implemented while the second pass was silently skipped. So the reuse predicate compares the
+digest of `audio.json`'s scene boundaries and word timestamps with the value recorded in
+`motion-code.json`.
+
+**Consequences.**
+
+- `AUDIO_READY → RENDERING` is no longer the pipeline's edge; `AUDIO_READY → MOTION_READY →
+  RENDERING` is. `MOTION_READY` exists because `RENDERING → RENDERING` is not legal, so two stages
+  cannot share the render state.
+- The digest is written by `packages/core/orchestration/pipeline.py`, never by the model. A digest
+  echoed by the model is a claim; the guard compares a fact.
+- A narration that changes after the motion code was written expires that code. That is the same
+  rule `editorial.compute_inputs_hash` applies to a QC verdict: bind the artifact to the inputs it
+  judged, so stale work cannot be mistaken for current work.
+- `timing_source` reports `measured` or `estimated` explicitly. Word timestamps are the
+  synthesizer's own reported boundaries, which are **not** forced alignment, and the prompt says so
+  rather than letting the model assume precision that does not exist.
+
+## 13. ADR-012 — The creative brief is a directing decision, not a summary
+
+**Decision.** `creative-motion-brief.json` is produced by its own `CreativeDirectorAgent` stage,
+after the visual plan and before the storyboard, and it carries the film's identity: narrative and
+visual thesis, the organising metaphor, the subject's world, palette rationale, typography, camera
+and motion language, progression, transition strategy, climax and payoff.
+
+**Why.** It used to be derived deterministically from the visual plan. A derivation can restate what
+the beats already say; it cannot decide what the film argues, and the fields it filled were
+attributed to the director even though no one chose them. Every field now defaults to empty, and an
+empty field means "the director did not decide" — the motion coder is told which fields are
+undecided rather than handed an invented default that reads as a decision.
+
+**Consequences.**
+
+- `StoryboardAgent` receives the brief and sets `theme` from `art_direction.palette`. The keyword
+  heuristic survives only as a fallback for a job with no brief, because overriding a decided art
+  direction with a keyword guess is how a film ends up with a different look per scene.
+- One extra model call per job. That is the cost of a decision that cannot be derived.
+- `_derive_creative_motion_brief` is deleted, with its tests; the stage is the only producer.
+
+## 14. ADR-013 — Production presets are a whole-studio choice
+
+**Decision.** A preset (`packages/core/providers/presets.py`) expands into per-agent bindings,
+applied after `config/studio.json`'s bindings load so the preset wins over a stale per-agent entry.
+`full-stepfun-v2` binds every LLM agent to the operator's StepFun provider with fallback off.
+
+**Why.** "Run everything on this provider" is one decision, and expressing it as nine hand-edited
+bindings is nine chances to leave one agent on the old routing while the UI reports the preset
+active. The dangerous failure is silent cross-family fallback, so the preset's own default is
+`allow_fallback: false`: an unreachable endpoint raises `NoProviderAvailable` instead of quietly
+degrading to another model family.
+
+**Consequences.**
+
+- A preset names *providers*, not models. The model comes from the provider's own `model` field
+  unless the operator overrides it, and an override must name a model the StepFun family is known
+  to serve.
+- Capabilities are checked, not assumed. `apply_preset` returns the agents the named provider cannot
+  serve, and `GET /api/presets` reports `serviceable` from the live registry rather than asserting
+  it. Activating an unserviceable preset is a 422, not a choice the studio cannot honour.
+- The operator's explicit fallback opt-in is persisted (`preset_fallback`) because the preset is
+  re-expanded on every load; an opt-in that lived only in memory would vanish on restart.
+- An unknown preset id, or one whose provider is absent, is reported as a skipped-preset note and
+  the existing bindings stay in place — dropping it silently would let the studio keep running on
+  routing the operator had replaced.
+
+## 15. Runtime shape
 
 ```
 start-studio.bat
@@ -277,7 +352,7 @@ One worker thread in the API process for Phase 1–3. A separate worker process 
 option, not a Phase 1 requirement; the lease design already supports it (two `JobStore`
 instances, token-owned leases, verified in the donor's test suite).
 
-## 13. Dependency graph (build order)
+## 16. Dependency graph (build order)
 
 ```
 contracts ──┬──> providers ──> agents ──┐

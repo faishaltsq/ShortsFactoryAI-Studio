@@ -467,11 +467,50 @@ and GPU-pressure detection is absent. `docs/STUDIO_3D.md` carries the same numbe
 **The Types (py) gate runs.** mypy 1.18.2 is in the `dev` dependency group, `[tool.mypy]` sets
 `strict = true` / `python_version = "3.12"` / `packages = ["packages.core"]`, and
 `scripts/check.ps1` + `check.sh` invoke it like every other gate. `uv run mypy packages/core
---strict` exits 0 over all 53 core source files (2026-10-30, after a 93-finding burn-down across
-`media/`, `motion/`, `agents/`, `orchestration/`, `providers/`, `publish/`, `security/`). Rules
-for keeping it green: no blanket `# type: ignore`, no per-module `ignore_errors`; a single
-ignore with a written reason in this file is the only tolerated escape hatch, and the planted
-defect test (`tests/test_gate_scripts.py`) proves the gate still fails when it should.
+--strict` exits 0 over all 56 core source files (2026-11-03, after the creative-pipeline V2 work
+below added `providers/presets.py` and three new core flows). Rules for keeping it green: no
+blanket `# type: ignore`, no per-module `ignore_errors`; a single ignore with a written reason in
+this file is the only tolerated escape hatch, and the planted defect test
+(`tests/test_gate_scripts.py`) proves the gate still fails when it should.
+
+One recurring trap, worth naming because it cost four rounds here: narrowing through a ternary on
+an `Any` — `x = value if isinstance(value, dict) else {}` — is inferred as
+`Any | dict[Any, Any] | None`, and every later `x.get(...)` fails. Annotate the target
+(`x: dict[str, Any] = value if isinstance(value, dict) else {}`).
+
+## Creative pipeline V2 (2026-11-03)
+
+Four changes, each with its own ADR. They are recorded here because they change the shape of a
+phase-2 run, not just its output quality.
+
+| Change | ADR | Where |
+| --- | --- | --- |
+| Motion code is a second pass on its own state (`MOTION_READY`), timed against the measured narration, with a digest guard on reuse | ADR-011 | `packages/core/contracts/state.py`, `orchestration/pipeline.py`, `contracts/artifacts.py` |
+| `creative-motion-brief.json` is a directing decision on its own stage, not a derivation from the visual plan | ADR-012 | `packages/core/agents/concrete.py`, `contracts/artifacts.py`, `orchestration/pipeline.py` |
+| `full-stepfun-v2` is a selectable whole-studio preset with cross-family fallback off | ADR-013 | `packages/core/providers/presets.py`, `apps/api/{config,state,main,schemas}.py` |
+| Creative QC gained four checks beyond frame differences: per-scene narration relevance, declared cause and effect, transition continuity, visual payoff | — | `packages/core/media/qc.py` |
+
+`MotionCoderAgent` was rewritten around the visual-first principle (illustrate the noun, animate the
+verb, show the consequence). It now receives the brief, the shot plan with measured timing, the
+assets and the narration instead of a titles-and-frame-counts summary, and its Remotion skill
+reference is selected per shot against a configurable token budget with per-skill digests recorded
+in the artifact. `docs/MOTION_SKILLS.md` §3.1 has the selection table.
+
+New suites: `tests/test_presets.py`, `tests/test_two_pass_timing.py`.
+
+### What was deliberately not built
+
+- **Section-level retrieval inside a Remotion skill.** Every `SKILL.md` here is 1–13 KB, so the whole
+  file fits the budget; splitting it would add a parser without changing what the model reads.
+- **A hard `cause_effect` requirement.** `SceneSpec.causal_state` is optional in the contract, and a
+  gate that required it would make the contract's own optionality a lie. The check fires on a
+  *declared* cycle instead. The mock reference storyboard now declares one (and a truthful
+  `continuity: "carry"` between the scenes that share an object kind), so the check is exercised
+  end to end and not only by its unit tests.
+- **Deliberate stillness as a permitted shot.** The `bme_dynamics` gate fails any scene whose
+  beginning/middle/end keyframes do not differ, so "allow stillness when pacing calls for it" cannot
+  be honoured without first changing that gate. The prompt asks for restrained, subject-driven
+  motion instead, and says an ambient layer added to satisfy the metric is a defect.
 
 The eight-media-module scope table below is superseded: the gate now covers the whole
 `packages/core` tree, which is the honest version of "new modules only".

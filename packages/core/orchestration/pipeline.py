@@ -12,6 +12,7 @@ end to end in mock mode with no credential.
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
 from dataclasses import replace
@@ -20,7 +21,6 @@ from typing import Any
 from ..agents import CallContext, ModelOutputError
 from ..agents.registry import AGENTS
 from ..contracts.artifacts import (
-    ArtDirectionSpec,
     ReviewArtifact,
     RevisionArtifact,
     RevisionAttempt,
@@ -268,6 +268,17 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
     language = payload.get("language", "id")
     duration = int(payload.get("target_duration_s", 45))
 
+    def read(name: str, fallback: Any) -> Any:
+        """An optional input artifact, or ``fallback``.
+
+        ``has_artifact`` then ``read_artifact`` is two round trips that can still race a concurrent
+        cleanup; this is the one place that turns "absent" into a value instead of an exception.
+        """
+        try:
+            return store.read_artifact(job_id, name)
+        except Exception:  # noqa: BLE001 - an absent optional artifact is not an error
+            return fallback
+
     def research_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
         return {"topic": topic, "genre": genre, "avoid": []}
 
@@ -292,14 +303,19 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
             "research": store.read_artifact(job_id, "research.json") if store.has_artifact(job_id, "research.json") else {},
         }
 
+    def creative_brief_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
+        return {
+            "script": read("script.json", {}),
+            "topic": read("topic.json", {}),
+            "research": read("research.json", {}),
+            "visual_plan": read("visual-plan.json", {}),
+            "language": language,
+        }
+
     def storyboard_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
         script = store.read_artifact(job_id, "script.json")
-        visual_plan = store.read_artifact(job_id, "visual-plan.json") if store.has_artifact(job_id, "visual-plan.json") else {}
-        brief = (
-            store.read_artifact(job_id, "creative-motion-brief.json")
-            if store.has_artifact(job_id, "creative-motion-brief.json")
-            else {}
-        )
+        visual_plan = read("visual-plan.json", {})
+        brief = read("creative-motion-brief.json", {})
         from ..agents.asset_registry import AssetResolver
         assets_res, _ = AssetResolver.resolve_visual_plan(visual_plan, script) if visual_plan else ({}, [])
         return {
@@ -334,18 +350,36 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
         }
 
     def motion_code_prompt(_store: JobStore, _job_id: str) -> dict[str, Any]:
-        storyboard = store.read_artifact(job_id, "storyboard.json") if store.has_artifact(job_id, "storyboard.json") else {}
-        brief = (
-            store.read_artifact(job_id, "creative-motion-brief.json")
-            if store.has_artifact(job_id, "creative-motion-brief.json")
-            else {}
-        )
-        visual_plan = store.read_artifact(job_id, "visual-plan.json") if store.has_artifact(job_id, "visual-plan.json") else {}
+        # Everything the director decided, every shot it planned, the narration it must sync to,
+        # and the assets that actually exist. A motion coder that receives only titles and frame
+        # counts can only produce slides, so the context is assembled here rather than summarised
+        # inside the agent: the pipeline knows which artifacts exist, and the agent should not be
+        # guessing at filenames.
+        storyboard = read("storyboard.json", {})
+        brief = read("creative-motion-brief.json", {})
+        visual_plan = read("visual-plan.json", {})
+        script = read("script.json", {})
+        research = read("research.json", {})
+        topic = read("topic.json", {})
+        assets = read("assets.json", {})
+        motion_plan = read("motion-plan.json", {})
+        policy = getattr(state, "motion_policy", None)
+        job_language = store.get(job_id).payload.get("language", "id")
         return {
             "storyboard": storyboard,
             "creative_motion_brief": brief,
             "brief": brief,
             "visual_plan": visual_plan,
+            "script": script,
+            "research": research,
+            "topic": topic,
+            "assets": assets,
+            "motion_plan": motion_plan,
+            "narration_timing": _narration_timing_context(store, job_id, storyboard),
+            "language": job_language,
+            "fps": int(storyboard.get("fps") or 30) or 30,
+            "skill_token_budget": getattr(policy, "skill_tokens", 3000),
+            "skill_limit": getattr(policy, "skill_limit", 4),
         }
 
 
@@ -390,6 +424,19 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
             task="visual_plan",
             kwargs_fn=visual_plan_prompt,
         ),
+        # The film's creative identity is a directing decision, not a summary of the visual plan.
+        # It runs after the plan (so the director knows what the beats look like) and before the
+        # storyboard (so every shot inherits one art direction rather than inventing its own).
+        # Targeting the current state makes this a no-op transition, the same shape the visual plan
+        # already has: the only forward move here is StoryboardAgent's.
+        _dynamic_stage(
+            state,
+            agent_name="CreativeDirectorAgent",
+            stage_state=JobState.CREATIVE_REVIEW,
+            produces="creative-motion-brief.json",
+            task="creative_motion_brief",
+            kwargs_fn=creative_brief_prompt,
+        ),
         _dynamic_stage(
             state,
             agent_name="StoryboardAgent",
@@ -413,34 +460,40 @@ def build_stages(state: Any, job_id: str) -> list[Stage]:
     ]
 
     if payload.get("render_video") is True:
+        # The motion stage is built here but *placed* by ``_render_stages``, after the audio stage
+        # and before the render: motion code must be written against the measured narration it has
+        # to sync to, and it must exist before the renderer reads it.
         if payload.get("renderer") in ("custom-motion", "motion-code"):
-            stages.append(
-                _dynamic_stage(
-                    state,
-                    agent_name="MotionCoderAgent",
-                    stage_state=JobState.STORYBOARD_READY,
-                    produces="motion-code.json",
-                    task="motion_code",
-                    kwargs_fn=motion_code_prompt,
-                )
+            motion_stage = _dynamic_stage(
+                state,
+                agent_name="MotionCoderAgent",
+                stage_state=JobState.MOTION_READY,
+                produces="motion-code.json",
+                task="motion_code",
+                kwargs_fn=motion_code_prompt,
             )
         else:
-            stages.append(
-                _dynamic_stage(
-                    state,
-                    agent_name="AnimationAgent",
-                    stage_state=JobState.STORYBOARD_READY,
-                    produces="motion-plan.json",
-                    task="motion_plan",
-                    kwargs_fn=motion_plan_prompt,
-                )
+            motion_stage = _dynamic_stage(
+                state,
+                agent_name="AnimationAgent",
+                stage_state=JobState.MOTION_READY,
+                produces="motion-plan.json",
+                task="motion_plan",
+                kwargs_fn=motion_plan_prompt,
             )
         renderer = payload.get("renderer", "remotion")
         fallback_policy = payload.get("fallback_policy", "allow_legacy")
         from ..media.render import RENDERERS
 
         render_engine = renderer if renderer in RENDERERS else "remotion"
-        stages.extend(_render_stages(state, renderer=render_engine, fallback_policy=fallback_policy))
+        stages.extend(
+            _render_stages(
+                state,
+                renderer=render_engine,
+                fallback_policy=fallback_policy,
+                motion_stage=motion_stage,
+            )
+        )
     return stages
 
 
@@ -452,9 +505,13 @@ def _video_dir() -> Any:
 
 
 def _render_stages(
-    state: Any, *, renderer: str = "remotion", fallback_policy: str = "allow_legacy"
+    state: Any,
+    *,
+    renderer: str = "remotion",
+    fallback_policy: str = "allow_legacy",
+    motion_stage: Stage | None = None,
 ) -> list[Stage]:
-    """The local Phase 2 chain: assets, audio, render, technical QC, editorial QC, readiness.
+    """The local Phase 2 chain: assets, audio, motion, render, technical QC, editorial QC, readiness.
 
     Both QC gates are owned by ``QualityAgent`` because both answer questions about the same
     file, but they are separate stages with separate artifacts: ``TECHNICAL_QC`` writes
@@ -483,6 +540,10 @@ def _render_stages(
     return [
         build_asset_stage(state, video_dir=video_dir),
         build_audio_stage(state),
+        # Motion code sits between the narration it syncs to and the renderer that consumes it. A
+        # ``done_when`` that re-derives the narration timing is what makes reuse honest here: a
+        # resumed job must not keep animation timed against a *different* narration.
+        *([_audio_timed(state, motion_stage)] if motion_stage is not None else []),
         admit_render_stage(
             state,
             build_render_stage(
@@ -509,6 +570,168 @@ def _render_stages(
             done_when=lambda artifact, job_id: _readiness_current(state.store, job_id, artifact),
         ),
     ]
+
+
+def _narration_timing_digest(store: JobStore, job_id: str) -> str:
+    """A stable digest of the timing motion code has to sync to.
+
+    Only the *timing* fields are hashed — scene boundaries, the narration duration, and the word
+    timestamps when the synthesizer reported them. A change to the mix or the file name leaves a
+    correctly timed animation correctly timed, so it must not expire one. Anything that moves a
+    scene boundary, or moves a word inside one, does.
+    """
+    from ..prompts import sha256
+
+    try:
+        audio = store.read_artifact(job_id, "audio.json")
+    except Exception:  # noqa: BLE001 - absent or unreadable audio means "no measured timing"
+        return ""
+    if not isinstance(audio, dict):
+        return ""
+    narration = audio.get("narration")
+    payload = {
+        "durationMs": (narration or {}).get("durationMs") if isinstance(narration, dict) else None,
+        "scenes": [
+            {
+                "sceneId": scene.get("sceneId") or scene.get("scene_id") or scene.get("id"),
+                "startMs": scene.get("startMs"),
+                "endMs": scene.get("endMs"),
+            }
+            for scene in (audio.get("scenes") or [])
+            if isinstance(scene, dict)
+        ],
+        "words": [
+            {"startMs": w.get("startMs"), "endMs": w.get("endMs"), "text": w.get("text")}
+            for w in (audio.get("words") or [])
+            if isinstance(w, dict)
+        ],
+    }
+    return sha256(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+
+def _narration_timing_context(
+    store: JobStore, job_id: str, storyboard: dict[str, Any]
+) -> dict[str, Any]:
+    """The timing the motion code must sync to, in frames.
+
+    Pass 2 of the two-pass workflow: the storyboard says how long each scene *should* be, and this
+    says how long the narration actually is. Where both exist the measured value is reported
+    alongside the provisional one, so the model can see the difference rather than being handed a
+    single number whose origin is unstated. It is never presented as forced alignment: word
+    timestamps are the synthesizer's own boundary reports, which is why the source is named.
+    """
+    fps = int(storyboard.get("fps") or 30) or 30
+    scenes: list[dict[str, Any]] = []
+    for index, scene in enumerate(storyboard.get("scenes") or []):
+        if not isinstance(scene, dict):
+            continue
+        scenes.append(
+            {
+                "index": index,
+                "sceneId": scene.get("sceneId"),
+                "startFrame": scene.get("startFrame"),
+                "durationFrames": scene.get("durationInFrames"),
+            }
+        )
+    context: dict[str, Any] = {
+        "fps": fps,
+        "source": "estimated",
+        "note": (
+            "Frame counts are the storyboard's provisional estimates. No measured narration was "
+            "available, so treat every duration as approximate."
+        ),
+        "scenes": scenes,
+    }
+    try:
+        audio = store.read_artifact(job_id, "audio.json")
+    except Exception:  # noqa: BLE001 - no audio artifact means no measured timing, not a crash
+        audio = None
+    if not isinstance(audio, dict):
+        return context
+
+    measured = []
+    by_id: dict[str, dict[str, Any]] = {}
+    for entry in audio.get("scenes") or []:
+        if not isinstance(entry, dict):
+            continue
+        start_ms = entry.get("startMs")
+        end_ms = entry.get("endMs")
+        if not isinstance(start_ms, int) or not isinstance(end_ms, int):
+            continue
+        slot = {
+            "sceneId": entry.get("sceneId") or entry.get("scene_id") or entry.get("id"),
+            "startMs": start_ms,
+            "endMs": end_ms,
+            "startFrame": round(start_ms * fps / 1000),
+            "durationFrames": round((end_ms - start_ms) * fps / 1000),
+        }
+        measured.append(slot)
+        if slot["sceneId"]:
+            by_id[str(slot["sceneId"])] = slot
+
+    narration = audio.get("narration") if isinstance(audio.get("narration"), dict) else {}
+    voice = narration.get("voice") if isinstance(narration, dict) else None
+    words = [
+        {"startMs": w.get("startMs"), "endMs": w.get("endMs"), "text": w.get("text")}
+        for w in (audio.get("words") or [])
+        if isinstance(w, dict)
+    ]
+    context.update(
+        {
+            "source": "measured",
+            "note": (
+                "Durations below are measured from the rendered narration. Word timestamps are "
+                "the synthesizer's reported boundaries, not forced alignment."
+            ),
+            "engine": narration.get("engine") or narration.get("provider") if narration else None,
+            "voice": voice,
+            "durationMs": narration.get("durationMs") if narration else None,
+            "scenes": measured,
+            "words": words[:400],
+        }
+    )
+    # Keep the storyboard's own frame count beside the measured one where a scene id matches: two
+    # numbers with different provenance is more informative than silently overwriting one.
+    for position, estimate in enumerate(scenes):
+        matched = by_id.get(str(estimate.get("sceneId")))
+        if matched is None and position < len(measured):
+            # Ids are the reliable join, but the audio stage and the storyboard can disagree on
+            # their naming while agreeing on order. Positional fallback keeps the estimate attached
+            # rather than silently dropped.
+            matched = measured[position]
+        if matched is not None:
+            matched["estimatedDurationFrames"] = estimate.get("durationFrames")
+    return context
+
+
+def _motion_timing_stamp(store: JobStore, job_id: str, payload: dict[str, Any]) -> None:
+    """Record, in code, the narration timing the motion code was generated against.
+
+    The model cannot be trusted with this and would not know it: a digest echoed by the model is
+    the model's claim, while a digest computed here is a fact about the run.
+    """
+    digest = _narration_timing_digest(store, job_id)
+    payload["narration_timing_sha256"] = digest
+    payload["timing_source"] = "measured" if digest else "estimated"
+
+
+def _audio_timed(state: Any, stage: Stage) -> Stage:
+    """Make motion-code reuse conditional on the narration it was timed against.
+
+    Without this, a job that resumed past the audio stage would keep animation generated against a
+    provisional estimate — the two-pass workflow would look implemented while the second pass was
+    silently skipped. The comparison is against the *current* ``audio.json``, computed here, so a
+    retimed narration expires the code the same way a re-render expires a QC verdict.
+    """
+
+    def current(artifact: dict[str, Any], job_id: str) -> bool:
+        if stage.done_when is not None and not stage.done_when(artifact, job_id):
+            return False
+        return str(artifact.get("narration_timing_sha256") or "") == _narration_timing_digest(
+            state.store, job_id
+        )
+
+    return replace(stage, done_when=current)
 
 
 def _qa_decision_stage(
@@ -623,16 +846,15 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
                 artifacts=[produces],
             )
 
-        ctx.write_artifact(produces, _with_provenance(artifact.to_json(), agent_name, ctxp, state))
+        payload_out = _with_provenance(artifact.to_json(), agent_name, ctxp, state)
+        if produces == "motion-code.json":
+            # Code-written, never model-written: the digest is a fact about the run, and a digest
+            # echoed by the model would be a claim. The reuse guard compares this value, so a
+            # prototype silently stamped by the model would defeat the whole two-pass ordering.
+            _motion_timing_stamp(store, job_id, payload_out)
+        ctx.write_artifact(produces, payload_out)
         out_artifacts = [produces]
-        if produces == "visual-plan.json":
-            brief_dict = _derive_creative_motion_brief(artifact)
-            ctx.write_artifact(
-                "creative-motion-brief.json",
-                _with_provenance(brief_dict, agent_name, ctxp, state),
-            )
-            out_artifacts.append("creative-motion-brief.json")
-        elif produces == "motion-code.json":
+        if produces == "motion-code.json":
             from pathlib import Path
 
             if not getattr(artifact, "validated_by_codeguard", False) or getattr(artifact, "issues", []):
@@ -690,120 +912,6 @@ def _dynamic_stage(state: Any, *, agent_name: str, stage_state: JobState, produc
         ),
     )
 
-
-def _derive_creative_motion_brief(visual_plan: Any) -> dict[str, Any]:
-    from ..contracts.artifacts import CreativeMotionBriefArtifact
-
-    if isinstance(visual_plan, dict):
-        from ..contracts.artifacts import VisualPlanArtifact
-
-        try:
-            visual_plan = VisualPlanArtifact.model_validate(visual_plan)
-        except Exception:
-            pass
-
-    def _get(obj: Any, *keys: str, default: Any = None) -> Any:
-        if isinstance(obj, dict):
-            for k in keys:
-                if k in obj and obj[k] is not None:
-                    return obj[k]
-            return default
-        for k in keys:
-            v = getattr(obj, k, None)
-            if v is not None:
-                return v
-        return default
-
-    beats = _get(visual_plan, "beats", default=[]) or []
-    visual_thesis = _get(
-        visual_plan, "visual_thesis", "visualThesis", "reasoning", default=""
-    ) or "Educational visual progression for short-form animation."
-
-    theme = _get(visual_plan, "theme", default="editorialLight") or "editorialLight"
-    style_intent = _get(visual_plan, "style_intent", "styleIntent")
-    if style_intent:
-        if isinstance(style_intent, dict) and style_intent.get("theme"):
-            theme = style_intent["theme"]
-        elif hasattr(style_intent, "model_fields_set") and "theme" in style_intent.model_fields_set:
-            theme = style_intent.theme
-        elif theme == "editorialLight" and getattr(style_intent, "theme", None):
-            theme = style_intent.theme
-
-    primary_motifs: list[str] = list(
-        _get(visual_plan, "primary_visual_motifs", "primaryVisualMotifs", default=[]) or []
-    )
-    reusable: list[str] = list(
-        _get(visual_plan, "reusable_motifs", "reusableMotifs", default=[]) or []
-    )
-    arc_parts: list[str] = []
-
-    for beat in beats:
-        subjs = _get(beat, "primarySubjects", "primary_subjects", default=[]) or []
-        if isinstance(subjs, str):
-            subjs = [p.strip() for p in subjs.split(",") if p.strip()]
-        for subj in subjs:
-            if subj and subj not in primary_motifs:
-                primary_motifs.append(str(subj))
-
-        objs = _get(beat, "requiredObjects", "required_objects", default=[]) or []
-        if isinstance(objs, str):
-            objs = [p.strip() for p in objs.split(",") if p.strip()]
-        for obj in objs:
-            if obj and obj not in reusable:
-                reusable.append(str(obj))
-
-        concept = _get(beat, "conceptToExplain", "concept_to_explain", "concept", default="")
-        if concept:
-            arc_parts.append(str(concept))
-
-    narrative_arc = (
-        _get(visual_plan, "narrative_arc", "narrativeArc")
-        or (" -> ".join(arc_parts) if arc_parts else "Input -> Analysis -> Resolution")
-    )
-    if not primary_motifs:
-        primary_motifs = ["diagram", "conceptNode"]
-
-    art_dir = _get(visual_plan, "art_direction", "artDirection")
-    art_dict: dict[str, Any] = {
-        "palette": theme,
-        "primary_accent": "#0055FF",
-        "secondary_accent": "#FF4400",
-        "background": "#F8FAFC",
-        "typography_style": "boldSans",
-    }
-    if isinstance(art_dir, dict):
-        for k, v in art_dir.items():
-            if v is not None:
-                art_dict[k] = v
-    elif hasattr(art_dir, "model_dump"):
-        for k, v in art_dir.model_dump().items():
-            if v is not None:
-                art_dict[k] = v
-
-    pacing_strategy = (
-        _get(visual_plan, "pacing_strategy", "pacingStrategy")
-        or "Dynamic pacing matched to visual beats."
-    )
-    scene_transitions = (
-        _get(visual_plan, "scene_transitions", "sceneTransitions")
-        or ["cut", "wipe", "slideUp", "zoom"]
-    )
-    motion_complexity_budget = (
-        _get(visual_plan, "motion_complexity_budget", "motionComplexityBudget")
-        or "medium"
-    )
-
-    brief = CreativeMotionBriefArtifact(
-        visual_thesis=visual_thesis,
-        art_direction=ArtDirectionSpec.model_validate(art_dict),
-        narrative_arc=narrative_arc,
-        primary_visual_motifs=primary_motifs,
-        pacing_strategy=pacing_strategy,
-        reusable_motifs=reusable or primary_motifs[:2],
-        scene_transitions=scene_transitions,
-        motion_complexity_budget=motion_complexity_budget,
-    )
-    return brief.to_json()
 
 
 def _review_type() -> type[Any]:

@@ -19,6 +19,7 @@ def test_happy_path_is_walkable():
         JobState.STORYBOARD_READY,
         JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
         JobState.RENDERING,
         JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC,

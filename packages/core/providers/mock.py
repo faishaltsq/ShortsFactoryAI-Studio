@@ -59,6 +59,12 @@ _MOCK_WORLDS: tuple[dict[str, Any], ...] = (
             {"kind": "gpu", "x": 0.74, "y": 0.64, "size": 0.24, "at": 30},
         ],
         "camera": {"shot": "wide", "move": "push", "amplitude": 0.1, "ease": "power2.out"},
+        "continuity": "cut",
+        "initial_state": "Permintaan masuk ke rak server dan menunggu diproses.",
+        "causal_action": "Rak server meneruskan permintaan ke unit akselerator.",
+        "resulting_state": "Permintaan berjalan di unit yang tepat, bukan di antrean.",
+        "transition": "Potong langsung ke unit akselerator yang menerima permintaan itu.",
+        "carries": [],
         "beats": [
             {"atFrame": 0, "kind": "enter", "subject": "TITLE"},
             {"atFrame": 30, "kind": "action", "subject": "TITLE"},
@@ -73,6 +79,12 @@ _MOCK_WORLDS: tuple[dict[str, Any], ...] = (
             {"kind": "neuralNet", "x": 0.72, "y": 0.66, "size": 0.26, "at": 28},
         ],
         "camera": {"shot": "medium", "move": "pan", "amplitude": 0.12, "ease": "sine.inOut"},
+        "continuity": "carry",
+        "initial_state": "Permintaan yang sama kini berjalan di unit akselerator.",
+        "causal_action": "Jaringan saraf memilih rute tercepat di antara seluruh node.",
+        "resulting_state": "Satu rute terpilih dan beban antrean turun.",
+        "transition": "Geser ke node penyimpanan yang menerima jawaban rute.",
+        "carries": ["gpu"],
         "beats": [
             {"atFrame": 0, "kind": "enter", "subject": "TITLE"},
             {"atFrame": 48, "kind": "reveal", "subject": "TITLE"},
@@ -86,6 +98,12 @@ _MOCK_WORLDS: tuple[dict[str, Any], ...] = (
             {"kind": "neuralNet", "x": 0.74, "y": 0.66, "size": 0.26, "at": 26},
         ],
         "camera": {"shot": "close", "move": "pull", "amplitude": 0.08, "ease": "power1.out"},
+        "continuity": "carry",
+        "initial_state": "Jawaban rute tiba di node penyimpanan dan belum dikirim.",
+        "causal_action": "Node menyimpan hasil lalu menyiarkannya kembali lewat antena.",
+        "resulting_state": "Permintaan yang sama selesai dan jawabannya sudah dikirim.",
+        "transition": "Tarik keluar memperlihatkan hasil yang sudah kembali ke asalnya.",
+        "carries": ["neuralNet"],
         "beats": [
             {"atFrame": 0, "kind": "enter", "subject": "TITLE"},
             {"atFrame": 42, "kind": "emphasis", "subject": "TITLE"},
@@ -131,7 +149,10 @@ def mock_storyboard(*, seed: str = "demo", frames_per_scene: int = 300) -> dict[
                 "camera": {**world["camera"], "target": title_id},
                 "motion": {
                     "energy": 0.55,
-                    "continuity": "cut",
+                    # The declared cycle is what makes the fixture exercise the editorial gate's
+                    # continuity check: a 'carry' claim is verified against the object kinds the
+                    # previous scene actually drew.
+                    "continuity": world["continuity"],
                     # Beats are scene-local; each one sits inside the shortest scene this mock
                     # script can produce after the audio stage retimes it.
                     "beats": [
@@ -140,6 +161,16 @@ def mock_storyboard(*, seed: str = "demo", frames_per_scene: int = 300) -> dict[
                     ],
                 },
                 "transition": {"kind": "cut", "frames": 0},
+                # A declared causal cycle, because the editorial gate has a `cause_effect` check
+                # that only fires on a *declared* one: a reference fixture that declared none would
+                # leave that check unexercised end to end. The three worlds are one continuous
+                # mechanism — a packet arriving, being routed, and arriving again.
+                "causal_state": {
+                    "initial_state": world["initial_state"],
+                    "causal_action": world["causal_action"],
+                    "resulting_state": world["resulting_state"],
+                    "transition": world["transition"],
+                },
                 # `data` is what the renderer reads: the composition draws these objects on this
                 # backdrop, and the declared camera above owns the movement.
                 "data": {
@@ -267,6 +298,33 @@ class MockProvider:
                     "typography_style": "boldSans",
                 },
                 "narrative_arc": f"Input {seed} -> Analisis Beban -> Pemrosesan Model -> Hasil Optimal",
+                "narrative_thesis": (
+                    f"Gateway yang memilih rute tercepat membuat {seed} selesai lebih cepat."
+                ),
+                "visual_metaphor": "Paket data sebagai sungai yang mencari jalur paling lancar.",
+                "subject_environment": (
+                    "Ruang data: rak server, jalur serat optik, dan node model yang menyala."
+                ),
+                "palette_rationale": (
+                    "Slate terang menahan fokus pada jalur data; aksen amber menandai beban puncak."
+                ),
+                "typography_direction": (
+                    "Angka besar bergerak sebagai bukti kecepatan; label mengikuti objeknya."
+                ),
+                "camera_language": (
+                    "Dorong masuk saat paket masuk, tarik keluar saat rute terpilih."
+                ),
+                "motion_language": (
+                    "Gerak selalu punya arah dan tujuan: paket masuk, rute bercabang, hasil tiba."
+                ),
+                "scene_progression": (
+                    "Permintaan masuk, beban diukur, rute dipilih, hasil dikirim kembali."
+                ),
+                "transition_strategy": (
+                    "Match cut saat objek yang sama berpindah peran; potong langsung saat dijelaskan."
+                ),
+                "visual_climax": "Paket melintasi gateway dan rute tercepat bercabang terbuka.",
+                "ending_payoff": "Permintaan yang sama selesai jauh lebih cepat.",
                 "primary_visual_motifs": ["network_packets", "gateway_hub", "model_nodes", "heartbeat_pulses"],
                 "pacing_strategy": "Cepat dan dinamis di awal, stabil saat routing, akselerasi saat resolusi.",
                 "reusable_motifs": ["data_token", "signal_line"],

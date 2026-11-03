@@ -60,6 +60,7 @@ def _approved_job(store: JobStore, *, sha: str = SHA, payload: bytes = b"video-b
         JobState.STORYBOARD_READY,
         JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
         JobState.RENDERING,
         JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC,
@@ -575,7 +576,7 @@ def test_publish_refuses_a_mock_job_with_the_publishable_reason(tmp_path):
     for st in (
         JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
-        JobState.AUDIO_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
+        JobState.AUDIO_READY, JobState.MOTION_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC, JobState.READY_FOR_APPROVAL,
     ):
         state.store.transition(job.id, st)
@@ -617,7 +618,7 @@ def test_publish_refuses_when_the_approval_is_no_longer_publishable(tmp_path):
     for st in (
         JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
-        JobState.AUDIO_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
+        JobState.AUDIO_READY, JobState.MOTION_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC, JobState.READY_FOR_APPROVAL,
     ):
         state.store.transition(job.id, st)

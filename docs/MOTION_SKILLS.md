@@ -52,6 +52,26 @@ interface.
 (we are 1080×1920), and the assumption that the skill generates Remotion components — it does
 not, and pretending otherwise would mean executing generated HTML inside the dashboard.
 
+---
+
+### 3.1 Remotion skill reference — selection, budget, provenance
+
+The Remotion skills in `.agents/skills/` are a different thing from the Bang Motion registry: they
+are prompt reference for `MotionCoderAgent`, loaded by `packages/core/agents/skill_loader.py`.
+
+| Concern | Behaviour |
+| --- | --- |
+| Selection | `MotionSkillLoader.rank(needs, limit)` — weighted term overlap over each skill's name (×5), its declared frontmatter `description` (×3), its markdown headings (×2) and its body (×1); ties broken by name so two runs select identically |
+| Needs | `MotionCoderAgent._shot_needs` builds the free text from what the *shots* declare (scene type, purpose, action, environment, camera move/framing, continuity, subjects, primitives) plus the brief's motion/camera/typography language — never from the narration topic, because a skill that teaches an SVG path reveal is not chosen by the word "submarine" |
+| Always | `remotion-best-practices` is the router that names every other skill, so it is always included |
+| Budget | `studio.json` → `motion.skill_tokens` (default 3000) and `motion.skill_limit` (default 4), passed to the agent as prompt kwargs from `AppState.motion_policy`. A fixed budget for every request, applied to every installed skill, is what this replaces |
+| Provenance | `SkillBundle.skill_hashes` maps each sent skill to the sha256 of the **portion actually sent**, and `MotionCoderAgent.sanitize_payload` writes `<skill>:<sha256>` into `motion-code.json`. A skill truncated to fit the budget is recorded as the truncated version |
+| Not from the model | The model's own `skill_hashes` list is discarded. A list echoed by the model is a claim about its context; a digest computed here is a record of it |
+
+Section-level retrieval inside a skill is deliberately not implemented: every `SKILL.md` here is
+1–13 KB, so the whole file fits a normal budget and splitting it would add a parser without changing
+what the model reads. Revisit if a skill outgrows the per-request budget.
+
 ## 4. Ingest procedure
 
 1. Clone at a pinned tag into `vendor/bang-motion/<version>/` (git submodule-free: a script

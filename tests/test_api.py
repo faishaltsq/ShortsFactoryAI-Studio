@@ -124,6 +124,7 @@ def test_rejection_requires_a_reason(client, app):
         JobState.STORYBOARD_READY,
         JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
         JobState.RENDERING,
         JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC,
@@ -146,6 +147,7 @@ def test_approval_gate_blocks_when_artifacts_are_missing(client, app):
         JobState.STORYBOARD_READY,
         JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
         JobState.RENDERING,
         JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC,
@@ -166,7 +168,7 @@ def test_a_mock_job_is_never_publishable(client, app):
     for state in (
         JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED, JobState.CREATIVE_REVIEW,
         JobState.STORYBOARD_READY, JobState.ASSETS_READY, JobState.AUDIO_READY,
-        JobState.RENDERING, JobState.TECHNICAL_QC, JobState.EDITORIAL_QC,
+        JobState.MOTION_READY, JobState.RENDERING, JobState.TECHNICAL_QC, JobState.EDITORIAL_QC,
         JobState.READY_FOR_APPROVAL,
     ):
         store.transition(job["id"], state)

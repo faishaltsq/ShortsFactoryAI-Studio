@@ -216,8 +216,8 @@ def test_advanced_pipeline_resume_reuses_valid_upstream_without_provider_calls(s
     job = _job(state, provider)
     assert _run(state, job.id)["ok"] is True
     # Reuse real agent artifacts, then let the real QC gate reject absent local media inputs.
-    for target in (JobState.ASSETS_READY, JobState.AUDIO_READY, JobState.RENDERING,
-                   JobState.TECHNICAL_QC, JobState.EDITORIAL_QC):
+    for target in (JobState.ASSETS_READY, JobState.AUDIO_READY, JobState.MOTION_READY,
+                   JobState.RENDERING, JobState.TECHNICAL_QC, JobState.EDITORIAL_QC):
         state.store.transition(job.id, target)
         if target is current:
             break

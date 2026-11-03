@@ -121,7 +121,11 @@ def test_motion_coder_agent_skill_hashes_and_ast_codeguard(tmp_path: Path) -> No
     assert sanitized["validated_by_codeguard"] is True
     assert sanitized["issues"] == []
     assert len(sanitized["skill_hashes"]) == 1
-    assert sanitized["skill_hashes"][0] == agent._skills_bundle.sha256_hash
+    # Per-skill provenance: the artifact names the skill and the digest of the portion actually
+    # sent, so a stale skill file is detectable from the artifact alone.
+    name, _, digest = sanitized["skill_hashes"][0].partition(":")
+    assert name == "remotion-best-practices"
+    assert digest == agent._skills_bundle.skill_hashes["remotion-best-practices"]
 
     # Sanitize payload with AST CodeGuard: AST evasion attempt (eval)
     evil_payload = {

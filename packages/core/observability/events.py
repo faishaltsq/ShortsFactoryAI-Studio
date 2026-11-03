@@ -82,6 +82,9 @@ STAGE_AGENTS: dict[str, str] = {
     "STORYBOARD_READY": "AnimationAgent",
     "ASSETS_READY": "AudioAgent",
     "AUDIO_READY": "AnimationAgent",
+    # MotionCoderAgent has no workstation character of its own; ``_emit`` projects it onto the
+    # AnimationAgent one, so the state and the event agree on who is working.
+    "MOTION_READY": "AnimationAgent",
     "RENDERING": "EditorAgent",
     "TECHNICAL_QC": "QualityAgent",
     "EDITORIAL_QC": "QualityAgent",

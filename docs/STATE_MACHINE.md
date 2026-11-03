@@ -39,6 +39,10 @@ no "any → any" escape hatch, and no stage may write a state it does not own.
            └────────┬─────────┘
                     │
            ┌────────v─────────┐
+           │   MOTION_READY   │  MotionCoderAgent (or AnimationAgent)
+           └────────┬─────────┘
+                    │
+           ┌────────v─────────┐
            │    RENDERING     │  RenderAgent (Animation + Editor)
            └────────┬─────────┘
                     │
@@ -76,19 +80,33 @@ no "any → any" escape hatch, and no stage may write a state it does not own.
 
 ## Required media path
 
-`render_video: true` appends six deterministic stages. The direct
+`render_video: true` appends seven deterministic stages. The direct
 `STORYBOARD_READY → RENDERING` shortcut is not allowed: every rendered job walks
-`STORYBOARD_READY → ASSETS_READY → AUDIO_READY → RENDERING → TECHNICAL_QC → EDITORIAL_QC →
-READY_FOR_APPROVAL`.
+`STORYBOARD_READY → ASSETS_READY → AUDIO_READY → MOTION_READY → RENDERING → TECHNICAL_QC →
+EDITORIAL_QC → READY_FOR_APPROVAL`.
 
 | # | Stage | Agent | Produces | Question it answers |
 | --- | --- | --- | --- | --- |
 | 1 | `ASSETS_READY` | `AssetAgent` | `assets.json` | Which rig, palette and artwork bytes are in play, by hash? |
 | 2 | `AUDIO_READY` | `AudioAgent` | `audio.json`, `narration.wav` | How long is the narration, measured, and where are the words? |
-| 3 | `RENDERING` | stage name `RenderAgent`, events attributed to `EditorAgent` | `output.mp4`, `render.json` | Does a file exist that ffprobe can describe? |
-| 4 | `TECHNICAL_QC` | `QualityAgent` | `technical-qc.json` | Is every FR-7.1 property true of *this* file? |
-| 5 | `EDITORIAL_QC` | `QualityAgent` | `qc.json`, `qa-contact-sheet.jpg` | Is it any good, and did a vision provider look at it? |
-| 6 | `READY_FOR_APPROVAL` | `DirectorAgent` | `readiness.json` | Do the bindings still hold, and may an operator decide? |
+| 3 | `MOTION_READY` | `MotionCoderAgent` (custom motion) or `AnimationAgent` (legacy) | `motion-code.json`, or `motion-plan.json` | Does the animation exist, and was it timed against the narration that was just measured? |
+| 4 | `RENDERING` | stage name `RenderAgent`, events attributed to `EditorAgent` | `output.mp4`, `render.json` | Does a file exist that ffprobe can describe? |
+| 5 | `TECHNICAL_QC` | `QualityAgent` | `technical-qc.json` | Is every FR-7.1 property true of *this* file? |
+| 6 | `EDITORIAL_QC` | `QualityAgent` | `qc.json`, `qa-contact-sheet.jpg` | Is it any good, and did a vision provider look at it? |
+| 7 | `READY_FOR_APPROVAL` | `DirectorAgent` | `readiness.json` | Do the bindings still hold, and may an operator decide? |
+
+### Why motion code has a state of its own
+
+Motion code has to be written **after** the narration it must synchronise to, and it has to exist
+**before** the renderer reads it. `AUDIO_READY → RENDERING` is the only forward edge between them,
+and `RENDERING → RENDERING` is not in the allow-list, so a second stage targeting `RENDERING`
+would be refused at its own commit. `MOTION_READY` is the honest encoding of the second pass:
+provisional timing in, measured timing out.
+
+The stage's `done_when` compares the digest of `audio.json`'s scene boundaries and word timestamps
+against the `narration_timing_sha256` recorded in `motion-code.json` (written by the pipeline, never
+by the model). A retimed narration expires the motion code the same way a re-render expires a QC
+verdict; see `docs/ARCHITECTURE.md` §12 for the two-pass decision.
 
 `QualityAgent` owns both QC stages because both answer questions about the same file, but they are
 separate stages with separate artifacts. Splitting them is what stops `qc.json` from having to

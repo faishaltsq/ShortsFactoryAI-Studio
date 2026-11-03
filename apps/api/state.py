@@ -43,6 +43,11 @@ class AppState:
     #: first-enabled-provider. Unknown agent names are rejected at load (a binding that binds
     #: nothing is a silent misconfiguration).
     bindings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    #: The active production preset id, or ``None`` when the operator binds agents individually.
+    #: A preset is applied *after* the bindings load, so it wins over a stale per-agent entry
+    #: rather than the other way round — otherwise a preset would look active while an individual
+    #: binding silently kept routing one agent elsewhere.
+    preset: str | None = None
     lock: threading.RLock = field(default_factory=threading.RLock)
     #: The paid-call journal. Present on every AppState so a provider call is journalled whether it
     #: comes from a job, a discovery run or a diagnostic — a call that escapes the journal is a
@@ -52,6 +57,10 @@ class AppState:
     #: the loop needs the service to hand jobs to, and the service needs this object.
     scheduler: SchedulerLoop | None = None
     render_policy: ResourcePolicy = field(default_factory=ResourcePolicy)
+    #: The operator's motion-coder skill budget, from ``studio.json``'s ``motion`` block. Held on
+    #: the state because the pipeline builds stages from the state and the agent only ever sees
+    #: the prompt kwargs.
+    motion_policy: Any = None
 
     @classmethod
     def build(cls, settings: Settings, *, budget: Budget | None = None) -> AppState:
@@ -104,6 +113,10 @@ class AppState:
             min_free_vram_mib=config.render.min_free_vram_mib,
             allow_unmeasured_gpu=config.render.allow_unmeasured_gpu,
         )
+        # Bound to the *loaded* config rather than re-read at prompt time: the pipeline builds every
+        # stage before the first one runs, and a mid-job settings change must not retime a request
+        # whose prompt was already assembled.
+        self.motion_policy = config.motion
         for entry in config.providers:
             try:
                 spec = ProviderSpec(
@@ -131,6 +144,7 @@ class AppState:
             {"bindings": config.bindings, "budget": config.budget.to_json(),
              "render": config.render.to_json()}
         )
+        self.preset = self._apply_configured_preset(config.preset, config.preset_fallback)
         from .config import malformed_bindings
 
         try:
@@ -203,8 +217,45 @@ class AppState:
                     )
             self.bindings[agent] = binding
 
+    def _apply_configured_preset(
+        self, preset_id: str | None, fallback: list[str] | None = None
+    ) -> str | None:
+        """Bind every LLM agent to the active preset's provider, or leave them alone.
+
+        Returns the id that is now active. A preset whose provider is not configured is *not*
+        silently dropped: it is recorded as a skipped-preset note and the per-agent bindings stay
+        as they are, because dropping it silently would let the studio keep running on whatever
+        routing the operator had replaced. An unknown id raises at load, the same rule an unknown
+        agent name follows.
+
+        ``fallback`` is the operator's persisted opt-in, empty in the normal case — a preset exists
+        to stop silent cross-family reroutes, so an empty list must mean "off", not "unset".
+        """
+        if not preset_id:
+            return None
+        from packages.core.providers.presets import PresetError, apply_preset, get_preset
+
+        declared = list(fallback or [])
+        try:
+            bindings, gaps = apply_preset(
+                preset_id,
+                self.registry,
+                # A non-empty list is itself the opt-in (``apply_preset`` reads it that way), so
+                # the persisted list is the single source of truth for "fallback was enabled".
+                fallback=declared,
+            )
+        except PresetError as exc:
+            self._note_skipped_binding(f"preset {preset_id!r} not applied: {exc}")
+            return None
+        self.bindings.update(bindings)
+        if gaps:
+            self._note_skipped_binding(
+                f"preset {preset_id!r} has {len(gaps)} capability gap(s): {gaps}"
+            )
+        return get_preset(preset_id).id
+
     def _note_skipped_binding(self, detail: str) -> None:
-        """Persist one bounded event about a skipped binding. Best effort: a failing event
+        """Persist one bounded event about the skipped binding. Best effort: a failing event
         store must not block startup for a configuration warning."""
         try:
             self.events.emit(

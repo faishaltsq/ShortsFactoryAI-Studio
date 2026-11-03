@@ -53,6 +53,39 @@ Bindings:
   "fallback": ["worker-cloud"], "requires": ["chat", "json_schema"] }
 ```
 
+### 2.1 Production presets
+
+`studio.json` also carries one whole-studio choice:
+
+```jsonc
+{
+  "preset": "full-stepfun-v2" | null,
+  "preset_fallback": ["worker-cloud"]    // the operator's explicit opt-in; absent/[] means off
+}
+```
+
+A preset expands into per-agent bindings (`packages/core/providers/presets.py`) and is applied
+**after** `bindings` load, so it wins over a stale per-agent entry. Without that order a preset
+could look active while one agent kept its previous provider.
+
+| preset | binds | provider | fallback |
+| --- | --- | --- | --- |
+| `full-stepfun-v2` | every LLM agent | the configured provider id `stepfun` | off unless `preset_fallback` names providers |
+
+A preset names a **provider**, never a model. The model comes from that provider's own `model`
+field unless the request overrides it, and an override must name a model the StepFun family is known
+to serve — a preset that hardcoded a model would send one the operator's endpoint may not serve,
+which is the 404 this file exists to prevent.
+
+`GET /api/presets` reports `serviceable` computed from the live registry (provider present, enabled,
+and holding the preset's required capabilities), not asserted. `PUT /api/presets` refuses an
+unserviceable preset with 422 rather than activating routing the studio cannot honour. A preset
+whose provider is absent, or an unknown id, leaves a skipped-preset note and the existing bindings in
+place.
+
+`preset_fallback` is persisted because the preset is re-expanded on every load: an opt-in that lived
+only in memory would silently disappear on the next restart.
+
 ## 3. Resolution algorithm
 
 ```
