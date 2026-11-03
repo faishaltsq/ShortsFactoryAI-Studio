@@ -991,6 +991,18 @@ def render_custom_motion(
         entry_file = Path(code_dir) / "RootComposition.tsx"
     if not entry_file.is_file():
         raise RuntimeError(f"entry component not found in {code_dir}")
+    # Ensure default exports exist for all TSX scene/component files so both named and default imports resolve
+    for tsx_file in code_dir.glob("**/*.tsx"):
+        if tsx_file.name == "index.tsx":
+            continue
+        try:
+            c = tsx_file.read_text(encoding="utf-8")
+            stem = tsx_file.stem
+            if (f"export const {stem}" in c or f"export function {stem}" in c) and "export default" not in c:
+                c += f"\nexport default {stem};\n"
+                tsx_file.write_text(c, encoding="utf-8")
+        except Exception:
+            pass
 
     content = entry_file.read_text(encoding="utf-8")
 

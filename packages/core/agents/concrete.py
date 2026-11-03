@@ -1415,7 +1415,8 @@ class MotionCoderAgent(Agent):
             timing = {}
 
         shots = self._shot_plan(storyboard, visual_plan, script, timing)
-        self._select_skills(shots, brief, **kwargs)
+        other_kwargs = {k: v for k, v in kwargs.items() if k != "brief"}
+        self._select_skills(shots, brief, **other_kwargs)
 
         brief_block = {
             key: brief.get(key)
