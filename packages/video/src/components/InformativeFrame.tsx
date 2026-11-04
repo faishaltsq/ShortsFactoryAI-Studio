@@ -1,7 +1,10 @@
 import React from 'react';
-import {interpolate, useCurrentFrame} from 'remotion';
+import {useCurrentFrame, useVideoConfig} from 'remotion';
 import type {SceneProps} from './NarrativeFrame';
-import {resolveTheme, TYPE} from '../themes/brand';
+import {resolveTheme} from '../themes/brand';
+import {DEFAULT_TOKENS} from '../themes/tokens';
+import {Caption, Label, Title} from './Typography';
+import {cohesiveGroupReveal} from './motion';
 import {Watermark} from './Chrome';
 import {alpha, isLight} from '../art/palette';
 import {pinnedOverlayStyle} from './CameraPinning';
@@ -29,11 +32,12 @@ export const InformativeFrame: React.FC<
   }
 > = ({scene, theme: inputTheme, watermark, title, caption, titleOpacity = 1, children}) => {
   const theme = resolveTheme(inputTheme);
+  const tokens = theme.tokens ?? DEFAULT_TOKENS;
   const frame = useCurrentFrame();
-  const rise = interpolate(frame, [0, 14], [24, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
-  const fade = interpolate(frame, [0, 12], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
+  const {fps} = useVideoConfig();
+  const headerReveal = cohesiveGroupReveal({frame, fps, durationInFrames: 18});
   const pinned = pinnedOverlayStyle();
-  const light = isLight(theme.background);
+  const light = isLight(tokens.background);
   const dataCS = (scene.data as Record<string, unknown> | undefined)?.causalState ?? (scene.data as Record<string, unknown> | undefined)?.causal_state;
   const cs = (scene.causalState ?? (scene as unknown as {causal_state?: Record<string, string>}).causal_state ?? dataCS) as Record<string, string> | undefined;
   const causalAction = cs?.causalAction ?? cs?.causal_action;
@@ -41,14 +45,14 @@ export const InformativeFrame: React.FC<
   const hasHeader = Boolean(title || causalAction || caption);
 
   return (
-    <div style={{position: 'absolute', inset: 0, background: theme.background, overflow: 'hidden'}}>
+    <div style={{position: 'absolute', inset: 0, background: tokens.background, overflow: 'hidden'}}>
       {children}
       {/* A legibility scrim sits under the top title only */}
       <div
         style={{
           position: 'absolute',
           inset: 0,
-          background: `linear-gradient(180deg, ${alpha(theme.background, light ? 0.92 : 0.78)} 0%, ${alpha(theme.background, 0)} ${scrimExtent})`,
+          background: `linear-gradient(180deg, ${alpha(tokens.background, light ? 0.94 : 0.82)} 0%, ${alpha(tokens.background, 0)} ${scrimExtent})`,
           pointerEvents: 'none',
           ...pinned,
         }}
@@ -59,25 +63,21 @@ export const InformativeFrame: React.FC<
             position: 'absolute',
             left: 80,
             right: 80,
-            top: 210,
-            opacity: fade * titleOpacity,
+            top: watermark ? 300 : 230,
+            opacity: headerReveal.opacity * titleOpacity,
             ...pinned,
-            transform: `${pinned.transform ?? ''} translateY(${rise}px)`.trim(),
+            transform: `${pinned.transform ?? ''} ${headerReveal.transform}`.trim(),
           }}
         >
           {title ? (
-            <div
+            <Title
+              tokens={tokens}
               style={{
-                fontFamily: theme.fontHeading,
-                fontSize: 48,
-                fontWeight: 800,
-                lineHeight: 1.16,
-                color: theme.primary,
-                textShadow: light ? 'none' : `0 4px 28px ${alpha(theme.background, 0.85)}`,
+                textShadow: light ? 'none' : `0 4px 28px ${alpha(tokens.background, 0.85)}`,
               }}
             >
               {title}
-            </div>
+            </Title>
           ) : null}
           {causalAction ? (
             <div
@@ -88,8 +88,8 @@ export const InformativeFrame: React.FC<
                 marginTop: title ? 10 : 0,
                 padding: '6px 14px',
                 borderRadius: 9999,
-                background: alpha(theme.accent, light ? 0.15 : 0.22),
-                border: `1px solid ${alpha(theme.accent, 0.4)}`,
+                background: alpha(tokens.accent, light ? 0.12 : 0.2),
+                border: `1px solid ${alpha(tokens.accent, 0.35)}`,
                 maxWidth: '100%',
               }}
             >
@@ -98,17 +98,17 @@ export const InformativeFrame: React.FC<
                   width: 8,
                   height: 8,
                   borderRadius: 4,
-                  background: theme.accent,
+                  background: tokens.accent,
                   display: 'inline-block',
                 }}
               />
-              <span
+              <Label
+                tokens={tokens}
+                color={tokens.accent}
                 style={{
-                  fontFamily: theme.fontBody,
                   fontSize: 20,
                   fontWeight: 600,
-                  color: theme.accent,
-                  letterSpacing: '0.02em',
+                  letterSpacing: '0.04em',
                   textTransform: 'uppercase',
                   overflow: 'hidden',
                   textOverflow: 'ellipsis',
@@ -116,22 +116,22 @@ export const InformativeFrame: React.FC<
                 }}
               >
                 {causalAction}
-              </span>
+              </Label>
             </div>
           ) : null}
           {caption ? (
-            <div
+            <Caption
+              tokens={tokens}
+              align="left"
+              color={tokens.textSecondary}
               style={{
-                fontFamily: theme.fontBody,
-                fontSize: 24,
-                fontWeight: 500,
-                lineHeight: 1.3,
-                color: theme.secondary,
                 marginTop: 10,
+                display: 'block',
+                lineHeight: 1.35,
               }}
             >
               {caption}
-            </div>
+            </Caption>
           ) : null}
         </div>
       ) : null}

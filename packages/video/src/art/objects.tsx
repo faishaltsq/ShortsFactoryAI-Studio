@@ -12,7 +12,9 @@
  */
 
 import React from 'react';
-import {alpha, shade, tint, type ArtPalette} from './palette';
+import { useCurrentFrame } from 'remotion';
+import {alpha, isLight, mix, shade, tint, type ArtPalette, DEFAULT_PALETTE} from './palette';
+import {FONT_ROLES} from '../themes/type';
 import {OBJECT_KINDS, type ObjectKind} from './object-kinds';
 
 export {OBJECT_CAPTION_Y, OBJECT_KINDS, OBJECT_LABELS, isObjectKind} from './object-kinds';
@@ -25,6 +27,7 @@ export interface ObjectProps {
   /** 0..1 within the scene. Used for one-shot arrivals rather than loops. */
   progress: number;
 }
+export type StandaloneObjectProps = Partial<ObjectProps>;
 
 /** 0 or 1, flipping every `period` frames, offset by `phase` so neighbours never blink in sync. */
 const toggle = (frame: number, period: number, phase: number): number =>
@@ -47,7 +50,8 @@ const panel = (x: number, y: number, w: number, h: number, r: number): string =>
 
 const bezel = (p: ArtPalette): string => shade(p.primary, 0.22);
 const shell = (p: ArtPalette): string => shade(p.primary, 0.08);
-const metal = (p: ArtPalette): string => tint(p.ink, 0.16);
+const metal = (p: ArtPalette): string =>
+  isLight(p.skyTop) ? mix(p.ground, p.prop, 0.35) : tint(p.prop, 0.3);
 const dark = (p: ArtPalette): string => shade(p.primary, 0.5);
 
 /** A lit indicator. `on` is 0..1 so a dim state still reads as an unlit indicator. */
@@ -1107,7 +1111,7 @@ const SubseaCableCutaway: React.FC<ObjectProps> = ({palette: p, frame}) => {
       ))}
 
       {/* Layer 4: Copper power transmission tube */}
-      <circle cx={200} cy={195} r={86} fill="#c27838" stroke="#e09452" strokeWidth={3} />
+      <circle cx={200} cy={195} r={86} fill={shade(p.accent, 0.12)} stroke={tint(p.accent, 0.25)} strokeWidth={3} />
       <circle cx={200} cy={195} r={72} fill={shade(p.primary, 0.3)} />
 
       {/* Layer 5: Polycarbonate buffer sheath */}
@@ -1125,7 +1129,7 @@ const SubseaCableCutaway: React.FC<ObjectProps> = ({palette: p, frame}) => {
         return (
           <g key={`fc-${i}`}>
             <circle cx={f.x} cy={f.y} r={9} fill={p.accent} opacity={0.35 + lit * 0.5} />
-            <circle cx={f.x} cy={f.y} r={5.5} fill="#ffffff" />
+            <circle cx={f.x} cy={f.y} r={5.5} fill={tint(p.accent, 0.85)} />
             <circle cx={f.x} cy={f.y} r={3} fill={p.accent} />
           </g>
         );
@@ -1191,7 +1195,7 @@ const CookingPot: React.FC<ObjectProps> = ({palette: p, frame}) => {
       {/* Pot metallic highlight reflection */}
       <path
         d="M95 180 L95 320 C110 326 130 330 150 332 L150 180 Z"
-        fill={alpha('#ffffff', 0.22)}
+        fill={alpha(tint(metal(p), 0.8), 0.28)}
       />
 
       {/* Pot top rim ellipse */}
@@ -1202,8 +1206,8 @@ const CookingPot: React.FC<ObjectProps> = ({palette: p, frame}) => {
       {/* Simmering bubbles */}
       <circle cx={160} cy={172 + bubbleY} r={5} fill={tint(p.accent, 0.5)} />
       <circle cx={220} cy={174 - bubbleY} r={6} fill={tint(p.accent, 0.5)} />
-      <circle cx={190} cy={168 + bubbleY * 0.7} r={4} fill="#ffffff" />
-      <circle cx={250} cy={170 + bubbleY} r={4.5} fill="#ffffff" />
+      <circle cx={190} cy={168 + bubbleY * 0.7} r={4} fill={tint(p.accent, 0.7)} />
+      <circle cx={250} cy={170 + bubbleY} r={4.5} fill={tint(p.accent, 0.7)} />
     </svg>
   );
 };
@@ -1248,48 +1252,48 @@ const RamenBowl: React.FC<ObjectProps> = ({palette: p, frame}) => {
       {/* Bowl rim outer ellipse */}
       <ellipse cx={200} cy={175} rx={150} ry={36} fill={metal(p)} stroke={shade(p.primary, 0.2)} strokeWidth={2} />
       {/* Rich ramen broth surface */}
-      <ellipse cx={200} cy={178} rx={142} ry={32} fill="#d97706" />
+      <ellipse cx={200} cy={178} rx={142} ry={32} fill={mix(p.accent, '#C27D23', 0.5)} />
 
       {/* Wavy noodles in broth */}
       <path
         d="M95 178 Q115 165 135 178 T175 178 T215 178 T255 178 T295 178"
         fill="none"
-        stroke="#fde047"
+        stroke={tint('#D29C44', 0.3)}
         strokeWidth={5}
         strokeLinecap="round"
       />
       <path
         d="M110 188 Q130 175 150 188 T190 188 T230 188 T270 188 T300 185"
         fill="none"
-        stroke="#facc15"
+        stroke="#D29C44"
         strokeWidth={5}
         strokeLinecap="round"
       />
       <path
         d="M120 198 Q140 186 160 198 T200 198 T240 198 T280 196"
         fill="none"
-        stroke="#fde047"
+        stroke={tint('#D29C44', 0.3)}
         strokeWidth={4.5}
         strokeLinecap="round"
       />
 
       {/* Dark nori seaweed sheet */}
-      <polygon points="75,140 115,130 125,185 85,195" fill="#1e293b" />
+      <polygon points="75,140 115,130 125,185 85,195" fill={shade(p.ink, 0.15)} />
 
       {/* Boiled ramen egg half */}
-      <ellipse cx={245} cy={180} rx={22} ry={16} fill="#ffffff" transform="rotate(-15 245 180)" />
-      <ellipse cx={245} cy={180} rx={13} ry={10} fill="#f97316" transform="rotate(-15 245 180)" />
-      <circle cx={247} cy={178} r={3} fill="#fef08a" />
+      <ellipse cx={245} cy={180} rx={22} ry={16} fill={tint(p.skyTop, 0.85)} transform="rotate(-15 245 180)" />
+      <ellipse cx={245} cy={180} rx={13} ry={10} fill={p.accent} transform="rotate(-15 245 180)" />
+      <circle cx={247} cy={178} r={3} fill={tint(p.accent, 0.6)} />
 
       {/* Scallion / chive slices */}
-      <ellipse cx={170} cy={185} rx={6} ry={3.5} fill="#22c55e" stroke="#15803d" strokeWidth={1} />
-      <ellipse cx={182} cy={175} rx={5} ry={3} fill="#22c55e" stroke="#15803d" strokeWidth={1} />
-      <ellipse cx={195} cy={188} rx={6.5} ry={4} fill="#22c55e" stroke="#15803d" strokeWidth={1} />
-      <ellipse cx={210} cy={180} rx={5} ry={3} fill="#22c55e" stroke="#15803d" strokeWidth={1} />
+      <ellipse cx={170} cy={185} rx={6} ry={3.5} fill="#4B7268" stroke="#34534B" strokeWidth={1} />
+      <ellipse cx={182} cy={175} rx={5} ry={3} fill="#4B7268" stroke="#34534B" strokeWidth={1} />
+      <ellipse cx={195} cy={188} rx={6.5} ry={4} fill="#4B7268" stroke="#34534B" strokeWidth={1} />
+      <ellipse cx={210} cy={180} rx={5} ry={3} fill="#4B7268" stroke="#34534B" strokeWidth={1} />
 
       {/* Pair of bamboo chopsticks resting on bowl */}
-      <polygon points="90,140 330,165 330,171 90,144" fill="#a16207" />
-      <polygon points="95,148 335,173 335,178 95,152" fill="#78350f" />
+      <polygon points="90,140 330,165 330,171 90,144" fill={mix(p.accent, p.prop, 0.4)} />
+      <polygon points="95,148 335,173 335,178 95,152" fill={shade(mix(p.accent, p.prop, 0.4), 0.25)} />
     </svg>
   );
 };
@@ -1304,14 +1308,14 @@ const PlanetEarth: React.FC<ObjectProps> = ({palette: p, frame}) => {
     <svg viewBox="0 0 400 400" width="100%" height="100%" aria-hidden="true">
       {/* Outer atmosphere halo glow */}
       <circle cx={200} cy={195} r={148} fill={alpha(p.accent, 0.18)} />
-      <circle cx={200} cy={195} r={142} fill={alpha('#38bdf8', 0.14)} />
+      <circle cx={200} cy={195} r={142} fill={alpha('#486581', 0.2)} />
 
       {/* Earth deep ocean base sphere */}
       <defs>
         <radialGradient id="earthGrad" cx="35%" cy="30%" r="70%">
-          <stop offset="0%" stopColor="#38bdf8" />
-          <stop offset="45%" stopColor="#0284c7" />
-          <stop offset="100%" stopColor="#082f49" />
+          <stop offset="0%" stopColor="#5B82A6" />
+          <stop offset="45%" stopColor="#486581" />
+          <stop offset="100%" stopColor="#2E4861" />
         </radialGradient>
         <clipPath id="earthClip">
           <circle cx={200} cy={195} r={136} />
@@ -1325,27 +1329,27 @@ const PlanetEarth: React.FC<ObjectProps> = ({palette: p, frame}) => {
         {/* Asian landmass / China / India */}
         <path
           d="M120 110 Q160 90 220 100 Q260 115 270 145 Q240 170 200 160 Q170 170 150 145 Z"
-          fill="#15803d"
-          stroke="#166534"
+          fill="#3A7D5C"
+          stroke="#2B5E45"
           strokeWidth={1.5}
         />
         {/* Southeast Asia & Indonesian Archipelago */}
         <path
           d="M185 180 Q210 185 240 180 Q245 190 230 195 Q205 195 185 185 Z"
-          fill="#22c55e"
+          fill="#4B7268"
         />
         {/* Sumatra, Java, Kalimantan, Sulawesi islands */}
-        <ellipse cx={175} cy={195} rx={14} ry={6} fill="#22c55e" transform="rotate(-25 175 195)" />
-        <ellipse cx={195} cy={206} rx={16} ry={5} fill="#22c55e" transform="rotate(-5 195 206)" />
-        <ellipse cx={212} cy={192} rx={12} ry={10} fill="#22c55e" />
-        <ellipse cx={232} cy={198} rx={8} ry={10} fill="#22c55e" />
-        <ellipse cx={260} cy={205} rx={18} ry={8} fill="#22c55e" />
+        <ellipse cx={175} cy={195} rx={14} ry={6} fill="#4B7268" transform="rotate(-25 175 195)" />
+        <ellipse cx={195} cy={206} rx={16} ry={5} fill="#4B7268" transform="rotate(-5 195 206)" />
+        <ellipse cx={212} cy={192} rx={12} ry={10} fill="#4B7268" />
+        <ellipse cx={232} cy={198} rx={8} ry={10} fill="#4B7268" />
+        <ellipse cx={260} cy={205} rx={18} ry={8} fill="#4B7268" />
 
         {/* Australia */}
         <path
           d="M240 230 C270 225 305 240 300 270 C280 285 245 285 235 260 Z"
-          fill="#d97706"
-          stroke="#b45309"
+          fill="#C27D23"
+          stroke="#9A6118"
           strokeWidth={1.5}
         />
 
@@ -1354,21 +1358,21 @@ const PlanetEarth: React.FC<ObjectProps> = ({palette: p, frame}) => {
           <path
             d="M60 130 Q120 110 190 125 T290 120"
             fill="none"
-            stroke="#ffffff"
+            stroke={alpha(tint(p.skyTop, 0.9), 0.75)}
             strokeWidth={14}
             strokeLinecap="round"
           />
           <path
             d="M130 170 Q180 160 250 165 T350 160"
             fill="none"
-            stroke="#ffffff"
+            stroke={alpha(tint(p.skyTop, 0.9), 0.75)}
             strokeWidth={12}
             strokeLinecap="round"
           />
           <path
             d="M90 220 Q160 210 220 225 T320 215"
             fill="none"
-            stroke="#ffffff"
+            stroke={alpha(tint(p.skyTop, 0.9), 0.75)}
             strokeWidth={10}
             strokeLinecap="round"
           />
@@ -1377,7 +1381,7 @@ const PlanetEarth: React.FC<ObjectProps> = ({palette: p, frame}) => {
         {/* Sphere 3D terminator shadow */}
         <path
           d="M200 59 C275 59 336 120 336 195 C336 270 275 331 200 331 C240 290 260 240 260 195 C260 150 240 100 200 59 Z"
-          fill={alpha('#000000', 0.38)}
+          fill={alpha(shade(p.ink, 0.2), 0.38)}
         />
       </g>
 
@@ -1432,7 +1436,7 @@ const Microscope: React.FC<ObjectProps> = ({palette: p, frame}) => {
 
       {/* Stage and Specimen Glass Slide */}
       <rect x={130} y={235} width={90} height={10} rx={2} fill={shade(p.ink, 0.4)} />
-      <rect x={145} y={231} width={60} height={4} rx={1} fill={alpha('#ffffff', 0.85)} />
+      <rect x={145} y={231} width={60} height={4} rx={1} fill={alpha(tint(p.skyTop, 0.95), 0.85)} />
       {/* Glowing specimen on slide */}
       <circle cx={175} cy={233} r={4 + pulse * 2} fill={p.accent} opacity={0.9} />
 
@@ -1474,7 +1478,7 @@ const LightBulb: React.FC<ObjectProps> = ({palette: p, frame}) => {
 
       {/* Soft Radiating Glow Aura */}
       <circle cx={200} cy={165} r={115} fill={alpha(p.accent, 0.12 * glow)} />
-      <circle cx={200} cy={165} r={85} fill={alpha('#fff5cc', 0.22 * glow)} />
+      <circle cx={200} cy={165} r={85} fill={alpha(tint(p.accent, 0.65), 0.22 * glow)} />
 
       {/* Screw Base / Threading */}
       <rect x={178} y={290} width={44} height={8} rx={4} fill={shade(metal(p), 0.15)} />
@@ -1486,7 +1490,7 @@ const LightBulb: React.FC<ObjectProps> = ({palette: p, frame}) => {
       {/* Glass Bulb Outline */}
       <path
         d="M178 290 C162 270 140 230 140 175 C140 108 167 80 200 80 C233 80 260 108 260 175 C260 230 238 270 222 290 Z"
-        fill={alpha('#ffffff', 0.45)}
+        fill={alpha(tint(p.skyTop, 0.85), 0.45)}
         stroke={shade(p.primary, 0.2)}
         strokeWidth={4}
       />
@@ -1504,13 +1508,13 @@ const LightBulb: React.FC<ObjectProps> = ({palette: p, frame}) => {
         opacity={glow}
       />
       {/* Center highlight point */}
-      <circle cx={200} cy={148} r={5} fill="#ffffff" opacity={glow} />
+      <circle cx={200} cy={148} r={5} fill={tint(p.accent, 0.85)} opacity={glow} />
 
       {/* Curved Glass Specular Reflection Highlight */}
       <path
         d="M155 135 C150 155 152 180 158 205"
         fill="none"
-        stroke="#ffffff"
+        stroke={alpha(tint(p.skyTop, 0.95), 0.65)}
         strokeWidth={6}
         strokeLinecap="round"
         opacity={0.65}
@@ -1545,7 +1549,7 @@ const Factory: React.FC<ObjectProps> = ({palette: p, frame}) => {
             cx={x}
             cy={y}
             r={12 * scale}
-            fill={alpha('#ffffff', (1 - t) * 0.55)}
+            fill={alpha(tint(p.skyTop, 0.75), (1 - t) * 0.55)}
           />
         );
       })}
@@ -1566,7 +1570,7 @@ const Factory: React.FC<ObjectProps> = ({palette: p, frame}) => {
       {/* Factory Grid Windows with Warm Glow */}
       {[110, 165, 220, 275].map((x) => (
         <g key={`win-${x}`}>
-          <rect x={x} y={290} width={24} height={42} rx={2} fill="#fffae6" stroke={shade(p.ink, 0.3)} strokeWidth={1.5} />
+          <rect x={x} y={290} width={24} height={42} rx={2} fill={tint(p.accent, 0.75)} stroke={shade(p.ink, 0.3)} strokeWidth={1.5} />
           <line x1={x + 12} y1={290} x2={x + 12} y2={332} stroke={shade(p.ink, 0.3)} strokeWidth={1.5} />
           <line x1={x} y1={311} x2={x + 24} y2={311} stroke={shade(p.ink, 0.3)} strokeWidth={1.5} />
         </g>
@@ -1653,7 +1657,7 @@ const StockChart: React.FC<ObjectProps> = ({palette: p, frame}) => {
 
       {/* Live Pulsing Data Peak Point */}
       <circle cx={300} cy={120} r={9 + pulse * 0.5} fill={alpha(p.accent, 0.3)} />
-      <circle cx={300} cy={120} r={5} fill="#ffffff" stroke={p.accent} strokeWidth={2} />
+      <circle cx={300} cy={120} r={5} fill={tint(p.accent, 0.85)} stroke={p.accent} strokeWidth={2} />
 
       {/* Currency / Growth Indicator Badge */}
       <rect x={245} y={92} width={65} height={22} rx={11} fill={p.accent} />
@@ -1661,9 +1665,9 @@ const StockChart: React.FC<ObjectProps> = ({palette: p, frame}) => {
         x={277}
         y={107}
         textAnchor="middle"
-        fill="#ffffff"
+        fill={tint(p.skyTop, 0.95)}
         fontSize={12}
-        fontFamily="sans-serif"
+        fontFamily={FONT_ROLES.technical}
         fontWeight="bold"
       >
         +84.6%
@@ -1713,3 +1717,115 @@ export const OBJECT_COMPONENTS: Record<ObjectKind, React.FC<ObjectProps>> = {
 if (Object.keys(OBJECT_COMPONENTS).length !== OBJECT_KINDS.length) {
   throw new Error('object library and OBJECT_KINDS disagree');
 }
+
+const withDefault = (Comp: React.FC<any>): React.FC<any> => {
+  const Wrapped: React.FC<any> = (props: any) => {
+    let remotionFrame = 0;
+    try {
+      remotionFrame = useCurrentFrame();
+    } catch {
+      // not in a Remotion context
+    }
+    const frame = props.frame ?? remotionFrame;
+    return (
+      <Comp
+        {...props}
+        palette={props.palette || DEFAULT_PALETTE}
+        frame={frame}
+        progress={props.progress ?? 1}
+      />
+    );
+  };
+  return Wrapped;
+};
+
+const GpuWrapped = withDefault(Gpu);
+const WaferWrapped = withDefault(Wafer);
+const ServerRackWrapped = withDefault(ServerRack);
+const DataCenterWrapped = withDefault(DataCenter);
+const NeuralNetWrapped = withDefault(NeuralNet);
+const DatabaseWrapped = withDefault(Database);
+const SatelliteWrapped = withDefault(Satellite);
+const AntennaWrapped = withDefault(Antenna);
+const TurbineWrapped = withDefault(Turbine);
+const SolarPanelWrapped = withDefault(SolarPanel);
+const CoolingFanWrapped = withDefault(CoolingFan);
+const PhoneWrapped = withDefault(Phone);
+const DroneWrapped = withDefault(Drone);
+const RocketWrapped = withDefault(Rocket);
+const BuildingWrapped = withDefault(Building);
+const MeshTopologyWrapped = withDefault(MeshTopology);
+const ClaySculptWrapped = withDefault(ClaySculpt);
+const CloudArchWrapped = withDefault(CloudArch);
+const CpuProcessorWrapped = withDefault(CpuProcessor);
+const QuantumProcessorWrapped = withDefault(QuantumProcessor);
+const OpticalFiberWrapped = withDefault(OpticalFiber);
+const SubseaCableCutawayWrapped = withDefault(SubseaCableCutaway);
+const RamenBowlWrapped = withDefault(RamenBowl);
+const CookingPotWrapped = withDefault(CookingPot);
+const PlanetEarthWrapped = withDefault(PlanetEarth);
+const MicroscopeWrapped = withDefault(Microscope);
+const LightBulbWrapped = withDefault(LightBulb);
+const FactoryWrapped = withDefault(Factory);
+const StockChartWrapped = withDefault(StockChart);
+
+export {
+  GpuWrapped as Gpu,
+  GpuWrapped as gpu,
+  WaferWrapped as Wafer,
+  WaferWrapped as wafer,
+  ServerRackWrapped as ServerRack,
+  ServerRackWrapped as serverRack,
+  DataCenterWrapped as DataCenter,
+  DataCenterWrapped as dataCenter,
+  NeuralNetWrapped as NeuralNet,
+  NeuralNetWrapped as neuralNet,
+  DatabaseWrapped as Database,
+  DatabaseWrapped as database,
+  SatelliteWrapped as Satellite,
+  SatelliteWrapped as satellite,
+  AntennaWrapped as Antenna,
+  AntennaWrapped as antenna,
+  TurbineWrapped as Turbine,
+  TurbineWrapped as turbine,
+  SolarPanelWrapped as SolarPanel,
+  SolarPanelWrapped as solarPanel,
+  CoolingFanWrapped as CoolingFan,
+  CoolingFanWrapped as coolingFan,
+  PhoneWrapped as Phone,
+  PhoneWrapped as phone,
+  DroneWrapped as Drone,
+  DroneWrapped as drone,
+  RocketWrapped as Rocket,
+  RocketWrapped as rocket,
+  BuildingWrapped as Building,
+  BuildingWrapped as building,
+  MeshTopologyWrapped as MeshTopology,
+  MeshTopologyWrapped as meshTopology,
+  ClaySculptWrapped as ClaySculpt,
+  ClaySculptWrapped as claySculpt,
+  CloudArchWrapped as CloudArch,
+  CloudArchWrapped as cloudArch,
+  CpuProcessorWrapped as CpuProcessor,
+  CpuProcessorWrapped as cpuProcessor,
+  QuantumProcessorWrapped as QuantumProcessor,
+  QuantumProcessorWrapped as quantumProcessor,
+  OpticalFiberWrapped as OpticalFiber,
+  OpticalFiberWrapped as opticalFiber,
+  SubseaCableCutawayWrapped as SubseaCableCutaway,
+  SubseaCableCutawayWrapped as subseaCableCutaway,
+  RamenBowlWrapped as RamenBowl,
+  RamenBowlWrapped as ramenBowl,
+  CookingPotWrapped as CookingPot,
+  CookingPotWrapped as cookingPot,
+  PlanetEarthWrapped as PlanetEarth,
+  PlanetEarthWrapped as planetEarth,
+  MicroscopeWrapped as Microscope,
+  MicroscopeWrapped as microscope,
+  LightBulbWrapped as LightBulb,
+  LightBulbWrapped as lightBulb,
+  FactoryWrapped as Factory,
+  FactoryWrapped as factory,
+  StockChartWrapped as StockChart,
+  StockChartWrapped as stockChart,
+};

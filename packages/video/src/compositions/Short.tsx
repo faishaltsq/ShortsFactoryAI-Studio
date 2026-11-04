@@ -4,6 +4,8 @@ import type {SceneSpec, StoryboardSpec} from '../types';
 import {SCENE_RENDERERS} from './registry';
 import {validateSceneData} from '../scene-data';
 import {resolveTheme} from '../themes/brand';
+import {DEFAULT_TOKENS} from '../themes/tokens';
+import {EDITORIAL_EASING} from '../components/motion';
 import {Subtitles} from '../components/Subtitles';
 import {TiktokCaptions} from '../components/TiktokCaptions';
 import {KenBurnsContainer} from '../components/KenBurnsContainer';
@@ -25,7 +27,8 @@ const renderScene = (scene: SceneSpec, theme: StoryboardSpec['theme'], watermark
   );
 };
 
-/** Applies the scene's transition as an in/out opacity (and optional slide) ramp. */
+/** Applies the scene's transition as an in/out opacity (and optional slide) ramp.
+ *  Editorial feel: smoothOut easing, restrained 24px slide, 1.03 zoom breath. */
 const TransitionedScene: React.FC<{scene: SceneSpec; children: React.ReactNode}> = ({scene, children}) => {
   const frame = useCurrentFrame();
   if (scene.transition.type === 'none' || !scene.transition.durationInFrames) {
@@ -35,13 +38,22 @@ const TransitionedScene: React.FC<{scene: SceneSpec; children: React.ReactNode}>
   const opacity = interpolate(frame, [0, fade, scene.durationInFrames - fade, scene.durationInFrames], [0, 1, 1, 0], {
     extrapolateLeft: 'clamp',
     extrapolateRight: 'clamp',
+    easing: EDITORIAL_EASING.smoothOut,
   });
   const translateY =
     scene.transition.type === 'slideUp'
-      ? interpolate(frame, [0, fade], [60, 0], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'})
+      ? interpolate(frame, [0, fade], [24, 0], {
+          extrapolateLeft: 'clamp',
+          extrapolateRight: 'clamp',
+          easing: EDITORIAL_EASING.smoothOut,
+        })
       : 0;
-  const progress = interpolate(frame, [0, fade], [0, 1], {extrapolateLeft: 'clamp', extrapolateRight: 'clamp'});
-  const scale = scene.transition.type === 'zoom' ? 1.08 - progress * 0.08 : 1;
+  const progress = interpolate(frame, [0, fade], [0, 1], {
+    extrapolateLeft: 'clamp',
+    extrapolateRight: 'clamp',
+    easing: EDITORIAL_EASING.smoothOut,
+  });
+  const scale = scene.transition.type === 'zoom' ? 1.03 - progress * 0.03 : 1;
   const clipPath = scene.transition.type === 'wipe' ? `inset(0 ${(1 - progress) * 100}% 0 0)` : undefined;
   return <AbsoluteFill style={{opacity, clipPath, transform: `translateY(${translateY}px) scale(${scale})`}}>{children}</AbsoluteFill>;
 };
@@ -49,8 +61,9 @@ const TransitionedScene: React.FC<{scene: SceneSpec; children: React.ReactNode}>
 const ProgressBar: React.FC<{theme: StoryboardSpec['theme']; totalFrames: number}> = ({theme, totalFrames}) => {
   const frame = useCurrentFrame();
   const pct = interpolate(frame, [0, totalFrames], [0, 100], {extrapolateRight: 'clamp'});
+  const tokens = theme.tokens ?? DEFAULT_TOKENS;
   return (
-    <div style={{position: 'absolute', left: 0, bottom: 0, width: `${pct}%`, height: 8, backgroundColor: theme.accent, opacity: 0.85}} />
+    <div style={{position: 'absolute', left: 0, bottom: 0, width: `${pct}%`, height: 6, backgroundColor: tokens.accent, opacity: 0.7}} />
   );
 };
 
@@ -82,7 +95,7 @@ export const Short: React.FC<{storyboard: StoryboardSpec}> = ({storyboard}) => {
         <TiktokCaptions
           words={storyboard.captions}
           highlightColor={theme.accent}
-          fontFamily={theme.fontHeading || theme.fontBody}
+          fontFamily={theme.fontBody || theme.fontHeading}
         />
       ) : (
         <Subtitles cues={storyboard.subtitles ?? []} theme={theme} currentFrame={frame} fps={fps} />

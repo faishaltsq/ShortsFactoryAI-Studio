@@ -1,5 +1,6 @@
 import React from 'react';
 import {Composition, getInputProps} from 'remotion';
+import './fonts';
 import {TEMPLATE_IDS} from './types';
 import type {StoryboardSpec} from './types';
 import {resolveTheme} from './themes/brand';

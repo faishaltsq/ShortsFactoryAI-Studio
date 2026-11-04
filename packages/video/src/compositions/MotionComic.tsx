@@ -1,9 +1,13 @@
 import React from 'react';
-import {Img, interpolate, staticFile, useCurrentFrame} from 'remotion';
-import {alpha, paletteFor} from '../art/palette';
+import {Img, staticFile, useCurrentFrame, useVideoConfig} from 'remotion';
+import {alpha} from '../art/palette';
 import {NarrativeFrame, SceneProps} from '../components/NarrativeFrame';
 import {ComicData, localImage, validateSceneData} from '../scene-data';
-import {resolveTheme, SPACE, TYPE} from '../themes/brand';
+import {resolveTheme, SPACE} from '../themes/brand';
+import {DEFAULT_TOKENS} from '../themes/tokens';
+import {FONT_ROLES} from '../themes/type';
+import {Body, Display, Kicker} from '../components/Typography';
+import {softSlideFade} from '../components/motion';
 
 /**
  * `MotionComic` — a three-panel strip of statements.
@@ -16,18 +20,36 @@ import {resolveTheme, SPACE, TYPE} from '../themes/brand';
 export const MotionComicScene: React.FC<SceneProps> = (props) => {
   const {scene} = props;
   const theme = resolveTheme(props.theme);
+  const tokens = theme.tokens ?? DEFAULT_TOKENS;
   const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
   validateSceneData(scene);
   const data = scene.data as unknown as ComicData;
-  const palette = paletteFor(theme, 'abstract');
+
   return (
     <NarrativeFrame {...props} title={data.title}>
-      <div style={{display: 'flex', flexDirection: 'column', flex: 1, gap: SPACE.card, minHeight: 0}}>
+      <div
+        style={{
+          display: 'flex',
+          flexDirection: 'column',
+          flex: 1,
+          gap: 16,
+          minHeight: 0,
+          maxHeight: 1020,
+        }}
+      >
         {data.panels.map((panel, i) => {
-          const progress = interpolate(frame, [i * 10, i * 10 + 18], [0, 1], {
-            extrapolateLeft: 'clamp',
-            extrapolateRight: 'clamp',
+          const delay = i * 10;
+          const local = Math.max(0, frame - delay);
+          const anim = softSlideFade({
+            frame: local,
+            fps,
+            durationInFrames: 18,
+            distance: 24,
+            direction: i % 2 ? 'right' : 'left',
           });
+          const isVisible = frame >= delay;
+
           return (
             <div
               key={i}
@@ -36,15 +58,16 @@ export const MotionComicScene: React.FC<SceneProps> = (props) => {
                 flex: 1,
                 minHeight: 0,
                 display: 'flex',
-                gap: SPACE.card,
+                gap: 18,
                 alignItems: 'center',
                 overflow: 'hidden',
-                padding: SPACE.card,
-                border: `4px solid ${theme.primary}`,
+                padding: '16px 20px',
+                border: `2px solid ${tokens.line}`,
                 borderRadius: SPACE.radius,
-                background: theme.backgroundAccent,
-                opacity: progress,
-                transform: `translateX(${(1 - progress) * (i % 2 ? 48 : -48)}px)`,
+                background: tokens.surface,
+                boxShadow: tokens.shadow.sm,
+                opacity: isVisible ? anim.opacity : 0,
+                transform: anim.transform,
               }}
             >
               {panel.assetRef ? (
@@ -59,30 +82,34 @@ export const MotionComicScene: React.FC<SceneProps> = (props) => {
                     height: '100%',
                     flexShrink: 0,
                     borderRadius: SPACE.radius,
-                    background: `linear-gradient(135deg, ${alpha(palette.accent, 0.75)} 0%, ${alpha(
-                      palette.primary,
-                      0.25,
+                    background: `linear-gradient(135deg, ${alpha(tokens.accent, 0.18)} 0%, ${alpha(
+                      tokens.surface,
+                      0.5,
                     )} 100%)`,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    fontFamily: theme.fontHeading,
-                    fontSize: 96,
-                    color: alpha(theme.background, 0.55),
                   }}
                 >
-                  {i + 1}
+                  <Display
+                    tokens={tokens}
+                    oversized
+                    color={alpha(tokens.accentDeep, 0.45)}
+                    style={{fontFamily: FONT_ROLES.technical}}
+                  >
+                    {i + 1}
+                  </Display>
                 </div>
               )}
               <div style={{flex: 1, minWidth: 0}}>
                 {panel.speaker ? (
-                  <div style={{fontSize: TYPE.kicker, fontWeight: 800, color: theme.accent, marginBottom: SPACE.small}}>
+                  <Kicker tokens={tokens} style={{marginBottom: SPACE.small}}>
                     {panel.speaker}
-                  </div>
+                  </Kicker>
                 ) : null}
-                <div style={{fontFamily: theme.fontHeading, fontSize: TYPE.body, lineHeight: 1.18, overflowWrap: 'anywhere'}}>
+                <Body tokens={tokens} style={{overflowWrap: 'anywhere', lineHeight: 1.25}}>
                   {panel.caption}
-                </div>
+                </Body>
               </div>
             </div>
           );

@@ -12,14 +12,15 @@ import {interpolate, spring, useVideoConfig} from 'remotion';
 import {Environment} from './Environment';
 import {OBJECT_COMPONENTS} from './objects';
 import {OBJECT_CAPTION_Y, type ObjectKind} from './object-kinds';
-import {alpha, shade, type ArtPalette, type EnvironmentKind} from './palette';
+import {alpha, isLight, shade, tint, type ArtPalette, type EnvironmentKind} from './palette';
+import {FONT_ROLES} from '../themes/type';
 import type {CalloutSpec, ExplainerData, FlowSpec, StageObject} from '../scene-data';
 import type {LayoutMode, CausalStateSpec} from '../types';
 
 export const STAGE_WIDTH = 1080;
 export const STAGE_HEIGHT = 1920;
-export const TOP_SAFE_PX = 210;
-export const BOTTOM_SAFE_PX = 1460; // 1920 - 460px bottom safe zone for captions
+export const TOP_SAFE_PX = 230;
+export const BOTTOM_SAFE_PX = 1500; // 1920 - 420px bottom safe zone for YouTube chrome
 
 /** Clamp object Y coordinate and bounds inside the required vertical safe zones. */
 export const clampSafeY = (yPx: number, sizePx: number = 0): number => {
@@ -234,16 +235,27 @@ const PlacedObject: React.FC<{
             left: 0,
             right: 0,
             top: size * (OBJECT_CAPTION_Y[spec.kind] ?? 0.94) + 18,
-            textAlign: 'center',
-            fontFamily: 'Inter, system-ui, sans-serif',
-            fontWeight: 600,
-            fontSize: 24,
-            letterSpacing: '0.01em',
-            color: lit > 0.3 ? palette.accent : labelColor,
-            whiteSpace: 'nowrap',
+            display: 'flex',
+            justifyContent: 'center',
           }}
         >
-          {spec.label}
+          <span
+            style={{
+              fontFamily: FONT_ROLES.body,
+              fontWeight: 600,
+              fontSize: 34,
+              letterSpacing: '0.01em',
+              color: lit > 0.3 ? palette.accent : palette.ink,
+              whiteSpace: 'nowrap',
+              backgroundColor: alpha((palette as any).background ?? palette.skyBottom ?? palette.skyTop, 0.92),
+              border: `1.5px solid ${alpha(palette.accent, 0.35)}`,
+              padding: '6px 18px',
+              borderRadius: 10,
+              boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
+            }}
+          >
+            {spec.label}
+          </span>
         </div>
       ) : null}
     </div>
@@ -287,13 +299,13 @@ const Callout: React.FC<{
           width: 320,
           padding: '14px 18px',
           borderRadius: 14,
-          background: alpha(shade(palette.ink, 0.2), 0.82),
+          background: isLight(palette.skyTop) ? alpha(tint(palette.skyTop, 0.7), 0.95) : alpha(shade(palette.ground, 0.3), 0.92),
           border: `2px solid ${alpha(palette.accent, 0.45)}`,
-          fontFamily: 'Inter, system-ui, sans-serif',
-          fontSize: 26,
+          fontFamily: FONT_ROLES.body,
+          fontSize: 34,
           fontWeight: 600,
           lineHeight: 1.25,
-          color: '#ffffff',
+          color: palette.ink,
         }}
       >
         {callout.text}
@@ -332,14 +344,14 @@ const Flow: React.FC<{
       })}
       {flow.label ? (
         <g>
-          <rect x={lx + 18} y={ly - 19} width={16 + flow.label.length * 14.4} height={38} rx={19} fill={palette.accent} />
+          <rect x={lx + 18} y={ly - 25} width={24 + flow.label.length * 20.4} height={50} rx={25} fill={palette.accent} />
           <text
-            x={lx + 26}
-            y={ly + 7}
-            textAnchor="start"
+            x={lx + 30}
+            y={ly}
+            dominantBaseline="central"
             fill={palette.ink}
-            fontFamily="Inter, system-ui, sans-serif"
-            fontSize={24}
+            fontFamily={FONT_ROLES.body}
+            fontSize={34}
             fontWeight={700}
           >
             {flow.label}
@@ -421,13 +433,13 @@ export const ObjectStage: React.FC<{
             strokeWidth={2}
             strokeDasharray="10 8"
           />
-          <circle cx={STAGE_WIDTH * 0.5} cy={STAGE_HEIGHT * 0.48} r={28} fill={palette.ink} stroke={alpha(palette.accent, 0.6)} strokeWidth={2} />
+          <circle cx={STAGE_WIDTH * 0.5} cy={STAGE_HEIGHT * 0.48} r={28} fill={isLight(palette.skyTop) ? palette.skyBottom : palette.ink} stroke={alpha(palette.accent, 0.6)} strokeWidth={2} />
           <text
             x={STAGE_WIDTH * 0.5}
             y={STAGE_HEIGHT * 0.48 + 7}
             textAnchor="middle"
             fill={palette.accent}
-            fontFamily="Inter, system-ui, sans-serif"
+            fontFamily={FONT_ROLES.display}
             fontSize={18}
             fontWeight={800}
             letterSpacing="0.05em"
@@ -493,7 +505,7 @@ export const ObjectStage: React.FC<{
                 y={a.y - a.size * 0.45 + 6}
                 textAnchor="middle"
                 fill={palette.ink}
-                fontFamily="Inter, system-ui, sans-serif"
+                fontFamily={FONT_ROLES.technical}
                 fontSize={16}
                 fontWeight={800}
               >

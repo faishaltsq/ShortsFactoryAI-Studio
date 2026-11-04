@@ -1,11 +1,14 @@
 import React from 'react';
-import {interpolate, useCurrentFrame} from 'remotion';
+import {useCurrentFrame, useVideoConfig} from 'remotion';
 import type {SceneProps} from '../components/NarrativeFrame';
 import {InformativeFrame} from '../components/InformativeFrame';
 import {Environment} from '../art/Environment';
 import {alpha, paletteFor, shade} from '../art/palette';
 import {MetricShiftData, validateSceneData} from '../scene-data';
 import {resolveTheme} from '../themes/brand';
+import {DEFAULT_TOKENS} from '../themes/tokens';
+import {Body, Metric} from '../components/Typography';
+import {gentleCount, softSlideFade} from '../components/motion';
 
 const W = 1080;
 const H = 1920;
@@ -23,7 +26,9 @@ const STAGGER = 10;
  */
 export const MetricShiftScene: React.FC<SceneProps> = ({scene, theme: inputTheme, watermark}) => {
   const theme = resolveTheme(inputTheme);
+  const tokens = theme.tokens ?? DEFAULT_TOKENS;
   const frame = useCurrentFrame();
+  const {fps} = useVideoConfig();
   validateSceneData(scene);
   const data = scene.data as unknown as MetricShiftData;
   const palette = paletteFor(theme, data.environment);
@@ -33,8 +38,6 @@ export const MetricShiftScene: React.FC<SceneProps> = ({scene, theme: inputTheme
   const max = data.maxValue ?? Math.max(...data.metrics.map((m) => m.value), 1);
   const barMaxW = 720;
   const barX = 190;
-  const format = (value: number): string =>
-    value.toLocaleString('en-US', {minimumFractionDigits: decimals, maximumFractionDigits: decimals});
 
   return (
     <InformativeFrame scene={scene} theme={theme} watermark={watermark} title={data.title} caption={data.caption}>
@@ -50,56 +53,89 @@ export const MetricShiftScene: React.FC<SceneProps> = ({scene, theme: inputTheme
             y1={top - 40}
             x2={barX + barMaxW * t}
             y2={top + rowH * data.metrics.length}
-            stroke={alpha(palette.accent, t === 0 ? 0.4 : 0.14)}
+            stroke={t === 0 ? alpha(tokens.line, 0.9) : alpha(tokens.line, 0.45)}
             strokeWidth={2}
           />
         ))}
       </svg>
       {data.metrics.map((metric, i) => {
         const start = 6 + i * STAGGER;
-        const grow = interpolate(frame, [start, start + GROW_FRAMES], [0, 1], {
-          extrapolateLeft: 'clamp',
-          extrapolateRight: 'clamp',
+        const countLocal = Math.max(0, frame - start);
+        const {formatted, progress} = gentleCount({
+          from: 0,
+          to: metric.value,
+          frame: countLocal,
+          durationInFrames: GROW_FRAMES,
+          decimals,
         });
-        // Ease-out: a bar that lands hard reads as a cut, a bar that settles reads as a trend.
-        const eased = 1 - Math.pow(1 - grow, 3);
-        const value = metric.value * eased;
-        const width = Math.max(4, (metric.value / max) * barMaxW * eased);
+        const width = Math.max(4, (metric.value / max) * barMaxW * progress);
+        const barColor = tokens.chartColors[i % tokens.chartColors.length];
         const y = top + i * rowH;
+        const rowSlide = softSlideFade({
+          frame: countLocal,
+          fps,
+          durationInFrames: 18,
+          direction: 'up',
+          distance: 14,
+        });
+
         return (
-          <div key={`metric-${i}`} style={{position: 'absolute', left: barX, top: y, width: barMaxW}}>
+          <div
+            key={`metric-${i}`}
+            style={{
+              position: 'absolute',
+              left: barX,
+              top: y,
+              width: barMaxW,
+              opacity: rowSlide.opacity,
+              transform: rowSlide.transform,
+            }}
+          >
             <div
               style={{
                 display: 'flex',
                 justifyContent: 'space-between',
                 alignItems: 'baseline',
                 marginBottom: 14,
-                fontFamily: theme.fontBody,
-                fontSize: 32,
-                color: theme.primary,
               }}
             >
-              <span>{metric.label}</span>
-              <span style={{fontFamily: theme.fontHeading, fontSize: 46, color: palette.accent}}>
-                {format(value)}
-                {metric.unit ? <span style={{fontSize: 28, color: theme.secondary}}> {metric.unit}</span> : null}
-              </span>
+              <Body
+                tokens={tokens}
+                small
+                style={{
+                  fontWeight: 600,
+                  color: tokens.textPrimary,
+                  fontSize: 34,
+                }}
+              >
+                {metric.label}
+              </Body>
+              <Metric
+                tokens={tokens}
+                size="lg"
+                color={tokens.textPrimary}
+                suffix={metric.unit}
+              >
+                {formatted}
+              </Metric>
             </div>
             <div
               style={{
                 height: 58,
-                borderRadius: 12,
-                background: alpha(shade(palette.ink, 0.05), 0.55),
+                borderRadius: 14,
+                background: alpha(tokens.surface, 0.9),
                 overflow: 'hidden',
-                border: `2px solid ${alpha(palette.accent, 0.18)}`,
+                border: `1.5px solid ${tokens.line}`,
+                boxShadow: tokens.shadow.sm,
               }}
             >
               <div
                 style={{
                   width,
                   height: '100%',
-                  borderRadius: 10,
-                  background: `linear-gradient(90deg, ${shade(palette.accent, 0.25)}, ${palette.accent})`,
+                  borderRadius: 12,
+                  background: `linear-gradient(90deg, ${shade(barColor, 0.15)}, ${barColor})`,
+                  boxShadow: `0 2px 10px ${alpha(barColor, 0.25)}`,
                 }}
               />
             </div>

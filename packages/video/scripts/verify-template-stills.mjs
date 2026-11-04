@@ -36,6 +36,17 @@ const outDir = process.argv[2];
 if (!outDir || !path.isAbsolute(outDir)) throw new Error('Pass an absolute output directory');
 mkdirSync(outDir, {recursive: true});
 
+const {resolveTheme} = await import('../src/themes/brand.ts');
+
+/** Limited-range luma (16-235) of the fixture theme's background color — the value a clean
+ *  frame edge must match. Theme-relative so the clipping gate works on light and dark themes. */
+const themeBackgroundLuma = () => {
+  const hex = resolveTheme(fixture.theme).background.replace('#', '');
+  const [r, g, b] = [0, 2, 4].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255);
+  const y = 0.2126 * r + 0.7152 * g + 0.0722 * b; // full-range
+  return 16 + 219 * y; // limited-range, matches ffmpeg signalstats YAVG
+};
+
 const cli = path.join(videoDir, 'node_modules/@remotion/cli/remotion-cli.js');
 const port = await freeRemotionPort();
 
@@ -184,14 +195,16 @@ for (const template of TEMPLATE_IDS) {
     }
 
     // Text clipping: informative templates pin their title overlay to the frame (see
-    // CameraPinning). The left text margin (x 0..24, the title's y band) must stay near the
-    // theme's background luma (~30) — bright text bleeding to the frame edge fails the check.
+    // CameraPinning). The left text margin (x 0..24, the title's y band) must match the theme's
+    // own background luma — bright or dark text bleeding into the frame edge deviates from the
+    // background and fails the check. Theme-relative so it holds for light and dark themes alike.
     const INFORMATIVE_TEMPLATES = new Set(['ObjectExplainer', 'ProcessFlow', 'MetricShift']);
     const edge = edgeLuma(pushed);
-    if (INFORMATIVE_TEMPLATES.has(template) && edge > 32) {
+    const bgLuma = themeBackgroundLuma();
+    if (INFORMATIVE_TEMPLATES.has(template) && Math.abs(edge - bgLuma) > 14) {
       throw new Error(
-        `title text is clipped at the left frame edge (edge luma ${edge.toFixed(1)} > 32; ` +
-          'the camera transform must not carry the pinned overlay)',
+        `title text is clipped at the left frame edge (edge luma ${edge.toFixed(1)} vs background ` +
+          `${bgLuma.toFixed(1)}; the camera transform must not carry the pinned overlay)`,
       );
     }
 

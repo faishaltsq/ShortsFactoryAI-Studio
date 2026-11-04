@@ -90,7 +90,7 @@ check(
 );
 const knownTheme = adaptProductStoryboard({...clone(PRODUCT), theme: 'ember'});
 check(
-  knownTheme.theme.id === 'ember' && knownTheme.theme.background === '#1a0f0d',
+  knownTheme.theme.id === 'ember' && knownTheme.theme.background === '#1C1210',
   'a known theme id resolves to its own palette',
 );
 

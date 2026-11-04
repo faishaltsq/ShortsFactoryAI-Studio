@@ -1,4 +1,18 @@
-import type {ThemeSpec} from '../types';
+import type {ThemeTokens} from '../themes/tokens';
+import {DEFAULT_TOKENS} from '../themes/tokens';
+
+export interface ThemeSpec {
+  id?: string;
+  background: string;
+  backgroundAccent: string;
+  primary: string;
+  secondary: string;
+  accent: string;
+  fontHeading?: string;
+  fontBody?: string;
+  fontTechnical?: string;
+  tokens?: ThemeTokens;
+}
 
 const clamp = (value: number, low = 0, high = 1): number => Math.min(high, Math.max(low, value));
 
@@ -54,6 +68,18 @@ export interface ArtPalette {
   ink: string;
 }
 
+export const DEFAULT_PALETTE: ArtPalette = {
+  skyTop: '#FAF7F2',
+  skyBottom: '#F3EFEA',
+  ground: '#E6DFD5',
+  groundFar: '#EDE6DC',
+  primary: '#241C15',
+  accent: '#D97757',
+  prop: '#5C5248',
+  glow: 'rgba(217, 119, 87, 0.22)',
+  ink: '#241C15',
+};
+
 /**
  * Backdrops an informative scene can stand an object in. Each is a rendering recipe, not a photo:
  * the scene names one and gets a consistent place, so two scenes about the same subject from
@@ -86,31 +112,62 @@ const ENV_LIGHT: Record<EnvironmentKind, number> = {
 /** All art colours are derived from the theme; only black/white are mixed in. */
 export const paletteFor = (theme: ThemeSpec, environment: EnvironmentKind = 'abstract'): ArtPalette => {
   const light = ENV_LIGHT[environment] ?? 0.5;
-  const lightTheme = isLight(theme.background);
+  const bg = theme.background || theme.tokens?.background || DEFAULT_TOKENS.background;
+  const lightTheme = isLight(bg);
 
+  if (theme.tokens) {
+    const t = theme.tokens;
+    if (lightTheme) {
+      return {
+        skyTop: t.background,
+        skyBottom: t.surface,
+        ground: mix(t.surface, t.line, 0.35 + light * 0.3),
+        groundFar: mix(t.surface, t.background, 0.4),
+        primary: t.textPrimary,
+        accent: t.accent,
+        prop: t.textSecondary,
+        glow: alpha(t.accent, 0.22),
+        ink: t.textPrimary,
+      };
+    }
+    return {
+      skyTop: t.background,
+      skyBottom: t.surface,
+      ground: mix(t.surface, t.line, 0.4 + light * 0.2),
+      groundFar: mix(t.surface, t.background, 0.5),
+      primary: t.textPrimary,
+      accent: t.accent,
+      prop: t.textSecondary,
+      glow: alpha(t.accent, 0.38),
+      ink: t.textPrimary,
+    };
+  }
+
+  // Fallback when tokens not provided on theme
+  const t = DEFAULT_TOKENS;
   if (lightTheme) {
     return {
-      skyTop: tint(theme.backgroundAccent, 0.4),
-      skyBottom: theme.background,
-      ground: mix(theme.backgroundAccent, theme.secondary, 0.16),
-      groundFar: mix(theme.backgroundAccent, theme.accent, 0.1),
-      primary: theme.primary,
-      accent: theme.accent,
-      prop: mix(theme.secondary, theme.primary, 0.35),
-      glow: alpha(theme.accent, 0.24),
-      ink: theme.primary,
+      skyTop: theme.background || t.background,
+      skyBottom: theme.backgroundAccent || t.surface,
+      ground: mix(theme.backgroundAccent || t.surface, theme.secondary || t.line, 0.35 + light * 0.3),
+      groundFar: mix(theme.backgroundAccent || t.surface, theme.background || t.background, 0.4),
+      primary: theme.primary || t.textPrimary,
+      accent: theme.accent || t.accent,
+      prop: theme.secondary || t.textSecondary,
+      glow: alpha(theme.accent || t.accent, 0.22),
+      ink: theme.primary || t.textPrimary,
     };
   }
 
   return {
-    skyTop: mix(shade(theme.background, 0.4), theme.backgroundAccent, 0.5),
-    skyBottom: mix(theme.backgroundAccent, theme.accent, light * 0.5),
-    ground: mix(mix(theme.background, theme.secondary, 0.18), theme.secondary, light * 0.3),
-    groundFar: mix(mix(theme.backgroundAccent, theme.secondary, 0.34), theme.accent, light * 0.16),
+    skyTop: theme.background,
+    skyBottom: theme.backgroundAccent,
+    ground: mix(theme.backgroundAccent, theme.secondary, 0.4 + light * 0.2),
+    groundFar: mix(theme.backgroundAccent, theme.background, 0.5),
     primary: theme.primary,
     accent: theme.accent,
-    prop: mix(theme.secondary, theme.primary, 0.4),
-    glow: alpha(theme.accent, 0.55),
-    ink: mix(theme.background, '#000000', 0.45),
+    prop: theme.secondary,
+    glow: alpha(theme.accent, 0.38),
+    ink: theme.primary,
   };
 };
