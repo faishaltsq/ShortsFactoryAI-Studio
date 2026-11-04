@@ -3,19 +3,43 @@ from __future__ import annotations
 import hashlib
 from pathlib import Path
 
+import pytest
+
+from packages.core.agents import skill_loader
 from packages.core.agents.skill_loader import MotionSkillLoader, SkillBundle
 
 
-def test_skill_loader_discovers_remotion_skills() -> None:
-    loader = MotionSkillLoader(skills_dir=Path(".agents/skills"))
+@pytest.fixture
+def skills_dir(tmp_path: Path) -> Path:
+    """A declared test catalog, independent of optional operator-installed skills."""
+    directory = tmp_path / "repository/.agents/skills"
+    descriptions = {
+        "remotion-best-practices": "Remotion animation composition best practices",
+        "remotion-markup": "SVG path diagram geometry markup",
+        "remotion-render": "Render and encode Remotion videos",
+        "remotion-captions": "Kinetic typography captions subtitle reveal",
+        "remotion-maps": "Geographic map route travel",
+    }
+    for name, description in descriptions.items():
+        path = directory / name / "SKILL.md"
+        path.parent.mkdir(parents=True)
+        path.write_text(
+            f"---\nname: {name}\ndescription: {description}\n---\n# {name}\n{description}\n",
+            encoding="utf-8",
+        )
+    return directory
+
+
+def test_skill_loader_discovers_remotion_skills(skills_dir: Path) -> None:
+    loader = MotionSkillLoader(skills_dir=skills_dir)
     available = loader.list_available_skills()
     assert "remotion-best-practices" in available
     assert "remotion-markup" in available
     assert "remotion-render" in available
 
 
-def test_skill_loader_bundles_prompt_context() -> None:
-    loader = MotionSkillLoader(skills_dir=Path(".agents/skills"))
+def test_skill_loader_bundles_prompt_context(skills_dir: Path) -> None:
+    loader = MotionSkillLoader(skills_dir=skills_dir)
     bundle = loader.load_bundle(["remotion-best-practices", "remotion-markup"], max_tokens=1500)
     assert isinstance(bundle, SkillBundle)
     assert bundle.sha256_hash != ""
@@ -25,14 +49,21 @@ def test_skill_loader_bundles_prompt_context() -> None:
     assert bundle.token_estimate <= 1600
 
 
-def test_skill_loader_default_constructor() -> None:
+def test_skill_loader_default_constructor(
+    skills_dir: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repository = skills_dir.parents[1]
+    monkeypatch.setattr(skill_loader, "__file__", str(repository / "packages/core/agents/skill_loader.py"))
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
     loader = MotionSkillLoader()
-    available = loader.list_available_skills()
-    assert "remotion-best-practices" in available
+    assert loader.skills_dir == skills_dir
+    assert "remotion-best-practices" in loader.list_available_skills()
 
 
-def test_skill_loader_handles_missing_skill_gracefully() -> None:
-    loader = MotionSkillLoader(skills_dir=Path(".agents/skills"))
+def test_skill_loader_handles_missing_skill_gracefully(tmp_path: Path) -> None:
+    loader = MotionSkillLoader(skills_dir=tmp_path / "missing-skills")
     bundle = loader.load_bundle(["non-existent-skill-xyz", "bad\0name"])
     assert bundle.loaded_skills == []
     assert bundle.content == ""
@@ -191,10 +222,10 @@ def test_skill_loader_handles_os_errors(tmp_path: Path, monkeypatch) -> None:
 # -- relevance selection ------------------------------------------------------------------------
 
 
-def test_ranking_picks_the_skill_the_shot_needs() -> None:
+def test_ranking_picks_the_skill_the_shot_needs(skills_dir: Path) -> None:
     """The selection is per shot: a caption-heavy film and a map-heavy film must not get the same
     reference block, which is what one fixed "load some skills" call produced."""
-    loader = MotionSkillLoader()
+    loader = MotionSkillLoader(skills_dir=skills_dir)
     captions = loader.rank(["kinetic typography captions subtitle reveal"], limit=3)
     maps = loader.rank(["geographic map route travel"], limit=3)
     assert "remotion-captions" in captions
@@ -202,23 +233,23 @@ def test_ranking_picks_the_skill_the_shot_needs() -> None:
     assert captions != maps
 
 
-def test_ranking_is_deterministic() -> None:
+def test_ranking_is_deterministic(skills_dir: Path) -> None:
     """Two identical runs must select identically, or the recorded provenance describes a run
     nobody can reproduce."""
-    loader = MotionSkillLoader()
+    loader = MotionSkillLoader(skills_dir=skills_dir)
     request = ["animated svg path diagram geometry morph", "tracking camera mask"]
     assert loader.rank(request, limit=4) == loader.rank(request, limit=4)
 
 
-def test_ranking_respects_its_limit_and_still_returns_something_when_nothing_matches() -> None:
-    loader = MotionSkillLoader()
+def test_ranking_respects_its_limit_and_still_returns_something_when_nothing_matches(skills_dir: Path) -> None:
+    loader = MotionSkillLoader(skills_dir=skills_dir)
     assert len(loader.rank("zoom", limit=2)) == 2
     assert len(loader.rank("zzzzqqqq", limit=3)) == 3, "an unrankable request still gets a block"
     assert loader.rank("anything", limit=0) == []
 
 
-def test_summaries_read_the_declared_description() -> None:
-    loader = MotionSkillLoader()
+def test_summaries_read_the_declared_description(skills_dir: Path) -> None:
+    loader = MotionSkillLoader(skills_dir=skills_dir)
     by_name = {summary.name: summary.description for summary in loader.summaries()}
     assert by_name.get("remotion-captions")
     assert "caption" in by_name["remotion-captions"].lower()
