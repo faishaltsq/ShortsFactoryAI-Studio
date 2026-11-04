@@ -1,128 +1,150 @@
-"""Live production acceptance runner for Full StepFun V2 preset.
+"""Explicit production recovery using the existing journal, leases and pipeline.
 
-Executes Step 2 through Step 5:
-1. Submits or resumes live job with topic "Prinsip Kerja Rem Regeneratif Mobil Listrik"
-2. Executes full pipeline: 9 StepFun LLM agents + VoiceStudio CUDA TTS + Remotion custom-motion render
-3. Automatically handles transient provider 503s with operator acknowledgement
-4. Verifies stage-by-stage provenance and zero Gemini fallback
-5. Approves the job
-6. Extracts B/M/E frames and generates contact sheet
-7. Runs technical and creative QC evaluation
-8. Generates comprehensive 12-item evidence package
+This command never approves content, edits router state, or retries an unknown
+provider outcome automatically. Authorization and execution are separate actions.
 """
+from __future__ import annotations
 
-import os
-import sqlite3
+import argparse
+import datetime as dt
+import json
 import sys
-import time
+from pathlib import Path
+from typing import Any
 
-sys.path.insert(0, os.path.abspath("."))
-from apps.api.settings import Settings
-from apps.api.state import AppState
-from packages.core.contracts.state import JobState
-from packages.core.orchestration.leases import LeaseKeeper
-from packages.core.orchestration.pipeline import run_job
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-
-def auto_acknowledge_uncertain(state: AppState, job_id: str) -> int:
-    """Acknowledge any uncertain attempts that haven't been authorized yet."""
-    unc = state.requests.uncertain(job_id)
-    acknowledged = 0
-    with sqlite3.connect(state.requests.db_path) as conn:
-        for u in unc:
-            req_key = u["request_key"]
-            att = u["attempt"]
-            row = conn.execute(
-                "SELECT 1 FROM provider_retry_authorizations WHERE request_key = ? AND attempt = ?",
-                (req_key, att),
-            ).fetchone()
-            if not row:
-                state.requests.acknowledge(request_key=req_key, attempt=att, operator="auto-operator")
-                print(f"[RETRY AUTHORIZED] Agent: {u['agent']}, Key: {req_key[:12]}..., Attempt: {att}")
-                acknowledged += 1
-    return acknowledged
-
-def clear_9router_stepfun_lock() -> None:
-    try:
-        con = sqlite3.connect("C:/Users/cubeb/AppData/Roaming/9router/db/data.sqlite")
-        cur = con.cursor()
-        row = cur.execute("SELECT id, data FROM providerConnections WHERE provider LIKE '%24c12f26%'").fetchone()
-        if row:
-            conn_id, data_str = row
-            import json
-            d = json.loads(data_str)
-            if d.get("modelLock_step-5-preview") or d.get("lastError") or d.get("errorCode"):
-                d["modelLock_step-5-preview"] = None
-                d["lastError"] = None
-                d["errorCode"] = None
-                cur.execute("UPDATE providerConnections SET data = ? WHERE id = ?", (json.dumps(d), conn_id))
-                con.commit()
-                print("  [9router] Cleared step-5-preview lock in 9router sqlite DB")
-        con.close()
-    except Exception as e:
-        print(f"  [9router] Note: Could not clear lock: {e}")
+from apps.api.settings import Settings  # noqa: E402
+from apps.api.state import AppState  # noqa: E402
+from packages.core.contracts.state import JobState  # noqa: E402
+from packages.core.orchestration.leases import LeaseKeeper  # noqa: E402
+from packages.core.orchestration.pipeline import run_job  # noqa: E402
+from packages.core.security.redact import redact  # noqa: E402
 
 
+def _decision(operator: str, reason: str) -> None:
+    if not operator.strip() or not reason.strip():
+        raise ValueError('Recovery requires a named operator and a non-empty reason')
 
-def run_pipeline(state: AppState, job_id: str) -> None:
-    keeper = LeaseKeeper(state.store.db_path, owner=f"acceptance-{job_id}")
+
+def _record(state: AppState, job_id: str, keeper: LeaseKeeper, **action: Any) -> None:
+    name = 'recovery-actions.json'
+    history = state.store.read_artifact(job_id, name) if state.store.has_artifact(job_id, name) else {'actions': []}
+    if not isinstance(history, dict) or not isinstance(history.get('actions'), list):
+        raise ValueError('Recovery audit is invalid; restore it before continuing')
+    # Persist intent before any authorization or request; malformed history never resets the log.
+    entry = {key: redact(value) if isinstance(value, str) else value for key, value in action.items()}
+    entry['recorded_at'] = dt.datetime.now(dt.UTC).isoformat()
+    history['actions'].append(entry)
+    state.store.commit_stage(job_id, token=keeper.token, json_artifacts=[(name, history)])
+
+
+def run_pipeline(state: AppState, job_id: str, *, operator: str, reason: str) -> dict[str, Any]:
+    """One explicit resume; the runner alone selects legal, evidence-backed stage recovery."""
+    _decision(operator, reason)
+    job = state.store.get(job_id)
+    if job.state in {
+        JobState.CANCELLED, JobState.REJECTED, JobState.APPROVED, JobState.PRIVATE_UPLOAD,
+        JobState.SCHEDULED, JobState.PUBLISHED,
+    }:
+        raise ValueError(f'Acceptance recovery cannot run a job in {job.state.value}')
+    if job.state == JobState.READY_FOR_APPROVAL:
+        return {'job_id': job_id, 'ok': True, 'stopped': 'human_approval_required', 'stages': []}
+    keeper = LeaseKeeper(state.store.db_path, owner=f'acceptance-{job_id}')
     keeper.acquire(job_id)
     try:
-        max_turns = 30
-        turn = 0
-        while turn < max_turns:
-            turn += 1
-            clear_9router_stepfun_lock()
-            print(f"\n--- Running Pipeline Pass {turn} ---")
+        _record(state, job_id, keeper, action='resume', operator=operator, reason=reason, result='requested')
+        try:
             report = run_job(state, job_id, keeper=keeper)
-            print(f"Report: ok={report.get('ok')}, stopped={report.get('stopped')}")
-            for s in report.get("stages", []):
-                print(f"  Stage {s.get('name'):22s}: ok={s.get('ok')}, reused={s.get('reused')}, {s.get('detail', '')}")
-
-            if report.get("ok"):
-                print("\n[PIPELINE SUCCEEDED] All stages completed!")
-                break
-
-            if report.get("stopped") == "provider_outcome_unknown":
-                ack_count = auto_acknowledge_uncertain(state, job_id)
-                if ack_count > 0:
-                    print(f"Acknowledged {ack_count} uncertain requests. Retrying...")
-                    time.sleep(5)
-                    continue
-                else:
-                    print("[ERROR] No unacknowledged uncertain requests found despite stopped=provider_outcome_unknown")
-                    break
-
-            if report.get("stopped") == "revision_required":
-                print("Revision required, continuing loop...")
-                continue
-
-            print(f"[STOPPED] Unhandled stop condition: {report.get('stopped')}")
-            break
+        except Exception as exc:
+            _record(state, job_id, keeper, action='resume', operator=operator, reason=reason,
+                    result='error', error=type(exc).__name__)
+            raise
+        _record(state, job_id, keeper, action='resume', operator=operator, reason=reason,
+                result=report.get('stopped') or ('completed' if report.get('ok') else 'failed'))
+        return report
     finally:
         keeper.release()
 
-def main() -> None:
-    settings = Settings.from_env().ensure()
-    state = AppState.build(settings)
-    job_id = "1efc9eeffb884589"
 
-    print("=" * 80)
-    print(f"RESUMING PRODUCTION JOB {job_id} ON FULL-STEPFUN-V2")
-    print("=" * 80)
-    job = state.store.get(job_id)
-    if job.state in (JobState.FAILED, JobState.BLOCKED):
-        state.store.transition(job_id, JobState.TECHNICAL_QC, detail="resuming QC after updating storyboard continuity")
-        print(f"Transitioned job {job_id} from {job.state.value} to TECHNICAL_QC")
+def authorize_retry(
+    state: AppState, job_id: str, *, request_key: str, attempt: int,
+    operator: str, reason: str, confirm_duplicate_cost: bool,
+) -> None:
+    """Authorize exactly one journal retry, never dispatch it or erase its uncertain predecessor."""
+    _decision(operator, reason)
+    if not confirm_duplicate_cost:
+        raise ValueError('Explicit confirmation of possible duplicate provider cost is required')
+    keeper = LeaseKeeper(state.store.db_path, owner=f'acceptance-authorize-{job_id}')
+    keeper.acquire(job_id)
+    try:
+        rows = state.requests.statuses(job_id)
+        matching = [row for row in rows if row['request_key'] == request_key]
+        if not matching:
+            raise ValueError('Request does not belong to this job')
+        latest = max(matching, key=lambda row: int(row['attempt']))
+        if latest['status'] != 'uncertain' or int(latest['attempt']) != attempt:
+            raise ValueError('Only the latest uncertain attempt for this job may be authorized')
+        detail = dict(action='authorize_retry', operator=operator, reason=reason,
+                      request_key=request_key, attempt=attempt)
+        _record(state, job_id, keeper, **detail, result='requested')
+        try:
+            state.requests.acknowledge(request_key=request_key, attempt=attempt, operator=operator)
+        except Exception as exc:
+            _record(state, job_id, keeper, **detail, result='error', error=type(exc).__name__)
+            raise
+        _record(state, job_id, keeper, **detail, result='authorized')
+    finally:
+        keeper.release()
 
-    run_pipeline(state, job_id)
 
-    job = state.store.get(job_id)
-    print(f"\nFinal Job State: {job.state.value}")
-    if job.state != JobState.READY_FOR_APPROVAL:
-        print(f"[FAILED] Job state is {job.state.value}, expected READY_FOR_APPROVAL")
-        sys.exit(1)
-    print("[SUCCESS] Job reached READY_FOR_APPROVAL!")
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--job-id', required=True)
+    actions = parser.add_mutually_exclusive_group(required=True)
+    actions.add_argument('--resume', action='store_true')
+    actions.add_argument('--list-uncertain', action='store_true')
+    actions.add_argument('--authorize-retry', action='store_true')
+    parser.add_argument('--request-key')
+    parser.add_argument('--attempt', type=int)
+    parser.add_argument('--by', dest='operator')
+    parser.add_argument('--reason')
+    parser.add_argument('--confirm-duplicate-cost', action='store_true')
+    args = parser.parse_args(argv)
+    if not args.list_uncertain:
+        if not args.operator or not args.operator.strip() or not args.reason or not args.reason.strip():
+            parser.error('--by and --reason are required for recovery decisions')
+        if args.authorize_retry and (
+            not args.request_key or not args.attempt or args.attempt < 1 or not args.confirm_duplicate_cost
+        ):
+            parser.error('--authorize-retry needs --request-key, positive --attempt and --confirm-duplicate-cost')
+    try:
+        state = AppState.build(Settings.from_env().ensure())
+        state.store.get(args.job_id)
+        if args.list_uncertain:
+            # Only journal metadata; never print provider error bodies or response payloads.
+            rows = [{key: row[key] for key in ('request_key', 'attempt', 'agent', 'status', 'provider', 'model')}
+                    for row in state.requests.uncertain(args.job_id)]
+            print(json.dumps({'job_id': args.job_id, 'uncertain': rows}, ensure_ascii=False))
+            return 0
+        if args.authorize_retry:
+            authorize_retry(state, args.job_id, request_key=args.request_key, attempt=args.attempt,
+                            operator=args.operator, reason=args.reason,
+                            confirm_duplicate_cost=args.confirm_duplicate_cost)
+            print(json.dumps({'job_id': args.job_id, 'authorized': True, 'dispatched': False}))
+            return 0
+        report = run_pipeline(state, args.job_id, operator=args.operator, reason=args.reason)
+        final = state.store.get(args.job_id)
+        print(json.dumps({'job_id': args.job_id, 'ok': report.get('ok'),
+                          'stopped': report.get('stopped'), 'state': final.state.value,
+                          'human_approval_required': final.state == JobState.READY_FOR_APPROVAL}))
+        return 0 if report.get('ok') and final.state == JobState.READY_FOR_APPROVAL else 1
+    except Exception as exc:
+        print(redact(f'{type(exc).__name__}: {exc}'), file=sys.stderr)
+        return 1
 
-if __name__ == "__main__":
-    main()
+
+if __name__ == '__main__':
+    raise SystemExit(main())
