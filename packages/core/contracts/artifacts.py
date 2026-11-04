@@ -366,7 +366,9 @@ class StoryboardArtifact(Artifact):
     fps: int = Field(default=30, ge=1, le=60)
     width: int = Field(default=1080, ge=16)
     height: int = Field(default=1920, ge=16)
-    theme: str = "dusk"
+    # Light-first: warm editorial is the global default; dark themes are justified exceptions
+    # resolved by the agent from content context (see ADR 0014).
+    theme: str = "editorialLight"
     scenes: list[SceneSpec] = Field(min_length=1)
     subtitles: list[SubtitleCue] = Field(default_factory=list)
 
