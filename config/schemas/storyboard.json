@@ -441,7 +441,7 @@
       "type": "array"
     },
     "theme": {
-      "default": "dusk",
+      "default": "editorialLight",
       "title": "Theme",
       "type": "string"
     },

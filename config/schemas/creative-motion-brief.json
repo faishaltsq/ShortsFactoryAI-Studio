@@ -37,8 +37,18 @@
     "art_direction": {
       "$ref": "#/$defs/ArtDirectionSpec"
     },
+    "camera_language": {
+      "default": "",
+      "title": "Camera Language",
+      "type": "string"
+    },
     "created_at": {
       "title": "Created At",
+      "type": "string"
+    },
+    "ending_payoff": {
+      "default": "",
+      "title": "Ending Payoff",
       "type": "string"
     },
     "motion_complexity_budget": {
@@ -46,14 +56,29 @@
       "title": "Motion Complexity Budget",
       "type": "string"
     },
+    "motion_language": {
+      "default": "",
+      "title": "Motion Language",
+      "type": "string"
+    },
     "narrative_arc": {
       "default": "",
       "title": "Narrative Arc",
       "type": "string"
     },
+    "narrative_thesis": {
+      "default": "",
+      "title": "Narrative Thesis",
+      "type": "string"
+    },
     "pacing_strategy": {
       "default": "",
       "title": "Pacing Strategy",
+      "type": "string"
+    },
+    "palette_rationale": {
+      "default": "",
+      "title": "Palette Rationale",
       "type": "string"
     },
     "primary_visual_motifs": {
@@ -75,6 +100,11 @@
       "title": "Reusable Motifs",
       "type": "array"
     },
+    "scene_progression": {
+      "default": "",
+      "title": "Scene Progression",
+      "type": "string"
+    },
     "scene_transitions": {
       "items": {
         "type": "string"
@@ -86,6 +116,31 @@
       "default": 1,
       "title": "Schema Version",
       "type": "integer"
+    },
+    "subject_environment": {
+      "default": "",
+      "title": "Subject Environment",
+      "type": "string"
+    },
+    "transition_strategy": {
+      "default": "",
+      "title": "Transition Strategy",
+      "type": "string"
+    },
+    "typography_direction": {
+      "default": "",
+      "title": "Typography Direction",
+      "type": "string"
+    },
+    "visual_climax": {
+      "default": "",
+      "title": "Visual Climax",
+      "type": "string"
+    },
+    "visual_metaphor": {
+      "default": "",
+      "title": "Visual Metaphor",
+      "type": "string"
     },
     "visual_thesis": {
       "minLength": 1,

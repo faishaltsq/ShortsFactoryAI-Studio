@@ -32,6 +32,11 @@
       "title": "Issues",
       "type": "array"
     },
+    "narration_timing_sha256": {
+      "default": "",
+      "title": "Narration Timing Sha256",
+      "type": "string"
+    },
     "provenance": {
       "additionalProperties": true,
       "title": "Provenance",
@@ -48,6 +53,11 @@
       },
       "title": "Skill Hashes",
       "type": "array"
+    },
+    "timing_source": {
+      "default": "",
+      "title": "Timing Source",
+      "type": "string"
     },
     "validated_by_codeguard": {
       "default": false,

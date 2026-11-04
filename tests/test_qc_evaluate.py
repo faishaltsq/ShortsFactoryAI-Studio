@@ -756,3 +756,144 @@ def test_qc_flags_safe_zone_violation():
     result = _creative(props=props_bad_pos)
     assert result.checks["safe_zones"] is False
     assert result.metrics["safe_zone_violations"] > 0
+
+
+# -- creative quality, beyond frame differences -------------------------------------------------
+
+
+def test_a_scene_whose_narration_names_a_subject_it_does_not_draw_fails_relevance():
+    """The script-wide check passes when *some* scene draws the subject; this one asks for the
+    scene whose own words name it. Ramen narrated over a GPU is the failure this catches."""
+    import copy
+
+    props = copy.deepcopy(PROPS)
+    script = {
+        "segments": [
+            {"id": "s1", "text": "Satu"},
+            {"id": "s2", "text": "Ramen digulung jadi mie keriting."},  # sc2 draws a gpu
+            {"id": "s3", "text": "Tiga"},
+        ]
+    }
+    # The film as a whole still draws ramen, so the script-wide gate is satisfied.
+    props["storyboard"]["scenes"][2]["data"]["objects"][0]["kind"] = "ramenBowl"
+    result = _creative(props=props, script=script)
+    assert result.checks["concrete_subjects"] is True, "the subject is drawn somewhere"
+    assert result.checks["narration_visual_relevance"] is False
+    assert result.metrics["narration_relevance_missing"] == ["sc2"]
+
+
+def test_a_scene_that_illustrates_its_own_narration_passes_relevance():
+    import copy
+
+    props = copy.deepcopy(PROPS)
+    props["storyboard"]["scenes"][1]["data"]["objects"][0]["kind"] = "ramenBowl"
+    props["storyboard"]["scenes"][1]["data"]["objects"][1]["kind"] = "cookingPot"
+    script = {
+        "segments": [
+            {"id": "s1", "text": "Satu"},
+            {"id": "s2", "text": "Ramen digulung jadi mie keriting."},
+            {"id": "s3", "text": "Tiga"},
+        ]
+    }
+    result = _creative(props=props, script=script)
+    assert result.checks["narration_visual_relevance"] is True
+    assert result.metrics["narration_relevance_checked"] == 1
+
+
+def _with_causal(index, **fields):
+    import copy
+
+    props = copy.deepcopy(PROPS)
+    scene = props["storyboard"]["scenes"][index]
+    scene["causal_state"] = {
+        "initial_state": "Awal",
+        "causal_action": "Sesuatu terjadi",
+        "resulting_state": "Akhir",
+        "transition": "potong ke berikutnya",
+        **fields,
+    }
+    return props
+
+
+def test_an_incomplete_causal_cycle_fails_cause_and_effect():
+    """A storyboard that claims a transformation but omits the mechanics has not shown one."""
+    result = _creative(props=_with_causal(0, causal_action=""))
+    assert result.checks["cause_effect"] is False
+    assert result.metrics["causal_scenes_incomplete"] == ["sc1"]
+
+
+def test_a_causal_cycle_that_ends_where_it_started_fails_cause_and_effect():
+    result = _creative(props=_with_causal(0, resulting_state="Awal"))
+    assert result.checks["cause_effect"] is False
+    assert result.metrics["causal_scenes_unchanged"] == ["sc1"]
+
+
+def test_a_complete_causal_cycle_passes_cause_and_effect():
+    result = _creative(props=_with_causal(0))
+    assert result.checks["cause_effect"] is True
+    assert result.metrics["causal_scenes_declared"] == 1
+
+
+def test_a_scene_with_no_causal_state_is_not_penalised_for_the_optional_field():
+    """``SceneSpec.causal_state`` is optional in the contract; the gate must not require what the
+    contract does not, or the contract's own optionality becomes a lie."""
+    result = _creative()
+    assert result.checks["cause_effect"] is True
+    assert result.metrics["causal_scenes_declared"] == 0
+
+
+def test_declaring_carry_while_changing_every_object_fails_continuity():
+    import copy
+
+    props = copy.deepcopy(PROPS)
+    props["storyboard"]["scenes"][1]["motion"]["continuity"] = "carry"
+    # sc1 draws serverRack + coolingFan; sc2 draws gpu + coolingFan. A carry claim over a shared
+    # fan is still a claim the storyboard makes, so break the shared object to prove the check.
+    props["storyboard"]["scenes"][1]["data"]["objects"][1]["kind"] = "wafer"
+    result = _creative(props=props)
+    assert result.checks["transition_continuity"] is False
+    assert result.metrics["continuity_violations"] == ["sc2"]
+
+
+def test_declaring_carry_over_a_shared_object_passes_continuity():
+    result = _creative(props=_carry_fixture())
+    assert result.checks["transition_continuity"] is True
+    assert result.metrics["continuity_declared"] == 1
+
+
+def _carry_fixture():
+    import copy
+
+    props = copy.deepcopy(PROPS)
+    props["storyboard"]["scenes"][1]["motion"]["continuity"] = "carry"
+    return props
+
+
+def test_a_final_scene_that_draws_nothing_fails_visual_payoff():
+    import copy
+
+    props = copy.deepcopy(PROPS)
+    props["storyboard"]["scenes"][2]["data"]["objects"] = []
+    result = _creative(props=props)
+    assert result.checks["visual_payoff"] is False
+    assert "final scene draws nothing" in result.metrics["visual_payoff_problems"]
+
+
+def test_a_final_scene_that_records_no_resulting_state_fails_visual_payoff():
+    props = _with_causal(2, resulting_state="")
+    result = _creative(props=props)
+    assert result.checks["visual_payoff"] is False
+    assert any(
+        "resulting state" in problem for problem in result.metrics["visual_payoff_problems"]
+    )
+
+
+def test_the_reference_film_passes_every_creative_quality_check():
+    result = _creative()
+    for name in (
+        "narration_visual_relevance",
+        "cause_effect",
+        "transition_continuity",
+        "visual_payoff",
+    ):
+        assert result.checks[name] is True, name

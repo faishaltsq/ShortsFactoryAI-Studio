@@ -6,13 +6,18 @@ import {
   useCurrentFrame,
   useVideoConfig,
 } from 'remotion';
-import type {WordTimestamp} from '../types';
+import type {WordTimestamp, ThemeSpec} from '../types';
+import {DEFAULT_TOKENS, type ThemeTokens} from '../themes/tokens';
+import {FONT_ROLES} from '../themes/type';
+import {alpha} from '../art/palette';
 
 export interface TiktokCaptionsProps {
   words: WordTimestamp[];
   wordsPerPage?: number;
   highlightColor?: string;
   fontFamily?: string;
+  tokens?: ThemeTokens;
+  theme?: ThemeSpec;
 }
 
 interface CaptionPage {
@@ -24,9 +29,13 @@ interface CaptionPage {
 export const TiktokCaptions: React.FC<TiktokCaptionsProps> = ({
   words,
   wordsPerPage = 3,
-  highlightColor = '#facc15',
-  fontFamily = 'Montserrat, Inter, system-ui, sans-serif',
+  highlightColor,
+  fontFamily = FONT_ROLES.body,
+  tokens: tokensProp,
+  theme,
 }) => {
+  const tokens = tokensProp ?? theme?.tokens ?? DEFAULT_TOKENS;
+  const resolvedHighlight = highlightColor ?? tokens.accent;
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const currentTime = frame / fps;
@@ -112,6 +121,13 @@ export const TiktokCaptions: React.FC<TiktokCaptionsProps> = ({
               })
             : 1;
 
+          const highlightGlow = resolvedHighlight.startsWith('#')
+            ? alpha(resolvedHighlight, 0.35)
+            : resolvedHighlight;
+          const highlightBorder = resolvedHighlight.startsWith('#')
+            ? alpha(resolvedHighlight, 0.6)
+            : resolvedHighlight;
+
           return (
             <span
               key={`${item.start}-${idx}`}
@@ -120,17 +136,20 @@ export const TiktokCaptions: React.FC<TiktokCaptionsProps> = ({
                 fontFamily,
                 fontSize: 48,
                 fontWeight: 800,
-                color: isCurrentWord ? '#0f172a' : '#ffffff',
-                backgroundColor: isCurrentWord ? highlightColor : 'rgba(0, 0, 0, 0.45)',
+                color: isCurrentWord ? tokens.textPrimary : tokens.textSecondary,
+                backgroundColor: isCurrentWord
+                  ? tokens.accentSoft
+                  : alpha(tokens.surface, 0.88),
                 padding: '6px 16px',
                 borderRadius: 14,
+                border: isCurrentWord
+                  ? `1.5px solid ${highlightBorder}`
+                  : `1px solid ${alpha(tokens.line, 0.6)}`,
                 transform: `scale(${wordScale})`,
-                textShadow: isCurrentWord
-                  ? 'none'
-                  : '0px 4px 14px rgba(0, 0, 0, 0.9), 0px 2px 4px rgba(0, 0, 0, 0.95)',
+                textShadow: 'none',
                 boxShadow: isCurrentWord
-                  ? `0px 8px 24px ${highlightColor}66`
-                  : 'none',
+                  ? `0px 8px 24px ${highlightGlow}`
+                  : tokens.shadow.sm,
               }}
             >
               {item.word}

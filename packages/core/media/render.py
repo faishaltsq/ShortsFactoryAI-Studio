@@ -991,6 +991,58 @@ def render_custom_motion(
         entry_file = Path(code_dir) / "RootComposition.tsx"
     if not entry_file.is_file():
         raise RuntimeError(f"entry component not found in {code_dir}")
+    # Seed catalog art foundation into code_dir/art so imports like ./art/Environment and ./art/objects resolve
+    catalog_art = Path(video_dir).resolve() / "src" / "art"
+    target_art = Path(code_dir) / "art"
+    standalone_art_files = ("Environment.tsx", "objects.tsx", "object-kinds.ts", "palette.ts", "Prop.tsx", "rng.ts")
+    if catalog_art.is_dir():
+        target_art.mkdir(parents=True, exist_ok=True)
+        for art_name in standalone_art_files:
+            art_file = catalog_art / art_name
+            if art_file.is_file():
+                dest = target_art / art_name
+                if not dest.exists():
+                    shutil.copy2(art_file, dest)
+
+    # The catalog art layer imports the design system (../themes/tokens, ../themes/type).
+    # Seed those modules at code_dir/themes and code_dir/components so the quarantined
+    # bundle resolves them; without this, custom-motion renders fail with
+    # "Can't resolve '../themes/tokens'" (regression from ADR 0014).
+    design_seed = {
+        "": ("fonts.ts", "types.ts"),
+        "themes": ("tokens.ts", "type.ts", "brand.ts"),
+        "components": ("Typography.tsx", "motion.ts"),
+    }
+    for subdir, names in design_seed.items():
+        src_dir = Path(video_dir).resolve() / "src" / subdir
+        dest_dir = Path(code_dir) / subdir
+        for name in names:
+            src_file = src_dir / name
+            if src_file.is_file():
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / name
+                if not dest.exists():
+                    shutil.copy2(src_file, dest)
+
+    # Seed the vendored fonts so generated compositions that reference FONT_ROLES get
+    # the real families instead of a system fallback.
+    fonts_src = Path(video_dir).resolve() / "public" / "fonts"
+    fonts_dst = Path(code_dir) / "public" / "fonts"
+    if fonts_src.is_dir() and not fonts_dst.exists():
+        shutil.copytree(fonts_src, fonts_dst)
+
+    # Ensure default exports exist for all TSX scene/component files so both named and default imports resolve
+    for tsx_file in code_dir.glob("**/*.tsx"):
+        if tsx_file.name == "index.tsx":
+            continue
+        try:
+            c = tsx_file.read_text(encoding="utf-8")
+            stem = tsx_file.stem
+            if (f"export const {stem}" in c or f"export function {stem}" in c) and "export default" not in c:
+                c += f"\nexport default {stem};\n"
+                tsx_file.write_text(c, encoding="utf-8")
+        except Exception:
+            pass
 
     content = entry_file.read_text(encoding="utf-8")
 
@@ -1025,6 +1077,15 @@ def render_custom_motion(
             entry_file.write_text(content, encoding="utf-8")
     except Exception:
         total_frames = 0
+
+    # Font-family tokens alone do not register a font. Import the existing loader even
+    # when the generated entry registers its own root; loadFont holds Remotion's render
+    # until the vendored faces are ready. Keep resume idempotent.
+    if (Path(code_dir) / "fonts.ts").is_file() and not re.search(
+        r"\bimport\s+(?:[^;\n]*?\bfrom\s*)?['\"]\./fonts['\"]", content
+    ):
+        content = "import './fonts';\n" + content
+        entry_file.write_text(content, encoding="utf-8")
 
     comp_match = re.search(r'<Composition\b[^>]*\bid=[\x22\x27]([^\x22\x27]+)[\x22\x27]', content, re.DOTALL)
     comp_name = comp_match.group(1) if comp_match else composition
@@ -1071,6 +1132,7 @@ def render_custom_motion(
         comp_name,
         str(Path(out_path).resolve()),
         f"--props={Path(props_path).resolve()}",
+        f"--public-dir={(Path(code_dir) / 'public').resolve()}",
         "--overwrite",
         "--log=error",
         "--pixel-format=yuv420p",

@@ -270,6 +270,32 @@ class CreativeMotionBriefArtifact(Artifact):
     reusable_motifs: list[str] = Field(default_factory=list)
     scene_transitions: list[str] = Field(default_factory=list)
     motion_complexity_budget: str = "medium"
+    # -- the directing decisions the motion coder has to be told --------------------------------
+    # Every one of these defaults to empty. An empty field means "the director did not say", and
+    # the motion coder treats it that way — a default invented here would be attributed to the
+    # director and would read, downstream, as a decision that was actually made.
+    #: What the film argues, in one sentence, as opposed to ``visual_thesis`` which is how it looks.
+    narrative_thesis: str = ""
+    #: The single organising image the whole film returns to.
+    visual_metaphor: str = ""
+    #: The world the subject lives in, tied to the subject rather than to a house style.
+    subject_environment: str = ""
+    #: Why this palette, so a scene can extend it without asking again.
+    palette_rationale: str = ""
+    #: How type behaves as a design element, not just what font family is used.
+    typography_direction: str = ""
+    #: Framing and movement language across the film.
+    camera_language: str = ""
+    #: What motion means here: cause, direction, scale, transformation.
+    motion_language: str = ""
+    #: How the film advances shot to shot.
+    scene_progression: str = ""
+    #: The rule from one shot to the next.
+    transition_strategy: str = ""
+    #: Where the film peaks and what the viewer sees.
+    visual_climax: str = ""
+    #: What the viewer is left with.
+    ending_payoff: str = ""
 
     @field_validator("visual_thesis", mode="before")
     @classmethod
@@ -301,6 +327,38 @@ class CreativeMotionBriefArtifact(Artifact):
             return [str(v) for v in value if str(v).strip()]
         return []
 
+    @field_validator(
+        "narrative_thesis",
+        "visual_metaphor",
+        "subject_environment",
+        "palette_rationale",
+        "typography_direction",
+        "camera_language",
+        "motion_language",
+        "scene_progression",
+        "transition_strategy",
+        "visual_climax",
+        "ending_payoff",
+        mode="before",
+    )
+    @classmethod
+    def _coerce_prose(cls, value: Any) -> str:
+        """These are prose fields, and a director that answers in bullet points is still answering.
+
+        A list is joined rather than rejected: the alternative is a repair round trip over a
+        formatting habit, and the brief is guidance for a later stage, not a scored field. A dict
+        is rendered as ``key=value`` for the same reason. Nothing here invents content.
+        """
+        if value is None:
+            return ""
+        if isinstance(value, str):
+            return value.strip()
+        if isinstance(value, (list, tuple)):
+            return ", ".join(str(item).strip() for item in value if str(item).strip())
+        if isinstance(value, dict):
+            return ", ".join(f"{k}={v}" for k, v in value.items() if str(v).strip())
+        return str(value)
+
 
 class StoryboardArtifact(Artifact):
     kind = "storyboard"
@@ -308,7 +366,9 @@ class StoryboardArtifact(Artifact):
     fps: int = Field(default=30, ge=1, le=60)
     width: int = Field(default=1080, ge=16)
     height: int = Field(default=1920, ge=16)
-    theme: str = "dusk"
+    # Light-first: warm editorial is the global default; dark themes are justified exceptions
+    # resolved by the agent from content context (see ADR 0014).
+    theme: str = "editorialLight"
     scenes: list[SceneSpec] = Field(min_length=1)
     subtitles: list[SubtitleCue] = Field(default_factory=list)
 
@@ -353,6 +413,14 @@ class MotionCodeArtifact(Artifact):
     skill_hashes: list[str] = Field(default_factory=list)
     validated_by_codeguard: bool = False
     issues: list[str] = Field(default_factory=list)
+    #: Digest of the narration timing this code was written against. Written by code, never by the
+    #: model, and compared on reuse: animation timed against a *different* narration must be
+    #: regenerated, not reused. Empty means the code was generated before any timing existed,
+    #: which is exactly the case this field exists to make visible.
+    narration_timing_sha256: str = ""
+    #: Where the timing came from — ``measured`` from the rendered narration, ``estimated`` from
+    #: the storyboard's provisional frame counts. Reported, never inferred at read time.
+    timing_source: str = ""
 
     @model_validator(mode="before")
     @classmethod

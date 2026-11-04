@@ -20,6 +20,12 @@ class JobState(str, Enum):
     STORYBOARD_READY = "STORYBOARD_READY"
     ASSETS_READY = "ASSETS_READY"
     AUDIO_READY = "AUDIO_READY"
+    #: Motion code is generated *after* the narration it must sync to. Without this state the
+    #: MotionCoder stage had to run from ``STORYBOARD_READY`` — before ``audio.json`` existed —
+    #: so every animation was timed against a provisional estimate rather than the measured
+    #: narration. It cannot share ``RENDERING`` with the render stage either: ``RENDERING ->
+    #: RENDERING`` is not a legal transition, so the second committer would be refused.
+    MOTION_READY = "MOTION_READY"
     RENDERING = "RENDERING"
     TECHNICAL_QC = "TECHNICAL_QC"
     EDITORIAL_QC = "EDITORIAL_QC"
@@ -101,6 +107,12 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
          JobState.PAUSED}
     ),
     JobState.AUDIO_READY: frozenset(
+        {JobState.MOTION_READY, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
+         JobState.PAUSED}
+    ),
+    # Motion code is written against the measured narration before anything is rendered, so the
+    # only forward exit is the render itself.
+    JobState.MOTION_READY: frozenset(
         {JobState.RENDERING, JobState.BLOCKED, JobState.FAILED, JobState.CANCELLED,
          JobState.PAUSED}
     ),
@@ -171,6 +183,7 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
             JobState.STORYBOARD_READY,
             JobState.ASSETS_READY,
             JobState.AUDIO_READY,
+            JobState.MOTION_READY,
             JobState.RENDERING,
             JobState.TECHNICAL_QC,
             JobState.EDITORIAL_QC,
@@ -189,6 +202,7 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
             JobState.STORYBOARD_READY,
             JobState.ASSETS_READY,
             JobState.AUDIO_READY,
+            JobState.MOTION_READY,
             JobState.RENDERING,
             JobState.TECHNICAL_QC,
             JobState.EDITORIAL_QC,
@@ -208,6 +222,7 @@ _ALLOWED: dict[JobState, frozenset[JobState]] = {
             JobState.STORYBOARD_READY,
             JobState.ASSETS_READY,
             JobState.AUDIO_READY,
+            JobState.MOTION_READY,
             JobState.RENDERING,
             JobState.TECHNICAL_QC,
             JobState.EDITORIAL_QC,

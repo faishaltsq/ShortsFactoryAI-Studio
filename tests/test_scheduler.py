@@ -50,7 +50,7 @@ def test_an_approval_waiting_job_is_never_claimed(store):
     for state in (
         JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
-        JobState.AUDIO_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
+        JobState.AUDIO_READY, JobState.MOTION_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC, JobState.READY_FOR_APPROVAL,
     ):
         store.transition(job.id, state)
@@ -216,7 +216,7 @@ def test_a_job_at_the_gate_is_never_claimed_even_when_it_is_the_oldest(store):
     for state in (
         JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
-        JobState.AUDIO_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
+        JobState.AUDIO_READY, JobState.MOTION_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC, JobState.READY_FOR_APPROVAL,
     ):
         store.transition(waiting.id, state)
@@ -244,7 +244,7 @@ def test_the_loop_rechecks_the_state_before_handing_off(store, monkeypatch):
     for state in (
         JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
-        JobState.AUDIO_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
+        JobState.AUDIO_READY, JobState.MOTION_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC, JobState.READY_FOR_APPROVAL,
     ):
         store.transition(job.id, state)

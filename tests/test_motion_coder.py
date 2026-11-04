@@ -121,7 +121,11 @@ def test_motion_coder_agent_skill_hashes_and_ast_codeguard(tmp_path: Path) -> No
     assert sanitized["validated_by_codeguard"] is True
     assert sanitized["issues"] == []
     assert len(sanitized["skill_hashes"]) == 1
-    assert sanitized["skill_hashes"][0] == agent._skills_bundle.sha256_hash
+    # Per-skill provenance: the artifact names the skill and the digest of the portion actually
+    # sent, so a stale skill file is detectable from the artifact alone.
+    name, _, digest = sanitized["skill_hashes"][0].partition(":")
+    assert name == "remotion-best-practices"
+    assert digest == agent._skills_bundle.skill_hashes["remotion-best-practices"]
 
     # Sanitize payload with AST CodeGuard: AST evasion attempt (eval)
     evil_payload = {
@@ -135,17 +139,27 @@ def test_motion_coder_agent_skill_hashes_and_ast_codeguard(tmp_path: Path) -> No
     assert any("eval" in issue.lower() for issue in evil_sanitized["issues"])
 
 
-def test_studio_json_binds_motion_coder_agent() -> None:
-    import json
+def test_production_preset_binds_motion_coder_agent() -> None:
+    """Routing is a product invariant, not a fact about ignored operator state."""
+    from packages.core.providers.base import Capability
+    from packages.core.providers.presets import apply_preset
+    from packages.core.providers.registry import ProviderRegistry, ProviderSpec
 
-    config_path = Path("config/studio.json")
-    assert config_path.is_file(), "config/studio.json must exist"
-    data = json.loads(config_path.read_text(encoding="utf-8"))
-    bindings = {b["agent"]: b for b in data.get("bindings", [])}
-    assert "MotionCoderAgent" in bindings, "MotionCoderAgent must be bound in config/studio.json"
+    registry = ProviderRegistry()
+    registry.add(ProviderSpec(
+        id="stepfun",
+        transport="openai_compat",
+        base_url="http://127.0.0.1:20128/v1",
+        model="operator-selected-model",
+        capabilities=[Capability.CHAT, Capability.JSON_SCHEMA],
+        allow_private_hosts=True,
+    ))
+    bindings, gaps = apply_preset("full-stepfun-v2", registry)
+    assert gaps == []
     motion_binding = bindings["MotionCoderAgent"]
-    assert motion_binding["primary"] in ("nine-router", "stepfun")
-    assert motion_binding.get("model") in ("ag/gemini-3.8-flash", "om/step-5-preview")
+    assert motion_binding["primary"] == "stepfun"
+    assert motion_binding["model"] is None  # Inherit the configured provider model.
+    assert motion_binding["fallback"] == []
 
 
 def test_build_stages_includes_motion_code_when_custom_renderer(tmp_path: Path) -> None:

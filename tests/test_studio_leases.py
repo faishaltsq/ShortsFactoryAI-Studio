@@ -150,6 +150,7 @@ def test_a_long_render_does_not_read_as_waiting_while_its_worker_still_owns_the_
         JobState.STORYBOARD_READY,
         JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
         JobState.RENDERING,
     ):
         store.transition(job.id, step)

@@ -37,6 +37,31 @@ def _as_response(response: httpx.Response | ResumeInfo) -> httpx.Response:
         f"unexpected 308 resume response for a non-upload request (status {response.status_code})",
     )
 
+def _parse_json_payload(response: httpx.Response, call: ResolvedCall) -> dict[str, Any]:
+    text = response.text
+    try:
+        data = response.json()
+        if isinstance(data, dict):
+            return data
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    stripped = text.strip()
+    if "data: [DONE]" in stripped:
+        candidate = stripped.split("data: [DONE]")[0].strip()
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    raise ProviderError(
+        "provider_bad_response",
+        f"response was not JSON: {redact(text[:200], secrets=(call.credential,))}",
+        provider=call.provider,
+    )
+
 
 class OpenAICompatProvider:
     name = "openai_compat"
@@ -148,14 +173,7 @@ class OpenAICompatProvider:
             secrets=(call.credential,),
             provider=call.provider,
         )
-        try:
-            payload = _as_response(response).json()
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise ProviderError(
-                "provider_bad_response",
-                f"response was not JSON: {redact(_as_response(response).text[:200], secrets=(call.credential,))}",
-                provider=call.provider,
-            ) from exc
+        payload = _parse_json_payload(_as_response(response), call)
 
         choices = payload.get("choices") or []
         if not choices:
@@ -220,14 +238,7 @@ class OpenAICompatProvider:
             secrets=(call.credential,),
             provider=call.provider,
         )
-        try:
-            payload = _as_response(response).json()
-        except (json.JSONDecodeError, ValueError) as exc:
-            raise ProviderError(
-                "provider_bad_response",
-                f"response was not JSON: {redact(_as_response(response).text[:200], secrets=(call.credential,))}",
-                provider=call.provider,
-            ) from exc
+        payload = _parse_json_payload(_as_response(response), call)
 
         choices = payload.get("choices") or []
         if not choices:

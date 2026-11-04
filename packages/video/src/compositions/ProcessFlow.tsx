@@ -1,11 +1,14 @@
 import React from 'react';
-import {interpolate, spring, useCurrentFrame, useVideoConfig} from 'remotion';
+import {interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
 import type {SceneProps} from '../components/NarrativeFrame';
 import {InformativeFrame} from '../components/InformativeFrame';
 import {Environment} from '../art/Environment';
-import {alpha, paletteFor, shade, tint} from '../art/palette';
+import {alpha, paletteFor, tint} from '../art/palette';
 import {ProcessFlowData, validateSceneData} from '../scene-data';
 import {resolveTheme} from '../themes/brand';
+import {DEFAULT_TOKENS} from '../themes/tokens';
+import {Body, Label} from '../components/Typography';
+import {EDITORIAL_EASING, lineDraw, maskedReveal, softSlideFade} from '../components/motion';
 
 const W = 1080;
 const H = 1920;
@@ -21,6 +24,7 @@ const LINK_FRAMES = 26;
  */
 export const ProcessFlowScene: React.FC<SceneProps> = ({scene, theme: inputTheme, watermark}) => {
   const theme = resolveTheme(inputTheme);
+  const tokens = theme.tokens ?? DEFAULT_TOKENS;
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   validateSceneData(scene);
@@ -52,14 +56,17 @@ export const ProcessFlowScene: React.FC<SceneProps> = ({scene, theme: inputTheme
           y1={top}
           x2={railX}
           y2={top + gap * (count - 1)}
-          stroke={alpha(palette.accent, 0.25)}
+          stroke={alpha(tokens.accent, 0.25)}
           strokeWidth={6}
           strokeLinecap="round"
         />
         {steps.slice(0, -1).map((_, i) => {
           const linkStart = stepAt(i);
           const local = Math.max(0, frame - linkStart);
-          const travelled = Math.min(1, local / LINK_FRAMES);
+          const rawTravel = Math.min(1, local / LINK_FRAMES);
+          const travelled = interpolate(rawTravel, [0, 1], [0, 1], {
+            easing: EDITORIAL_EASING.smoothOut,
+          });
           const y1 = top + gap * i;
           const y2 = top + gap * (i + 1);
           // The lit segment grows with the packet, so the rail records how far the process has got.
@@ -70,13 +77,13 @@ export const ProcessFlowScene: React.FC<SceneProps> = ({scene, theme: inputTheme
                 y1={y1}
                 x2={railX}
                 y2={y1 + (y2 - y1) * travelled}
-                stroke={palette.accent}
+                stroke={tokens.accent}
                 strokeWidth={6}
                 strokeLinecap="round"
                 opacity={0.9}
               />
               {local > 0 && travelled < 1 ? (
-                <circle cx={railX} cy={y1 + (y2 - y1) * travelled} r={13} fill={tint(palette.accent, 0.45)} />
+                <circle cx={railX} cy={y1 + (y2 - y1) * travelled} r={13} fill={tint(tokens.accent, 0.45)} />
               ) : null}
             </g>
           );
@@ -84,73 +91,118 @@ export const ProcessFlowScene: React.FC<SceneProps> = ({scene, theme: inputTheme
       </svg>
       {steps.map((step, i) => {
         const start = stepAt(i);
-        const enter = spring({frame: Math.max(0, frame - start), fps, config: {damping: 16, stiffness: 130, mass: 0.8}});
-        const weight = Number.isFinite(enter) ? Math.min(1, Math.max(0, enter)) : 1;
+        const stepLocal = Math.max(0, frame - start);
+        const cardReveal = maskedReveal({
+          frame: stepLocal,
+          fps,
+          durationInFrames: 18,
+          direction: 'left',
+        });
+        const slide = softSlideFade({
+          frame: stepLocal,
+          fps,
+          durationInFrames: 18,
+          direction: 'left',
+          distance: 20,
+        });
+        const isRevealed = stepLocal >= 18;
         const y = top + gap * i;
         // A stage is "now" for one link's worth of frames after it lands; afterwards it is history
         // and drops back so the current stage is always the brightest thing in the column.
         const current = frame >= start && frame < start + LINK_FRAMES;
         const done = frame >= start + LINK_FRAMES;
-        const border = current ? palette.accent : done ? alpha(palette.accent, 0.4) : alpha(palette.ink, 0.3);
+        const border = current ? tokens.accent : done ? alpha(tokens.accent, 0.45) : tokens.line;
+        const stepColor = tokens.chartColors[i % tokens.chartColors.length];
         return (
           <React.Fragment key={`step-${i}`}>
-          <div
-            style={{
-              position: 'absolute',
-              left: railX,
-              top: y - 1.5,
-              width: nodeX - nodeW / 2 - railX,
-              height: 3,
-              background: alpha(palette.accent, current ? 0.9 : 0.3),
-            }}
-          />
-          <div
-            style={{
-              position: 'absolute',
-              left: nodeX - nodeW / 2,
-              top: y - nodeH / 2,
-              width: nodeW,
-              height: nodeH,
-              opacity: weight,
-              transform: `translateX(${(1 - weight) * 40}px)`,
-              borderRadius: 20,
-              background: alpha(shade(palette.ink, 0.1), 0.94),
-              border: `3px solid ${border}`,
-              padding: '22px 26px',
-              display: 'flex',
-              flexDirection: 'column',
-              justifyContent: 'center',
-              gap: 8,
-              boxShadow: current ? `0 0 44px ${alpha(palette.accent, 0.35)}` : 'none',
-            }}
-          >
-            <div style={{display: 'flex', alignItems: 'center', gap: 14}}>
-              <div
-                style={{
-                  width: 40,
-                  height: 40,
-                  borderRadius: 20,
-                  background: current ? palette.accent : alpha(palette.accent, 0.35),
-                  color: shade(palette.ink, 0.4),
-                  fontFamily: theme.fontHeading,
-                  fontSize: 22,
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                }}
-              >
-                {i + 1}
+            <div
+              style={{
+                position: 'absolute',
+                left: railX,
+                top: y - 1.5,
+                width: nodeX - nodeW / 2 - railX,
+                height: 3,
+                background: alpha(tokens.accent, current ? 0.9 : 0.35),
+                ...lineDraw({
+                  frame: stepLocal,
+                  fps,
+                  durationInFrames: 14,
+                  orientation: 'horizontal',
+                }),
+              }}
+            />
+            <div
+              style={{
+                position: 'absolute',
+                left: nodeX - nodeW / 2,
+                top: y - nodeH / 2,
+                width: nodeW,
+                height: nodeH,
+                opacity: cardReveal.opacity,
+                clipPath: isRevealed ? undefined : cardReveal.clipPath,
+                transform: slide.transform,
+                borderRadius: 20,
+                background: tokens.elevatedSurface,
+                border: `2px solid ${border}`,
+                padding: '22px 26px',
+                display: 'flex',
+                flexDirection: 'column',
+                justifyContent: 'center',
+                gap: 8,
+                boxShadow: current
+                  ? `0 0 36px ${alpha(tokens.accent, 0.3)}, ${tokens.shadow.md}`
+                  : tokens.shadow.md,
+              }}
+            >
+              <div style={{display: 'flex', alignItems: 'center', gap: 14}}>
+                <div
+                  style={{
+                    width: 42,
+                    height: 42,
+                    borderRadius: 21,
+                    background: current ? tokens.accent : alpha(stepColor, 0.16),
+                    border: `1.5px solid ${current ? tokens.accent : alpha(stepColor, 0.35)}`,
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    flexShrink: 0,
+                  }}
+                >
+                  <Label
+                    tokens={tokens}
+                    color={current ? '#FFFFFF' : stepColor}
+                    style={{fontSize: 22, fontWeight: 700, lineHeight: 1}}
+                  >
+                    {i + 1}
+                  </Label>
+                </div>
+                <Body
+                  tokens={tokens}
+                  small
+                  style={{
+                    fontWeight: 600,
+                    color: tokens.textPrimary,
+                    lineHeight: 1.2,
+                  }}
+                >
+                  {step.label}
+                </Body>
               </div>
-              <div style={{fontFamily: theme.fontHeading, fontSize: 38, color: theme.primary, lineHeight: 1.1}}>
-                {step.label}
-              </div>
+              {step.detail ? (
+                <Body
+                  tokens={tokens}
+                  small
+                  style={{
+                    fontSize: 34,
+                    color: tokens.textSecondary,
+                    lineHeight: 1.3,
+                    marginLeft: 56,
+                  }}
+                >
+                  {step.detail}
+                </Body>
+              ) : null}
             </div>
-            {step.detail ? (
-              <div style={{fontFamily: theme.fontBody, fontSize: 26, color: theme.secondary, lineHeight: 1.25}}>
-                {step.detail}
-              </div>
-            ) : null}
-          </div>
           </React.Fragment>
         );
       })}
@@ -160,10 +212,10 @@ export const ProcessFlowScene: React.FC<SceneProps> = ({scene, theme: inputTheme
           position: 'absolute',
           left: 72,
           right: 72,
-          bottom: 190,
+          bottom: 440,
           height: 8,
           borderRadius: 4,
-          background: alpha(palette.accent, 0.2),
+          background: alpha(tokens.line, 0.75),
           overflow: 'hidden',
         }}
       >
@@ -173,8 +225,10 @@ export const ProcessFlowScene: React.FC<SceneProps> = ({scene, theme: inputTheme
             width: `${interpolate(frame, [0, stepAt(count - 1) + LINK_FRAMES], [0, 100], {
               extrapolateLeft: 'clamp',
               extrapolateRight: 'clamp',
+              easing: EDITORIAL_EASING.smoothOut,
             })}%`,
-            background: palette.accent,
+            background: tokens.accent,
+            borderRadius: 4,
           }}
         />
       </div>

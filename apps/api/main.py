@@ -42,6 +42,7 @@ from .schemas import (
     CreateJobBody,
     DiscoverTopicsBody,
     MetadataBody,
+    PresetBody,
     ProviderBody,
     PublishBody,
     ReconcileBody,
@@ -115,6 +116,7 @@ def _recover_interrupted(app_state: AppState, service: JobService) -> list[str]:
             JobState.STORYBOARD_READY,
             JobState.ASSETS_READY,
             JobState.AUDIO_READY,
+            JobState.MOTION_READY,
             JobState.RENDERING,
             JobState.TECHNICAL_QC,
             JobState.EDITORIAL_QC,
@@ -391,6 +393,109 @@ def create_app(state: AppState | None = None) -> FastAPI:
             "bindings": [
                 {"agent": agent, **binding} for agent, binding in app_state.bindings.items()
             ],
+            "preset": app_state.preset,
+        }
+
+    # ---------------------------------------------------------------- presets
+    @app.get("/api/presets")
+    def list_presets() -> dict[str, Any]:
+        """Every preset with whether it can actually run on the current configuration.
+
+        ``serviceable`` is computed from the registry, not asserted: a preset whose provider is
+        missing or capability-poor reports ``false`` here rather than being offered as a choice the
+        studio cannot honour.
+        """
+        from packages.core.providers.presets import PRESETS, preset_view
+
+        return {
+            "presets": [preset_view(preset, app_state.registry) for preset in PRESETS.values()],
+            "active": app_state.preset,
+        }
+
+    @app.put("/api/presets")
+    def activate_preset(body: PresetBody, _: None = Depends(require_token)) -> dict[str, Any]:
+        """Activate one production preset across every LLM agent, or clear it.
+
+        The whole binding set is written durably in one save, so a restart lands on the same
+        routing rather than on whatever the previous per-agent file happened to contain. An
+        unserviceable preset is refused (422): activating routing the studio cannot honour would
+        turn the first job into a mystery failure.
+        """
+        from packages.core.providers.presets import (
+            PRESETS,
+            PresetError,
+            apply_preset,
+            get_preset,
+            preset_view,
+        )
+
+        if body.preset is None:
+            app_state.preset = None
+            return {"status": "ok", "preset": None, "bindings": app_state.bindings}
+        try:
+            preset = get_preset(body.preset)
+        except PresetError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        try:
+            bindings, gaps = apply_preset(
+                body.preset,
+                app_state.registry,
+                model=body.model,
+                allow_fallback=body.allow_fallback,
+                fallback=body.fallback,
+            )
+        except PresetError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        view = preset_view(preset, app_state.registry)
+        if view["serviceable"] is False:
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"preset {body.preset!r} needs provider {preset.provider!r} with "
+                    f"{sorted(preset.require_capabilities)}; it is not serviceable now"
+                ),
+            )
+        # Every candidate must exist and be unique before anything is persisted, same rule the
+        # per-agent binding route enforces: a binding that names a provider which does not exist
+        # would only fail later, at the moment a job needs it.
+        for agent, binding in bindings.items():
+            candidates = [binding["primary"], *binding["fallback"]]
+            if len(set(candidates)) != len(candidates):
+                raise HTTPException(
+                    status_code=422, detail=f"duplicate provider candidate for {agent}"
+                )
+            for candidate in candidates:
+                if candidate not in app_state.registry.specs:
+                    raise HTTPException(
+                        status_code=422, detail=f"unknown provider {candidate!r} for {agent}"
+                    )
+        from .config import ConfigStore
+
+        store = ConfigStore(app_state.settings.studio_config, secrets=app_state.secrets)
+        try:
+            config = store.load()
+        except ConfigError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        config.preset = body.preset
+        # Every agent gets the same fallback list, so the union is that list — derived rather than
+        # recomputed, so what is persisted is exactly what was just bound.
+        config.preset_fallback = sorted({f for b in bindings.values() for f in b["fallback"]})
+        config.bindings = [
+            {"agent": agent, **binding} for agent, binding in bindings.items()
+        ]
+        try:
+            store.save(config)
+        except ConfigError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        with app_state.lock:
+            app_state.bindings.update(bindings)
+            app_state.preset = body.preset
+        return {
+            "status": "ok",
+            "preset": body.preset,
+            "gaps": gaps,
+            "bindings": app_state.bindings,
+            "presets": [preset_view(p, app_state.registry) for p in PRESETS.values()],
         }
 
     @app.put("/api/providers/bindings")

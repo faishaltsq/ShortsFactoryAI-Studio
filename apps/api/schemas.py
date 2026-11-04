@@ -137,6 +137,22 @@ class BindingsBody(BaseModel):
     bindings: list[AgentBindingBody] = Field(default_factory=list)
 
 
+class PresetBody(BaseModel):
+    """Activate a production preset, or clear it with an explicit null.
+
+    ``allow_fallback`` is deliberately opt-in per request: the StepFun presets default to *off*,
+    so an unreachable endpoint is a loud ``NoProviderAvailable`` rather than a silent reroute to
+    another model family.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    preset: str | None = Field(default=None, max_length=64)
+    model: str | None = Field(default=None, max_length=200)
+    allow_fallback: bool | None = None
+    fallback: list[str] = Field(default_factory=list, max_length=8)
+
+
 class StudioPatch(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

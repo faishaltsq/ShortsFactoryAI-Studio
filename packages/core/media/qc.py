@@ -80,6 +80,10 @@ CREATIVE_THRESHOLDS: dict[str, str] = {
     "segment_mapping": "every scene segment in the script and every script segment in a scene",
     "object_consistency": ">= 1 rendered object, every kind drawn by the shipped library",
     "concrete_subjects": "mandatory concrete objects match script domain when specified",
+    "narration_visual_relevance": "every scene whose narration names a domain subject draws it in that scene",
+    "cause_effect": "a declared causal cycle is complete and its resulting state differs from its initial state",
+    "transition_continuity": "a scene declaring continuity 'carry' shares an object kind with the previous scene",
+    "visual_payoff": "the final scene draws something and records a resulting state when it declares a causal cycle",
     "safe_zones": "elements positioned within YouTube Shorts safe margins",
     "bme_dynamics": "no static scene across B/M/E keyframe deltas",
 }
@@ -220,6 +224,51 @@ def _duration_ms(probe: dict[str, Any]) -> float | None:
         return float(raw) * 1000.0
     except (TypeError, ValueError):
         return None
+
+
+#: ``(keywords, expected object kind(s))``: a script that discusses this subject must draw it.
+#: One table, two checks — the script-wide ``concrete_subjects`` gate and the per-scene
+#: ``narration_visual_relevance`` gate — so a subject cannot be required in one and optional in the
+#: other.
+DOMAIN_REQUIREMENTS: tuple[tuple[tuple[str, ...], str | tuple[str, ...]], ...] = (
+    (("mesh", "wireframe", "edge loop", "poligon", "topologi"), "meshTopology"),
+    (("sculpt", "clay", "volume sculpting", "pahat"), "claySculpt"),
+    (("arsitektur cloud", "microservice", "load balancer"), "cloudArch"),
+    (("multicore", "processor", "prosesor cpu"), "cpuProcessor"),
+    (("quantum", "qubit", "superkonduktor"), "quantumProcessor"),
+    (("serat optik", "kabel optik"), ("opticalFiber", "subseaCableCutaway")),
+    (("kabel bawah laut", "kabel laut", "subsea cable"), "subseaCableCutaway"),
+    (("mi instan", "mie instan", "ramen"), "ramenBowl"),
+    (("panci", "merebus", "memasak mi"), "cookingPot"),
+    (("bumi", "planet bumi", "globe"), "planetEarth"),
+)
+
+
+def _expected_kinds(text: str) -> set[str]:
+    """Which concrete subjects a piece of narration requires, from the shared table."""
+    lowered = text.lower()
+    expected: set[str] = set()
+    for keywords, want in DOMAIN_REQUIREMENTS:
+        if any(keyword in lowered for keyword in keywords):
+            if isinstance(want, tuple):
+                expected.update(want)
+            else:
+                expected.add(want)
+    return expected
+
+
+def _scene_kinds(scene: dict[str, Any]) -> set[str]:
+    data = scene.get("data")
+    if not isinstance(data, dict):
+        return set()
+    objects = data.get("objects")
+    if not isinstance(objects, list):
+        return set()
+    return {
+        str(item.get("kind"))
+        for item in objects
+        if isinstance(item, dict) and isinstance(item.get("kind"), str)
+    }
 
 
 def _scenes(props: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1190,20 +1239,8 @@ def evaluate_creative(
         ).lower()
 
     if script_text:
-        domain_requirements = [
-            (("mesh", "wireframe", "edge loop", "poligon", "topologi"), "meshTopology"),
-            (("sculpt", "clay", "volume sculpting", "pahat"), "claySculpt"),
-            (("arsitektur cloud", "microservice", "load balancer"), "cloudArch"),
-            (("multicore", "processor", "prosesor cpu"), "cpuProcessor"),
-            (("quantum", "qubit", "superkonduktor"), "quantumProcessor"),
-            (("serat optik", "kabel optik"), ("opticalFiber", "subseaCableCutaway")),
-            (("kabel bawah laut", "kabel laut", "subsea cable"), "subseaCableCutaway"),
-            (("mi instan", "mie instan", "ramen"), "ramenBowl"),
-            (("panci", "merebus", "memasak mi"), "cookingPot"),
-            (("bumi", "planet bumi", "globe"), "planetEarth"),
-        ]
         rendered_kinds = set(kinds)
-        for keywords, expected in domain_requirements:
+        for keywords, expected in DOMAIN_REQUIREMENTS:
             expected_set = set(expected) if isinstance(expected, tuple) else {expected}
             if any(kw in script_text for kw in keywords):
                 if not (expected_set & rendered_kinds):
@@ -1265,6 +1302,96 @@ def evaluate_creative(
     metrics["repetition"] = worst
     metrics["history_compared"] = len(prior)
     checks["repetition"] = worst <= 0.8
+
+    # narration_visual_relevance -- per scene, not per film. The script-wide `concrete_subjects`
+    # check lets one scene carry a subject the whole film needs; this one asks whether *this*
+    # scene's own narration is illustrated by *this* scene. A film where the ramen shot is the
+    # only one that mentions ramen, and ramen is drawn two shots later, passes the script-wide
+    # check and fails the viewer.
+    segment_text_by_id: dict[str, str] = {}
+    if isinstance(script, dict) and isinstance(script.get("segments"), list):
+        for item in script["segments"]:
+            if isinstance(item, dict) and item.get("id") is not None:
+                segment_text_by_id[str(item["id"])] = str(item.get("text") or "")
+    irrelevant_scenes: list[str] = []
+    relevance_checked = 0
+    for scene in scenes:
+        segment_id = scene.get("segment")
+        if not isinstance(segment_id, str) or segment_id not in segment_text_by_id:
+            continue
+        needed = _expected_kinds(segment_text_by_id[segment_id])
+        if not needed:
+            continue
+        relevance_checked += 1
+        if not (needed & _scene_kinds(scene)):
+            irrelevant_scenes.append(str(scene.get("sceneId") or segment_id))
+    metrics["narration_relevance_checked"] = relevance_checked
+    metrics["narration_relevance_missing"] = irrelevant_scenes
+    checks["narration_visual_relevance"] = not irrelevant_scenes
+
+    # cause_effect -- a declared causal cycle must actually be one. Conditional on declaration
+    # because ``SceneSpec.causal_state`` is optional in the contract, and a gate that requires it
+    # would make the contract's own optionality a lie. What it does enforce is that a storyboard
+    # which *claims* to show a transformation shows one: all four parts stated, and a resulting
+    # state that differs from the initial one.
+    incomplete_causal: list[str] = []
+    unchanged_causal: list[str] = []
+    causal_declared = 0
+    for scene in scenes:
+        causal = scene.get("causal_state")
+        if not isinstance(causal, dict):
+            continue
+        causal_declared += 1
+        scene_id = str(scene.get("sceneId") or "?")
+        initial = str(causal.get("initial_state") or "").strip()
+        action = str(causal.get("causal_action") or "").strip()
+        result = str(causal.get("resulting_state") or "").strip()
+        tie = str(causal.get("transition") or "").strip()
+        if not (initial and action and result and tie):
+            incomplete_causal.append(scene_id)
+        elif initial.lower() == result.lower():
+            unchanged_causal.append(scene_id)
+    metrics["causal_scenes_declared"] = causal_declared
+    metrics["causal_scenes_incomplete"] = incomplete_causal
+    metrics["causal_scenes_unchanged"] = unchanged_causal
+    checks["cause_effect"] = not incomplete_causal and not unchanged_causal
+
+    # continuity -- a shot that declares 'carry' must carry something. This is the measured form of
+    # FR: a subject that survives a cut has to remain recognisable, and a storyboard that says
+    # 'carry' while drawing an entirely new set of objects is claiming continuity it did not build.
+    continuity_declared = 0
+    continuity_violations: list[str] = []
+    previous_kinds: set[str] = set()
+    for index, scene in enumerate(scenes):
+        raw_motion = scene.get("motion")
+        motion: dict[str, Any] = raw_motion if isinstance(raw_motion, dict) else {}
+        kinds_here = _scene_kinds(scene)
+        if index > 0 and str(motion.get("continuity") or "").lower() == "carry":
+            continuity_declared += 1
+            if not (kinds_here & previous_kinds):
+                continuity_violations.append(str(scene.get("sceneId") or index))
+        previous_kinds = kinds_here
+    metrics["continuity_declared"] = continuity_declared
+    metrics["continuity_violations"] = continuity_violations
+    checks["transition_continuity"] = not continuity_violations
+
+    # visual_payoff -- the last shot has something on screen, and if it states a causal cycle that
+    # cycle has arrived somewhere. A final scene that names an initial state identical to its
+    # resulting state ends the film where it began.
+    payoff_problems: list[str] = []
+    if not scenes:
+        payoff_problems.append("no scenes")
+    else:
+        last = scenes[-1]
+        if not _scene_kinds(last):
+            payoff_problems.append("final scene draws nothing")
+        last_causal = last.get("causal_state")
+        if isinstance(last_causal, dict):
+            result = str(last_causal.get("resulting_state") or "").strip()
+            if not result:
+                payoff_problems.append("final scene records no resulting state")
+    metrics["visual_payoff_problems"] = payoff_problems
+    checks["visual_payoff"] = not payoff_problems
 
     if bme_dynamics is not None:
         metrics["bme_dynamics"] = bme_dynamics

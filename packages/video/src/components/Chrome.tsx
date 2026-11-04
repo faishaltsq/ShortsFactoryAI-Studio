@@ -1,12 +1,20 @@
 import React from 'react';
 import {useCurrentFrame} from 'remotion';
 import type {ThemeSpec} from '../types';
+import {DEFAULT_TOKENS, type ThemeTokens} from '../themes/tokens';
+import {Kicker, Label} from './Typography';
 import {pinnedOverlayStyle} from './CameraPinning';
 
-export const Background: React.FC<{theme: ThemeSpec; variant?: 'gradient' | 'radial' | 'split'}> = ({
+export const Background: React.FC<{
+  theme: ThemeSpec;
+  variant?: 'gradient' | 'radial' | 'split';
+  tokens?: ThemeTokens;
+}> = ({
   theme,
   variant = 'gradient',
+  tokens: tokensProp,
 }) => {
+  const tokens = tokensProp ?? theme?.tokens ?? DEFAULT_TOKENS;
   let frame = 0;
   try {
     frame = useCurrentFrame();
@@ -20,7 +28,7 @@ export const Background: React.FC<{theme: ThemeSpec; variant?: 'gradient' | 'rad
         style={{
           position: 'absolute',
           inset: 0,
-          background: `radial-gradient(circle at 50% ${y.toFixed(2)}%, ${theme.backgroundAccent} 0%, ${theme.background} 62%)`,
+          background: `radial-gradient(circle at 50% ${y.toFixed(2)}%, ${tokens.surface} 0%, ${tokens.background} 62%)`,
         }}
       />
     );
@@ -29,12 +37,12 @@ export const Background: React.FC<{theme: ThemeSpec; variant?: 'gradient' | 'rad
     const y1 = 62 + Math.sin(frame / 45) * 1.5;
     const y2 = 44 + Math.cos(frame / 40) * 1.5;
     return (
-      <div style={{position: 'absolute', inset: 0, background: theme.background}}>
+      <div style={{position: 'absolute', inset: 0, background: tokens.background}}>
         <div
           style={{
             position: 'absolute',
             inset: 0,
-            background: theme.backgroundAccent,
+            background: tokens.surface,
             clipPath: `polygon(0 ${y1.toFixed(2)}%, 100% ${y2.toFixed(2)}%, 100% 100%, 0 100%)`,
           }}
         />
@@ -47,13 +55,13 @@ export const Background: React.FC<{theme: ThemeSpec; variant?: 'gradient' | 'rad
       style={{
         position: 'absolute',
         inset: 0,
-        background: `linear-gradient(${angle.toFixed(2)}deg, ${theme.backgroundAccent} 0%, ${theme.background} 55%, ${theme.backgroundAccent} 100%)`,
+        background: `linear-gradient(${angle.toFixed(2)}deg, ${tokens.surface} 0%, ${tokens.background} 55%, ${tokens.surface} 100%)`,
       }}
     />
   );
 };
 
-export const SafeArea: React.FC<{children: React.ReactNode; top?: number; bottom?: number}> = ({children, top = 260, bottom = 320}) => (
+export const SafeArea: React.FC<{children: React.ReactNode; top?: number; bottom?: number}> = ({children, top = 260, bottom = 420}) => (
   <div
     style={{
       position: 'absolute',
@@ -70,30 +78,46 @@ export const SafeArea: React.FC<{children: React.ReactNode; top?: number; bottom
   </div>
 );
 
-export const AccentBar: React.FC<{theme: ThemeSpec; width?: number}> = ({theme, width = 180}) => (
-  <div style={{width, height: 14, borderRadius: 7, backgroundColor: theme.accent}} />
-);
+export const AccentBar: React.FC<{
+  theme: ThemeSpec;
+  width?: number;
+  label?: string;
+  tokens?: ThemeTokens;
+}> = ({theme, width = 180, label, tokens: tokensProp}) => {
+  const tokens = tokensProp ?? theme?.tokens ?? DEFAULT_TOKENS;
+  const bar = <div style={{width, height: 14, borderRadius: 7, backgroundColor: tokens.accent}} />;
+  if (!label) return bar;
+  return (
+    <div style={{display: 'inline-flex', alignItems: 'center', gap: 12}}>
+      {bar}
+      <Label tokens={tokens}>{label}</Label>
+    </div>
+  );
+};
 
-export const Watermark: React.FC<{text: string; theme: ThemeSpec; opacity?: number}> = ({text, theme, opacity = 0.55}) => {
+export const Watermark: React.FC<{
+  text: string;
+  theme: ThemeSpec;
+  opacity?: number;
+  tokens?: ThemeTokens;
+}> = ({text, theme, opacity = 0.55, tokens: tokensProp}) => {
+  const tokens = tokensProp ?? theme?.tokens ?? DEFAULT_TOKENS;
   // The watermark is an annotation like the title band: pinned to the frame while the camera
   // moves the stage, so it cannot slide off-screen on a pan.
   const pinned = pinnedOverlayStyle();
   return (
-    <div
+    <Kicker
+      tokens={tokens}
+      color={tokens.textMuted}
       style={{
         position: 'absolute',
-        top: 150,
+        top: 230,
         left: 72,
-        fontFamily: theme.fontBody,
-        fontSize: 34,
-        letterSpacing: 4,
-        textTransform: 'uppercase',
-        color: theme.secondary,
         opacity,
         ...pinned,
       }}
     >
       {text}
-    </div>
+    </Kicker>
   );
 };

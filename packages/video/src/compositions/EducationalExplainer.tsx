@@ -2,9 +2,14 @@ import React from 'react';
 import {interpolate, useCurrentFrame, useVideoConfig} from 'remotion';
 import type {SceneSpec, ThemeSpec} from '../types';
 import {resolveTheme} from '../themes/brand';
+import {DEFAULT_TOKENS} from '../themes/tokens';
+import {TYPE_SCALE} from '../themes/type';
+import {Body, Headline, Kicker} from '../components/Typography';
+import {cohesiveGroupReveal, lineDraw, softSlideFade} from '../components/motion';
 import {AccentBar, Background, SafeArea, Watermark} from '../components/Chrome';
-import {fadeIn, popIn, slideUp} from '../components/presets';
 import {rand} from '../art/rng';
+import {alpha} from '../art/palette';
+
 const bulletsOf = (scene: SceneSpec): string[] => {
   const raw = scene.data?.bullets;
   if (Array.isArray(raw)) return raw.map(String);
@@ -21,18 +26,19 @@ export const EducationalExplainerScene: React.FC<{scene: SceneSpec; theme: Theme
   watermark,
 }) => {
   const theme = resolveTheme(inputTheme);
+  const tokens = theme.tokens ?? DEFAULT_TOKENS;
   const frame = useCurrentFrame();
   const {fps} = useVideoConfig();
   const durationInFrames = scene.durationInFrames;
   const title = scene.text.find((t) => t.style.role === 'title')?.text ?? scene.segment.slice(0, 60);
-  // A kicker is optional on-screen text. Falling back to `sceneId` printed the
-  // internal identifier ("sc1") into the video, so an absent kicker now renders nothing.
   const kicker = scene.text.find((t) => t.style.role === 'kicker')?.text ?? '';
   const bullets = bulletsOf(scene);
-  const titleAnim = slideUp({frame, fps, durationInFrames: 22, intensity: 0.5});
+
+  const headerReveal = cohesiveGroupReveal({frame, fps, durationInFrames: 22});
+  const barMotion = lineDraw({frame, fps, durationInFrames: 20});
 
   return (
-    <div style={{position: 'absolute', inset: 0}}>
+    <div style={{position: 'absolute', inset: 0, background: tokens.background}}>
       <Background theme={theme} variant="split" />
       <svg
         viewBox="0 0 1080 1920"
@@ -40,7 +46,7 @@ export const EducationalExplainerScene: React.FC<{scene: SceneSpec; theme: Theme
         style={{position: 'absolute', inset: 0, width: '100%', height: '100%', pointerEvents: 'none'}}
         aria-hidden="true"
       >
-        <g fill={theme.accent}>
+        <g fill={tokens.accent}>
           {Array.from({length: 32}, (_, i) => {
             const drift = frame * (0.8 + rand(i + 7) * 1.6);
             const x = rand(i + 21) * 1080 + Math.sin(frame / 40 + i) * 24;
@@ -51,7 +57,7 @@ export const EducationalExplainerScene: React.FC<{scene: SceneSpec; theme: Theme
                 cx={x}
                 cy={y}
                 r={2 + rand(i + 91) * 3}
-                opacity={0.16 + rand(i + 3) * 0.25}
+                opacity={0.12 + rand(i + 3) * 0.18}
               />
             );
           })}
@@ -59,53 +65,34 @@ export const EducationalExplainerScene: React.FC<{scene: SceneSpec; theme: Theme
       </svg>
       {watermark ? <Watermark text={watermark} theme={theme} /> : null}
       <SafeArea top={300} bottom={360}>
-        {kicker ? (
-          <div
-            style={{
-              fontFamily: theme.fontBody,
-              fontSize: 36,
-              letterSpacing: 6,
-              textTransform: 'uppercase',
-              color: theme.accent,
-              marginBottom: 26,
-              ...fadeIn({frame, fps, durationInFrames: 18}),
-            }}
-          >
-            {kicker}
+        <div style={{...headerReveal, marginBottom: 54}}>
+          {kicker ? (
+            <Kicker tokens={tokens} style={{marginBottom: 26}}>
+              {kicker}
+            </Kicker>
+          ) : null}
+          <Headline tokens={tokens} style={{marginBottom: 28}}>
+            {title}
+          </Headline>
+          <div style={barMotion}>
+            <AccentBar theme={theme} width={140} />
           </div>
-        ) : null}
-        <div
-          style={{
-            ...titleAnim,
-            fontFamily: theme.fontHeading,
-            fontSize: 82,
-            lineHeight: 1.1,
-            color: theme.primary,
-            marginBottom: 54,
-          }}
-        >
-          {title}
-        </div>
-        <div style={{marginBottom: 54}}>
-          <AccentBar theme={theme} width={140} />
         </div>
         <div style={{display: 'flex', flexDirection: 'column', gap: 34}}>
           {bullets.map((b, i) => {
-            const local = frame - 18 - i * 14;
-            const anim = popIn({frame: Math.max(0, local), fps, durationInFrames: 24, intensity: 0.8});
+            const delay = 18 + i * 14;
+            const local = Math.max(0, frame - delay);
+            const anim = softSlideFade({frame: local, fps, durationInFrames: 20, distance: 24, direction: 'up'});
+            const isVisible = frame >= delay;
             return (
               <div
                 key={`${b}-${i}`}
                 style={{
                   ...anim,
-                  opacity: local < 0 ? 0 : anim.opacity,
+                  opacity: isVisible ? anim.opacity : 0,
                   display: 'flex',
                   alignItems: 'flex-start',
                   gap: 24,
-                  fontFamily: theme.fontBody,
-                  fontSize: 46,
-                  lineHeight: 1.3,
-                  color: theme.secondary,
                 }}
               >
                 <span
@@ -114,29 +101,41 @@ export const EducationalExplainerScene: React.FC<{scene: SceneSpec; theme: Theme
                     width: 54,
                     height: 54,
                     borderRadius: 27,
-                    backgroundColor: theme.accent,
-                    color: theme.background,
+                    backgroundColor: tokens.accent,
+                    color: tokens.surface,
                     display: 'flex',
                     alignItems: 'center',
                     justifyContent: 'center',
-                    fontWeight: 800,
-                    fontSize: 34,
+                    fontWeight: 700,
+                    fontSize: 32,
+                    fontFamily: TYPE_SCALE.techLabel.fontFamily,
                   }}
                 >
                   {i + 1}
                 </span>
-                <span>{b.trim()}</span>
+                <Body tokens={tokens} color={tokens.textSecondary} style={{flex: 1, lineHeight: 1.3}}>
+                  {b.trim()}
+                </Body>
               </div>
             );
           })}
         </div>
       </SafeArea>
-      <div style={{position: 'absolute', left: 0, right: 0, bottom: 210, height: 10, backgroundColor: 'rgba(255,255,255,0.14)'}}>
+      <div
+        style={{
+          position: 'absolute',
+          left: 0,
+          right: 0,
+          bottom: 440,
+          height: 10,
+          backgroundColor: alpha(tokens.line, 0.6),
+        }}
+      >
         <div
           style={{
             height: '100%',
             width: `${interpolate(frame, [0, durationInFrames], [0, 100], {extrapolateRight: 'clamp'})}%`,
-            backgroundColor: theme.accent,
+            backgroundColor: tokens.accent,
           }}
         />
       </div>

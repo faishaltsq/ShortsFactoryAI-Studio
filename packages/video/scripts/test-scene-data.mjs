@@ -1,22 +1,33 @@
 import assert from 'node:assert/strict';
 import {readFileSync} from 'node:fs';
 import {createRequire} from 'node:module';
+import path from 'node:path';
+import {fileURLToPath} from 'node:url';
 import ts from 'typescript';
 import vm from 'node:vm';
 // `scene-data.ts` imports the object vocabulary, so this loader resolves local
 // modules instead of assuming a single file. Keeping the suite dependency-free (no
 // test runner, no bundler) is the convention in this package.
-const base = new URL('../src/', import.meta.url);
+const srcDir = fileURLToPath(new URL('../src/', import.meta.url));
 const cache = new Map();
-const load = (specifier) => {
-  const rel = specifier.replace(/^\.\//, '');
+/** Resolve a specifier against the importing module's directory (relative to src/). */
+const toRel = (fromRel, specifier) => {
+  const abs = path.resolve(path.dirname(path.join(srcDir, fromRel)), specifier);
+  const rel = path.relative(srcDir, abs).split(path.sep).join('/');
+  return rel.startsWith('.') ? rel : `./${rel}`;
+};
+const load = (rel0) => {
+  const rel = rel0.replace(/^\.\//, '').replace(/\.ts$/, '');
   if (cache.has(rel)) return cache.get(rel);
-  const source = readFileSync(new URL(`${rel}.ts`, base), 'utf8');
+  const source = readFileSync(path.join(srcDir, `${rel}.ts`), 'utf8');
   const compiled = ts.transpileModule(source, {
     compilerOptions: {module: ts.ModuleKind.CommonJS, target: ts.ScriptTarget.ES2022},
   }).outputText;
   const module = {exports: {}};
-  vm.runInNewContext(compiled, {module, exports: module.exports, require: load, console, Math, Number, Object, Array, String, JSON});
+  // Each module gets a require that resolves against its own directory, so nested
+  // `../themes/...` imports resolve the same way tsc resolves them.
+  const require = (specifier) => load(toRel(rel, specifier));
+  vm.runInNewContext(compiled, {module, exports: module.exports, require, console, Math, Number, Object, Array, String, JSON});
   cache.set(rel, module.exports);
   return module.exports;
 };

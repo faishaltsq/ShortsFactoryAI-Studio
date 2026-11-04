@@ -77,7 +77,7 @@ def test_publishing_a_mock_job_is_refused_with_the_publishable_reason(client, ap
     for st in (
         JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
-        JobState.AUDIO_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
+        JobState.AUDIO_READY, JobState.MOTION_READY, JobState.RENDERING, JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC, JobState.READY_FOR_APPROVAL,
     ):
         store.transition(job["id"], st)

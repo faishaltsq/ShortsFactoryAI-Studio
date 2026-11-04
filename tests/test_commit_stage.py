@@ -29,6 +29,7 @@ def _at_approving(store: JobStore, job_id: str) -> None:
         JobState.STORYBOARD_READY,
         JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
         JobState.RENDERING,
         JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC,

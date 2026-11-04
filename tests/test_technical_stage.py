@@ -164,6 +164,7 @@ def _job(store: JobStore, *, seconds: float = 3.0, still: bool = False, tone: bo
         JobState.STORYBOARD_READY,
         JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
         JobState.RENDERING,
     ):
         store.transition(job.id, state)
@@ -255,7 +256,7 @@ def test_a_missing_render_is_a_clean_stage_error_not_a_crash(store, tmp_path):
     for state_name in (
         JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
-        JobState.AUDIO_READY, JobState.RENDERING,
+        JobState.AUDIO_READY, JobState.MOTION_READY, JobState.RENDERING,
     ):
         store.transition(job.id, state_name)
     with pytest.raises(StageError) as exc:

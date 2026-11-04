@@ -1,13 +1,27 @@
 import React from 'react';
 import type {SubtitleCue, ThemeSpec} from '../types';
+import {DEFAULT_TOKENS, type ThemeTokens} from '../themes/tokens';
+import {Caption} from './Typography';
+import {alpha} from '../art/palette';
 
-export const Subtitles: React.FC<{cues: SubtitleCue[]; theme: ThemeSpec; currentFrame: number; fps: number; bottom?: number}> = ({
+export interface SubtitlesProps {
+  cues: SubtitleCue[];
+  theme: ThemeSpec;
+  currentFrame: number;
+  fps: number;
+  bottom?: number;
+  tokens?: ThemeTokens;
+}
+
+export const Subtitles: React.FC<SubtitlesProps> = ({
   cues,
   theme,
   currentFrame,
   fps,
   bottom = 360,
+  tokens: tokensProp,
 }) => {
+  const tokens = tokensProp ?? theme?.tokens ?? DEFAULT_TOKENS;
   const tMs = (currentFrame / fps) * 1000;
   const active = cues.find((c) => tMs >= c.startMs && tMs < c.endMs);
   if (!active) return null;
@@ -19,14 +33,25 @@ export const Subtitles: React.FC<{cues: SubtitleCue[]; theme: ThemeSpec; current
         left: 90,
         right: 90,
         textAlign: 'center',
-        fontFamily: theme.fontHeading,
-        fontSize: 58,
-        lineHeight: 1.25,
-        color: '#ffffff',
-        textShadow: '0 2px 8px rgba(0,0,0,0.6)',
+        pointerEvents: 'none',
       }}
     >
-      <span style={{backgroundColor: 'rgba(15, 23, 42, 0.72)', borderRadius: 14, padding: '8px 20px'}}>{active.text}</span>
+      <span
+        style={{
+          display: 'inline-block',
+          backgroundColor: alpha(tokens.surface, 0.92),
+          boxShadow: tokens.shadow.md,
+          border: `1px solid ${alpha(tokens.line, 0.7)}`,
+          borderRadius: 14,
+          padding: '10px 24px',
+          maxWidth: '100%',
+        }}
+      >
+        <Caption tokens={tokens} color={tokens.textPrimary}>
+          {active.text}
+        </Caption>
+      </span>
     </div>
   );
 };
+

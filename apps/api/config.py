@@ -115,14 +115,55 @@ class RenderConfig:
 
 
 @dataclass
+class MotionConfig:
+    """How much Remotion skill reference the motion coder is allowed to read.
+
+    Configurable because the right size is an operator judgement about their endpoint's context
+    window and their token budget, not a constant this repo can know. The old behaviour — one
+    fixed budget for every skill, dumped into every request — is what ``skill_tokens`` replaces.
+    """
+
+    #: Token ceiling for the skill reference block in one motion-code request.
+    skill_tokens: int = 3000
+    #: How many installed skills may be selected per request. A wider net costs budget and, past a
+    #: point, relevance: the reference is guidance, not a manual.
+    skill_limit: int = 4
+
+    def validate(self) -> None:
+        if self.skill_tokens <= 0:
+            raise ConfigError("motion.skill_tokens must be a positive integer")
+        if not 1 <= self.skill_limit <= 12:
+            raise ConfigError("motion.skill_limit must be between 1 and 12")
+
+    def to_json(self) -> dict[str, Any]:
+        return {"skill_tokens": self.skill_tokens, "skill_limit": self.skill_limit}
+
+    @classmethod
+    def from_json(cls, payload: Any) -> MotionConfig:
+        if not isinstance(payload, dict):
+            raise ConfigError("motion must be an object")
+        return cls(
+            skill_tokens=int(payload.get("skill_tokens", 3000)),
+            skill_limit=int(payload.get("skill_limit", 4)),
+        )
+
+
+@dataclass
 class StudioConfig:
     """The whole durable configuration. ``unknown`` keeps unrelated operator keys."""
 
     providers: list[dict[str, Any]] = field(default_factory=list)
     bindings: list[dict[str, Any]] = field(default_factory=list)
+    preset: str | None = None
+    #: The operator's *explicit* fallback opt-in for the active preset. Empty means the preset's
+    #: own default, which is "no cross-family reroute": an unreachable endpoint must fail loudly.
+    #: It is persisted because the preset is re-expanded on every load, so a fallback that lived
+    #: only in the in-memory binding would silently disappear on the next restart.
+    preset_fallback: list[str] = field(default_factory=list)
     credential_origins: dict[str, dict[str, Any]] = field(default_factory=dict)
     budget: BudgetConfig = field(default_factory=BudgetConfig)
     render: RenderConfig = field(default_factory=RenderConfig)
+    motion: MotionConfig = field(default_factory=MotionConfig)
     prompt_overrides: dict[str, str] = field(default_factory=dict)
     unknown: dict[str, Any] = field(default_factory=dict)
     version: int = CONFIG_VERSION
@@ -132,9 +173,14 @@ class StudioConfig:
         payload.update(self.unknown)
         payload["providers"] = self.providers
         payload["bindings"] = self.bindings
+        if self.preset is not None:
+            payload["preset"] = self.preset
+        if self.preset_fallback:
+            payload["preset_fallback"] = self.preset_fallback
         payload["credential_origins"] = self.credential_origins
         payload["budget"] = self.budget.to_json()
         payload["render"] = self.render.to_json()
+        payload["motion"] = self.motion.to_json()
         payload["prompt_overrides"] = self.prompt_overrides
         return payload
 
@@ -152,18 +198,32 @@ class StudioConfig:
             "version",
             "providers",
             "bindings",
+            "preset",
+            "preset_fallback",
             "credential_origins",
             "budget",
             "render",
+            "motion",
             "prompt_overrides",
         }
         unknown = {key: value for key, value in payload.items() if key not in known}
+        preset = payload.get("preset")
+        if preset is not None and not isinstance(preset, str):
+            raise ConfigError("'preset' must be a string or null")
+        preset_fallback = payload.get("preset_fallback", [])
+        if not isinstance(preset_fallback, list) or not all(
+            isinstance(entry, str) for entry in preset_fallback
+        ):
+            raise ConfigError("'preset_fallback' must be a list of provider ids")
         return cls(
             providers=_provider_list(payload.get("providers", [])),
             bindings=_binding_list(payload.get("bindings", [])),
+            preset=preset,
+            preset_fallback=list(preset_fallback),
             credential_origins=_origins(payload.get("credential_origins", {})),
             budget=BudgetConfig.from_json(payload.get("budget", {})),
             render=RenderConfig.from_json(payload.get("render", {})),
+            motion=MotionConfig.from_json(payload.get("motion", {})),
             prompt_overrides=_prompt_overrides(payload.get("prompt_overrides", {})),
             unknown=unknown,
             version=version,
@@ -268,6 +328,7 @@ class ConfigStore:
         """Validate, then replace atomically. The runtime object is never half-swapped."""
         config.budget.validate()
         config.render.validate()
+        config.motion.validate()
         StudioConfig.from_json(config.to_json())  # round-trip: a candidate that cannot be read
         # back is not a candidate.
         payload = config.to_json()

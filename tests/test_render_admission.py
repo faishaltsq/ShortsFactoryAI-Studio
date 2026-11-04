@@ -159,6 +159,7 @@ def _pipeline_render_boundary(tmp_path, monkeypatch, policy):
         JobState.TOPIC_SELECTED, JobState.RESEARCH_COMPLETE, JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW, JobState.STORYBOARD_READY, JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
     ):
         store.transition(job.id, target)
     state = SimpleNamespace(store=store, events=StudioEventStore(store.db_path), render_policy=policy)

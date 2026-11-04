@@ -3,6 +3,7 @@
  * Remotion renderer. Every field here is produced by StoryboardAgent and
  * validated with JSON Schema on the Python side before render.
  */
+import type {ThemeTokens} from './themes/tokens';
 
 /**
  * A measured word window, scene-local milliseconds.
@@ -198,6 +199,10 @@ export interface ThemeSpec {
   accent: string;
   fontHeading: string;
   fontBody: string;
+  /** Technical/mono role (IBM Plex Mono) — numbers, metrics, chart labels. */
+  fontTechnical?: string;
+  /** Semantic design tokens; always attached by resolveTheme(). */
+  tokens?: ThemeTokens;
 }
 
 export interface StoryboardSpec {

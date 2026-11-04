@@ -7,6 +7,7 @@ import {ObjectStage} from '../art/Stage';
 import {paletteFor} from '../art/palette';
 import {ExplainerData, validateSceneData} from '../scene-data';
 import {resolveTheme} from '../themes/brand';
+import {DEFAULT_TOKENS} from '../themes/tokens';
 
 /**
  * `ObjectExplainer` — the engine's primary template.
@@ -48,6 +49,7 @@ const highlightsFromBeats = (
 
 export const ObjectExplainerScene: React.FC<SceneProps> = ({scene, theme: inputTheme, watermark}) => {
   const theme = resolveTheme(inputTheme);
+  const tokens = theme.tokens ?? DEFAULT_TOKENS;
   const frame = useCurrentFrame();
   validateSceneData(scene);
   const data = scene.data as unknown as ExplainerData;
@@ -80,7 +82,7 @@ export const ObjectExplainerScene: React.FC<SceneProps> = ({scene, theme: inputT
         environment={data.environment}
         palette={palette}
         frame={frame}
-        labelColor={theme.secondary}
+        labelColor={tokens.textSecondary}
         layoutMode={layoutMode}
         causalState={causalState}
       />

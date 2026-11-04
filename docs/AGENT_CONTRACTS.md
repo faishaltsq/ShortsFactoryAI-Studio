@@ -12,10 +12,11 @@ sequences itself.
 | `ResearchAgent` | worker | topic, avoid-list | `research.json` (candidates + `sources[]`) | yes |
 | `TopicSelectionAgent` | worker | `research.json` | `topic.json` (chosen, rationale) | yes |
 | `ScriptAgent` | worker | `topic.json`, `research.json` | `script.json` | yes |
-| `CreativeDirectorAgent` | strategist | `script.json` | `review.json` (verdict, findings) | yes |
-| `StoryboardAgent` | worker | `script.json`, character registry | `storyboard.json` (`SceneSpec[]`) | yes |
+| `CreativeDirectorAgent` | strategist | `script.json`, then `visual-plan.json` | `review.json` (verdict, findings); `visual-plan.json` (beats); `creative-motion-brief.json` (the film's identity) | yes |
+| `StoryboardAgent` | worker | `script.json`, `visual-plan.json`, `creative-motion-brief.json`, resolved assets | `storyboard.json` (`SceneSpec[]`) | yes |
 | `AssetAgent` | none | `storyboard.json` | `assets.json` + `assets-manifest.json` | no |
 | `AnimationAgent` | worker | `storyboard.json` | `motion-plan.json` (beats, camera, continuity) | yes |
+| `MotionCoderAgent` | worker | `storyboard.json`, `creative-motion-brief.json`, `visual-plan.json`, `script.json`, `research.json`, `assets.json`, measured narration timing | `motion-code.json` (TSX files, per-skill digests, narration timing digest) | yes |
 | `AudioAgent` | none | `storyboard.json` | `audio.json` (narration, cues, mix) | no (TTS) |
 | `EditorAgent` | none | storyboard + audio + motion plan | `edit.json` (scene order, transitions, captions) | no |
 | `QualityAgent` | strategist | render + props + audio + storyboard | `technical-qc.json` (FR-7.1, `TECHNICAL_QC`), `qc.json` + `qa-contact-sheet.jpg` (FR-7.2 and the visual pass, `EDITORIAL_QC`) | yes |
@@ -47,6 +48,12 @@ to any provider explicitly.
 | A8 | Cancellable and resumable | Cooperative cancel at stage boundaries; every stage idempotent on re-entry. |
 | A9 | No unverified success | A stage may only report `completed` after its artifact exists on disk and validates against its schema. |
 | A10 | No silent mock | A job records `provider_mode` at creation; `mock` jobs can never be approved for publishing. |
+| A11 | Provenance is written by code, never claimed by the model | `prompt_sha256`, `skill_hashes` (`<skill>:<sha256>` of the portion actually sent) and `narration_timing_sha256` are computed in `orchestration/pipeline.py` and `MotionCoderAgent.sanitize_payload`; a model-supplied list is discarded, because a list echoed by the model is a claim about its context rather than a record of it. |
+
+`MotionCoderAgent` is the one agent whose *output* is executable, so its rule is worth stating
+plainly: it writes TSX that the renderer loads, it receives the creative brief and the measured
+narration timing rather than a summary, and its reuse predicate compares the digest of the timing it
+was written against — see `ARCHITECTURE.md` ADR-011 and ADR-012.
 
 ## 3. Failure taxonomy
 

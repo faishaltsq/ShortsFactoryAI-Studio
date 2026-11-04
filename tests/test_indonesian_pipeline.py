@@ -44,18 +44,19 @@ def test_indonesian_pipeline_stages_and_chain():
         state = DummyState(store)
         stages = build_stages(state, job.id)
 
-        assert len(stages) == 14
+        assert len(stages) == 15
         assert [s.name for s in stages] == [
             "ResearchAgent",
             "TopicSelectionAgent",
             "ScriptAgent",
             "CreativeDirectorAgent",
             "CreativeDirectorAgent",
+            "CreativeDirectorAgent",
             "StoryboardAgent",
             "MetadataAgent",
-            "AnimationAgent",
             "AssetAgent",
             "AudioAgent",
+            "AnimationAgent",
             "RenderAgent",
             "QualityAgent",
             "QualityAgent",

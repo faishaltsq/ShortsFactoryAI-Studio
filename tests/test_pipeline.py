@@ -167,6 +167,8 @@ def test_stages_target_reachable_states(state, client):
         JobState.SCRIPT_GENERATED,
         JobState.CREATIVE_REVIEW,
         JobState.CREATIVE_REVIEW,
+        # The creative brief is a director decision on the same review state as the visual plan.
+        JobState.CREATIVE_REVIEW,
         JobState.STORYBOARD_READY,
         # MetadataAgent has no state of its own in the allow-list; it targets the state the job is
         # already in, which ``run_stages`` treats as a no-op rather than an illegal edge.
@@ -191,6 +193,8 @@ def test_render_stages_are_absent_unless_the_job_asks_for_video(state, client):
         "ScriptAgent",
         "CreativeDirectorAgent",
         "CreativeDirectorAgent",
+        # The film's creative identity, decided after the visual plan and before the shots.
+        "CreativeDirectorAgent",
         "StoryboardAgent",
         # Metadata is a provider call, not a render: it belongs in the agent-only chain, and the
         # publish stage reads it. It is last because it is derived from the script.
@@ -199,7 +203,10 @@ def test_render_stages_are_absent_unless_the_job_asks_for_video(state, client):
 
 
 def test_render_stages_walk_through_assets_audio_and_both_qc_gates(state, client):
-    """The real chain: assets, audio, render, technical QC, editorial QC.
+    """The real chain: assets, audio, motion, render, technical QC, editorial QC.
+
+    Motion code is generated after the narration it has to sync to and before the renderer that
+    reads it, so the motion stage sits between audio and render rather than before assets.
 
     Exactly one technical stage exists. The old one in ``media/render.py`` wrote ``qc.json``
     before any detector ran; it is gone, so ``QualityAgent`` appears once per gate and the
@@ -215,17 +222,19 @@ def test_render_stages_walk_through_assets_audio_and_both_qc_gates(state, client
         },
     ).json()
     stages = build_stages(state, job["id"])
-    assert [stage.name for stage in stages][-6:] == [
+    assert [stage.name for stage in stages][-7:] == [
         "AssetAgent",
         "AudioAgent",
+        "AnimationAgent",
         "RenderAgent",
         "QualityAgent",
         "QualityAgent",
         "DirectorAgent",
     ]
-    assert [stage.state for stage in stages][-6:] == [
+    assert [stage.state for stage in stages][-7:] == [
         JobState.ASSETS_READY,
         JobState.AUDIO_READY,
+        JobState.MOTION_READY,
         JobState.RENDERING,
         JobState.TECHNICAL_QC,
         JobState.EDITORIAL_QC,
@@ -246,7 +255,12 @@ def test_the_render_chain_is_reachable_without_an_illegal_transition(state, clie
               "voice": "system-default"},
     ).json()
     stages = build_stages(state, job["id"])
-    _validate_chain(JobState.STORYBOARD_READY, stages[5:])
+    # From the storyboard on: an index would silently test the wrong stages the next time a stage
+    # is added before it, which is exactly what happened when the brief stage appeared.
+    storyboard_at = next(
+        index for index, stage in enumerate(stages) if stage.name == "StoryboardAgent"
+    )
+    _validate_chain(JobState.STORYBOARD_READY, stages[storyboard_at:])
     assert stages[-1].state is JobState.READY_FOR_APPROVAL
 
 
