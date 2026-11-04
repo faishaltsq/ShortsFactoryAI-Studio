@@ -298,31 +298,33 @@ def build_editorial_qc_stage(state: Any) -> Stage:
             )
 
             static_seconds, _ = measure_static(video)
-            bme_dynamics = None
-            if video.is_file():
-                try:
-                    scenes = props.get("scenes", []) if isinstance(props, dict) and props.get("scenes") else storyboard.get("scenes", [])
-                    if isinstance(scenes, list) and scenes:
-                        valid_scenes = [
-                            s
-                            for s in scenes
-                            if isinstance(s, dict)
-                            and isinstance(s.get("startFrame"), int)
-                            and isinstance(s.get("durationInFrames"), int)
-                            and int(s.get("durationInFrames") or 0) > 0
-                        ]
-                        if valid_scenes:
-                            scene_points = [
-                                get_bme_frame_indices(
-                                    int(s["startFrame"]),
-                                    int(s["durationInFrames"]),
-                                )
-                                for s in valid_scenes
-                            ]
-                            bme_frames = extract_bme_frames(video, scene_points)
-                            bme_dynamics = evaluate_bme_dynamics(valid_scenes, bme_frames)
-                except Exception:
-                    bme_dynamics = None
+            scenes = props.get("scenes") or storyboard.get("scenes", [])
+            bme_scenes: list[dict[str, Any]] = (
+                [scene for scene in scenes if isinstance(scene, dict)]
+                if isinstance(scenes, list) else []
+            )
+            bme_dynamics = evaluate_bme_dynamics(bme_scenes, [])
+            try:
+                if not video.is_file():
+                    raise RuntimeError("B/M/E video unavailable")
+                if not bme_scenes or len(bme_scenes) != len(scenes):
+                    raise RuntimeError("B/M/E scene list missing or malformed")
+                if any(
+                    type(scene.get("startFrame")) is not int
+                    or type(scene.get("durationInFrames")) is not int
+                    or scene["startFrame"] < 0
+                    or scene["durationInFrames"] <= 0
+                    for scene in bme_scenes
+                ):
+                    raise RuntimeError("B/M/E scene timing missing or invalid")
+                scene_points = [
+                    get_bme_frame_indices(scene["startFrame"], scene["durationInFrames"])
+                    for scene in bme_scenes
+                ]
+                bme_frames = extract_bme_frames(video, scene_points)
+                bme_dynamics = evaluate_bme_dynamics(bme_scenes, bme_frames)
+            except Exception as exc:  # noqa: BLE001 - missing measurements remain explicit evidence
+                bme_dynamics["error"] = redact(f"{type(exc).__name__}: {exc}", limit=200)
 
             creative = evaluate_creative(
                 props={"storyboard": props},
