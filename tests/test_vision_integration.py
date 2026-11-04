@@ -145,6 +145,7 @@ def test_anthropic_vision_resolves_and_sends_a_base64_block_with_the_exact_bytes
     from packages.core.providers.anthropic import AnthropicProvider
 
     with StubServer() as server:
+        server.route("GET", "/v1/models", body={"data": [{"id": "claude-vision"}]})
         server.route(
             "POST",
             "/v1/messages",

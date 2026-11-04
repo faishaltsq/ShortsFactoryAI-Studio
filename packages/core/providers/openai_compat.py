@@ -167,6 +167,7 @@ class OpenAICompatProvider:
         response = self._client(call).request(
             "POST",
             f"{call.base_url}/chat/completions",
+            retry_safe=False,
             headers=self._headers(call),
             json=body,
             allow_private_hosts=call.allow_private_hosts,
@@ -197,10 +198,7 @@ class OpenAICompatProvider:
             content=content,
             provider=call.provider,
             model=str(payload.get("model") or call.model),
-            usage=Usage(
-                prompt_tokens=int(raw_usage.get("prompt_tokens") or 0),
-                completion_tokens=int(raw_usage.get("completion_tokens") or 0),
-            ),
+            usage=Usage.from_provider(raw_usage.get("prompt_tokens"), raw_usage.get("completion_tokens")),
             elapsed_ms=max(0, now_ms() - started),
             raw={"finish_reason": choices[0].get("finish_reason"), "images": len(images)},
         )
@@ -234,6 +232,7 @@ class OpenAICompatProvider:
             f"{call.base_url}/chat/completions",
             headers=self._headers(call),
             json=body,
+            retry_safe=False,
             allow_private_hosts=call.allow_private_hosts,
             secrets=(call.credential,),
             provider=call.provider,
@@ -260,10 +259,7 @@ class OpenAICompatProvider:
                     provider=call.provider,
                 )
         raw_usage = payload.get("usage") or {}
-        usage = Usage(
-            prompt_tokens=int(raw_usage.get("prompt_tokens") or 0),
-            completion_tokens=int(raw_usage.get("completion_tokens") or 0),
-        )
+        usage = Usage.from_provider(raw_usage.get("prompt_tokens"), raw_usage.get("completion_tokens"))
         return ProviderResult(
             content=content,
             provider=call.provider,

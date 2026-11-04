@@ -204,18 +204,23 @@ class RequestJournal:
         usage: dict[str, Any],
         result: dict[str, Any],
         request_id: str | None = None,
+        provider: str | None = None,
+        model: str | None = None,
     ) -> None:
         """The durable response. Once this lands, the call is never made again."""
         with self._lock, self._connect() as conn:
             conn.execute(
                 "UPDATE provider_requests SET status = ?, settled_at = ?, usage_json = ?,"
-                " result_json = ?, request_id = ? WHERE request_key = ? AND attempt = ?",
+                " result_json = ?, request_id = ?, provider = COALESCE(?, provider),"
+                " model = COALESCE(?, model) WHERE request_key = ? AND attempt = ?",
                 (
                     COMPLETED,
                     _utc_now(),
                     json.dumps(usage, ensure_ascii=False, sort_keys=True),
                     json.dumps(result, ensure_ascii=False, sort_keys=True),
                     request_id,
+                    provider,
+                    model,
                     request_key,
                     attempt,
                 ),

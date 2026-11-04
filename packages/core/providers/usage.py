@@ -148,7 +148,9 @@ class UsageTracker:
         what it does not know instead of presenting an incomplete total as a complete one.
         """
         now = dt.datetime.now(dt.UTC).replace(microsecond=0).isoformat()
-        if price_in_per_mtok is None and price_out_per_mtok is None:
+        if not usage.reported:
+            status = "usage_unavailable"
+        elif price_in_per_mtok is None and price_out_per_mtok is None:
             status = "unpriced"
         elif price_in_per_mtok is None or price_out_per_mtok is None:
             status = "partial"
@@ -332,7 +334,9 @@ class RecordingProvider:
         self.name = inner.name
 
     # -- journal boundary --------------------------------------------------------------------
-    def _identity(self, *, user: str, system: str, task: str) -> tuple[str, int]:
+    def _identity(
+        self, *, user: str, system: str, task: str, vision: dict[str, Any] | None = None
+    ) -> tuple[str, int]:
         """The journal key for this call, and the attempt number to use.
 
         Semantic inputs only: the prompt text, the task, and the effective call configuration.
@@ -352,6 +356,7 @@ class RecordingProvider:
                 "max_tokens": identity.get("max_tokens"),
                 "provider": identity.get("provider"),
                 "transport": identity.get("transport"),
+                **({"vision": vision} if vision is not None else {}),
             }
         )
         key = request_key(
@@ -386,48 +391,30 @@ class RecordingProvider:
         task: str,
         images: list[VisionImage],
     ) -> ProviderResult:
-        """Recorded exactly like a text call, with the image payload counted as prompt tokens.
-
-        A vision call is the one place a per-call cost can jump by an order of magnitude, so it
-        must not be the one call that escapes the usage log.
-        """
-        worst_cost = estimate_cost(
-            Usage(
-                prompt_tokens=(len(user) + sum(image.byte_size for image in images)) // 3,
-                completion_tokens=self.worst_case_tokens,
-            ),
-            price_in=self.price_in,
-            price_out=self.price_out,
-        )
-        self.tracker.assert_can_spend(
-            worst_case_tokens=len(user) // 3 + self.worst_case_tokens,
-            worst_case_cost_usd=worst_cost,
-        )
-        result = self.inner.complete_vision(
-            call, system=system, user=user, task=task, images=images
-        )
-        # ``record`` takes a computed cost, not the price table: the estimate has to be made here,
-        # exactly as ``complete`` does. Passing the prices through was a real defect — every vision
-        # call raised TypeError *after* a successful round-trip, so the tokens were spent and
-        # unrecorded.
-        cost = estimate_cost(result.usage, price_in=self.price_in, price_out=self.price_out)
-        self.tracker.record(
-            job_id=self.job_id,
-            agent=self.agent,
-            provider=result.provider,
-            model=result.model,
-            usage=result.usage,
-            est_cost_usd=cost,
-            elapsed_ms=result.elapsed_ms,
-            price_in_per_mtok=self.price_in,
-            price_out_per_mtok=self.price_out,
-        )
-        return result
+        """Use the text lifecycle, with ordered image digests in the logical identity."""
+        if not images:
+            raise ValueError("complete_vision requires at least one image")
+        return self._complete(call, system=system, user=user, task=task, images=images)
 
     def complete(
         self, call: ResolvedCall, *, system: str, user: str, task: str
     ) -> ProviderResult:
-        key, attempt = self._identity(user=user, system=system, task=task)
+        return self._complete(call, system=system, user=user, task=task)
+
+    def _complete(
+        self, call: ResolvedCall, *, system: str, user: str, task: str,
+        images: list[VisionImage] | None = None,
+    ) -> ProviderResult:
+        import hashlib
+
+        vision = None if images is None else {
+            "provider": call.provider, "transport": call.transport,
+            "base_url": call.base_url, "model": call.model,
+            "temperature": call.temperature, "max_tokens": call.max_tokens,
+            "images": [{"sha256": hashlib.sha256(image.data).hexdigest(),
+                        "media_type": image.media_type} for image in images],
+        }
+        key, attempt = self._identity(user=user, system=system, task=task, vision=vision)
         recorded = self._recorded_result(key)
         if recorded is not None:
             # A completed response replays locally: zero new transport calls, and the usage is
@@ -439,19 +426,21 @@ class RecordingProvider:
                 usage=Usage(
                     prompt_tokens=int(recorded["usage"].get("prompt_tokens", 0)),
                     completion_tokens=int(recorded["usage"].get("completion_tokens", 0)),
+                    reported=recorded["usage"].get("reported") is True,
                 ),
                 provider=recorded["provider"],
                 model=recorded["model"],
                 elapsed_ms=0,
             )
         # Pre-call budget check: a budget enforced after the money is spent is not a budget.
+        prompt_estimate = (len(user) + sum(image.byte_size for image in images or [])) // 3
         worst_cost = estimate_cost(
-            Usage(prompt_tokens=len(user) // 3, completion_tokens=self.worst_case_tokens),
+            Usage(prompt_tokens=prompt_estimate, completion_tokens=self.worst_case_tokens),
             price_in=self.price_in,
             price_out=self.price_out,
         )
         self.tracker.assert_can_spend(
-            worst_case_tokens=self.worst_case_tokens, worst_case_cost_usd=worst_cost
+            worst_case_tokens=prompt_estimate + self.worst_case_tokens, worst_case_cost_usd=worst_cost
         )
         if self.journal is not None:
             try:
@@ -465,19 +454,27 @@ class RecordingProvider:
                 ) from exc
             self.journal.reserve(
                 request_key=key, attempt=attempt, job_id=self.job_id, agent=self.agent,
-                tokens=len(user) // 3 + self.worst_case_tokens, cost_usd=worst_cost,
+                tokens=prompt_estimate + self.worst_case_tokens, cost_usd=worst_cost,
             )
             self.journal.mark_sent(
                 request_key=key, attempt=attempt, provider=call.provider, model=call.model
             )
         try:
-            result = self.inner.complete(call, system=system, user=user, task=task)
+            if images is None:
+                result = self.inner.complete(call, system=system, user=user, task=task)
+            else:
+                result = self.inner.complete_vision(call, system=system, user=user, task=task, images=images)
         except Exception as exc:  # noqa: BLE001 - the journal must survive the transport's errors
             if self.journal is not None:
                 # The call left this process. Nobody knows whether the provider accepted it, so
                 # the attempt is uncertain and the reservation stays held: retrying here is the
                 # duplicate-spend bug this whole mechanism exists to prevent.
-                self.journal.mark_uncertain(request_key=key, attempt=attempt, error=f"{type(exc).__name__}: {exc}")
+                from ..security.redact import redact
+
+                self.journal.mark_uncertain(
+                    request_key=key, attempt=attempt,
+                    error=redact(f"{type(exc).__name__}: {exc}", secrets=(call.credential,)),
+                )
                 self.journal.retained(request_key=key, attempt=attempt)
             raise
         cost = estimate_cost(result.usage, price_in=self.price_in, price_out=self.price_out)
@@ -496,8 +493,14 @@ class RecordingProvider:
             self.journal.mark_completed(
                 request_key=key, attempt=attempt,
                 usage={"prompt_tokens": result.usage.prompt_tokens,
-                       "completion_tokens": result.usage.completion_tokens},
-                result={"text": result.content},
+                       "completion_tokens": result.usage.completion_tokens,
+                       "reported": result.usage.reported,
+                       "est_cost_usd": cost if result.usage.reported and self.price_in is not None and self.price_out is not None else None,
+                       "cost_source": "configured_rate_estimate" if result.usage.reported and self.price_in is not None and self.price_out is not None else "unavailable",
+                       "price_in_per_mtok": self.price_in, "price_out_per_mtok": self.price_out},
+                result={"text": result.content, "elapsed_ms": result.elapsed_ms,
+                        **({"images": vision["images"]} if vision is not None else {})},
+                provider=result.provider, model=result.model,
             )
             self.journal.settle(
                 request_key=key, attempt=attempt,

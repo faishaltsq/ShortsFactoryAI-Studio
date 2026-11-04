@@ -45,6 +45,16 @@ class Health:
 class Usage:
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    reported: bool = True
+
+    @classmethod
+    def from_provider(cls, prompt: object, completion: object) -> Usage:
+        valid = type(prompt) is int and type(completion) is int and prompt >= 0 and completion >= 0
+        return cls(
+            prompt_tokens=prompt if type(prompt) is int and prompt >= 0 else 0,
+            completion_tokens=completion if type(completion) is int and completion >= 0 else 0,
+            reported=valid,
+        )
 
     @property
     def total(self) -> int:
@@ -56,7 +66,7 @@ class ProviderResult:
     content: str
     provider: str
     model: str
-    usage: Usage = field(default_factory=Usage)
+    usage: Usage = field(default_factory=lambda: Usage(reported=False))
     elapsed_ms: int = 0
     raw: dict[str, Any] = field(default_factory=dict)
 
