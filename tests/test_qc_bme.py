@@ -6,6 +6,7 @@ from typing import Any
 
 import pytest
 
+from packages.core.media import qc
 from packages.core.media.qc import (
     calculate_frame_delta,
     evaluate_bme_dynamics,
@@ -13,6 +14,41 @@ from packages.core.media.qc import (
     extract_bme_frames,
     get_bme_frame_indices,
 )
+
+
+def test_missing_scene_samples_fail_instead_of_disappearing() -> None:
+    scenes = [{"sceneId": "first"}, {"sceneId": "missing"}]
+    result = evaluate_bme_dynamics(scenes, [(b"\x00", b"\x80", b"\xff")])
+    assert result["passed"] is False
+    assert "missing" in result["unmeasured_scenes"]
+    assert "missing" not in result["static_scenes"]
+    assert result["status"] == "UNVERIFIED"
+    assert result["scene_metrics"][1]["delta_bm"] is None
+    assert len(result["scene_metrics"]) == 2
+
+
+def test_extraction_maps_duplicate_and_unsorted_points_to_the_correct_frames(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    video = tmp_path / "mocked-ffmpeg-input.mp4"
+    video.write_bytes(b"not-real-media: subprocess is stubbed in this test")
+    monkeypatch.setattr(qc.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=bytes([10, 20, 30]), stderr=b"",
+    ))
+    result = extract_bme_frames(video, [(2, 0, 2), (1, 1, 0)], width=1, height=1)
+    assert result == [(b"\x1e", b"\x0a", b"\x1e"), (b"\x14", b"\x14", b"\x0a")]
+
+
+def test_incomplete_decoded_samples_are_refused(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    video = tmp_path / "mocked-ffmpeg-input.mp4"
+    video.write_bytes(b"not-real-media: subprocess is stubbed in this test")
+    monkeypatch.setattr(qc.subprocess, "run", lambda *a, **k: SimpleNamespace(
+        returncode=0, stdout=bytes([10, 20]), stderr=b"",
+    ))
+    with pytest.raises(RuntimeError, match="frame count"):
+        extract_bme_frames(video, [(0, 1, 2)], width=1, height=1)
 
 
 def test_frame_delta_identical_frames_is_zero() -> None:
@@ -100,6 +136,25 @@ def test_evaluate_bme_dynamics_half_frozen_scene_is_flagged_static() -> None:
     assert "sc1" in res["static_scenes"]
     assert res["scene_metrics"][0]["delta_me"] == 0.0
     assert res["scene_metrics"][0]["static"] is True
+
+
+@pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required for extraction test")
+def test_real_short_scenes_reuse_samples_without_shifting_later_scenes(tmp_path: Path) -> None:
+    import subprocess
+
+    video = tmp_path / "three-frame-test-fixture.mp4"
+    result = subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+        "testsrc2=size=32x48:rate=30", "-frames:v", "3", "-pix_fmt", "yuv420p", str(video),
+    ], capture_output=True, check=False, timeout=30)
+    assert result.returncode == 0, result.stderr.decode(errors="replace")
+    frames = extract_bme_frames(video, [(0, 0, 0), (1, 1, 1), (2, 2, 2)], width=16, height=24)
+    assert len(frames) == 3
+    for b, m, e in frames:
+        assert len(b) == 16 * 24
+        assert b == m == e
+    with pytest.raises(RuntimeError, match="frame count"):
+        extract_bme_frames(video, [(0, 1, 99)], width=16, height=24)
 
 
 @pytest.mark.skipif(shutil.which("ffmpeg") is None, reason="ffmpeg required for extraction test")
