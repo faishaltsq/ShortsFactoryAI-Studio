@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import unittest.mock as mock
 from pathlib import Path
 from typing import Any
@@ -113,12 +114,17 @@ def test_verify_existing_mode_reads_artifacts_without_running_job(tmp_path: Path
         state=JobState.READY_FOR_APPROVAL,
     )
     job_dir = Path(state.store.job_dir(job.id))
-    (job_dir / "output.mp4").write_bytes(b"existing-video")
+    fixture_bytes = b"existing-video"
+    (job_dir / "output.mp4").write_bytes(fixture_bytes)
 
     state.store.write_artifact(job.id, "render.json", {
         "renderer": "custom-motion",
         "fallback_used": False,
-        "sha256": "f" * 64,
+        "src": "output.mp4",
+        "sha256": hashlib.sha256(fixture_bytes).hexdigest(),
+        "bytes": len(fixture_bytes),
+        "width": 1080, "height": 1920, "fps": 30,
+        "frames": 90, "duration_ms": 3000,
     })
     state.store.write_artifact(job.id, "tts_metadata.json", {
         "sample_rate": 24000,
@@ -144,8 +150,12 @@ def test_verify_existing_mode_reads_artifacts_without_running_job(tmp_path: Path
     assert res["fallback_used"] is False
     assert res["tts_sample_rate"] == 24000
     assert res["tts_alignment_mode"] == "aligned"
+    assert res["ok"] is False
+    assert res["bme_status"] == "UNVERIFIED"
+    assert res["wall_time_s"] is None
 
     report = bench_mod.generate_markdown_report([res])
     assert "Benchmark B" in report
     assert "custom-motion" in report
-    assert "aligned (24000Hz)" in report
+    assert "| tts_alignment_mode | aligned | recorded | tts_metadata.json#alignment_mode |" in report
+    assert "| tts_sample_rate | 24000 | recorded | tts_metadata.json#sample_rate |" in report
