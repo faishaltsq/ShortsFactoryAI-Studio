@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import type { StudioStatus } from "../src/lib/api";
 import { characterState } from "../src/lib/studioState";
+import { workflowAgentIds } from "./workflow-roster";
 
 const API = process.env.STUDIO_E2E_API!;
 const CHARACTERS = 'ul[aria-label="Karakter studio"] [data-agent]';
@@ -113,7 +114,7 @@ test("mock production reaches storyboard, cancels a running job, and never fakes
   // Only the 2D fallback renders zone headings; StudioScene is a canvas and renders none of
   // these, so this assertion cannot pass on the 3D path.
   await expect(page.getByRole("heading", { name: "Ruang Direktur" })).toBeVisible();
-  await expect(page.locator(CHARACTERS)).toHaveCount(14);
+  await expect(page.locator(CHARACTERS)).toHaveCount((await workflowAgentIds(request)).length);
 
   // 3. Start a second job and prove the studio can show work at all. Without this positive
   //    control, a permanently broken projection would also pass the "no fake work" check.
@@ -154,7 +155,7 @@ test("mock production reaches storyboard, cancels a running job, and never fakes
   //    work when the log has none. The page polls on its own, so both sides are re-read inside
   //    the same attempt until they agree; a one-shot comparison would race the poller.
   await page.goto("/");
-  await expect(page.locator(CHARACTERS)).toHaveCount(14);
+  await expect(page.locator(CHARACTERS)).toHaveCount((await workflowAgentIds(request)).length);
 
   await expect
     .poll(

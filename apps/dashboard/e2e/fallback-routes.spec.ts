@@ -1,5 +1,6 @@
 import { expect, test } from "@playwright/test";
 import { ZONES } from "../src/three/zones";
+import { workflowAgentIds } from "./workflow-roster";
 
 /** Every module linked by a studio zone must be reachable with WebGL disabled. */
 const IMPLEMENTED = new Map<string, string>([
@@ -52,10 +53,12 @@ test("the usage page renders its tables from the sidebar route", async ({ page }
   await expect(page.getByRole("table")).toHaveCount(3);
 });
 
-test("the agent page lists every configured workflow agent", async ({ page }) => {
+test("the agent page lists every configured workflow agent", async ({ page, request }) => {
   await page.goto("/agents");
   await expect(page.getByRole("heading", { level: 1, name: "Agent" })).toBeVisible();
-  await expect(page.getByRole("article")).toHaveCount(14);
+  const expected = await workflowAgentIds(request);
+  await expect(page.getByRole("article")).toHaveCount(expected.length);
+  for (const id of expected) await expect(page.getByRole("article", { name: id, exact: true })).toBeVisible();
   await expect(page.getByRole("article", { name: "ResearchAgent" })).toContainText("Model");
   await expect(page.getByRole("article", { name: "AudioAgent" })).toContainText("Kode lokal");
 });
