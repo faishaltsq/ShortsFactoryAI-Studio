@@ -162,6 +162,7 @@ class PinnedHTTP:
         secrets: tuple[str, ...] = (),
         provider: str = "",
         allow_resume_308: bool = False,
+        retry_safe: bool = True,
     ) -> httpx.Response | ResumeInfo:
         """Send one request through the shared policy.
 
@@ -217,7 +218,9 @@ class PinnedHTTP:
             extensions["sni_hostname"] = original.hostname
 
         last_error: str = ""
-        for attempt in range(self.max_retries + 1):
+        # Paid inference can be accepted even when the response is a timeout or 500.
+        retry_limit = self.max_retries if retry_safe else 0
+        for attempt in range(retry_limit + 1):
             try:
                 with httpx.Client(
                     timeout=self.timeout_s,
@@ -234,7 +237,7 @@ class PinnedHTTP:
                     )
             except httpx.TimeoutException as exc:
                 last_error = f"timeout after {self.timeout_s:g}s"
-                if attempt < self.max_retries:
+                if attempt < retry_limit:
                     time.sleep(min(2**attempt, 8))
                     continue
                 raise ProviderError(
@@ -242,7 +245,7 @@ class PinnedHTTP:
                 ) from exc
             except httpx.HTTPError as exc:
                 last_error = redact(f"{type(exc).__name__}: {exc}", secrets=secrets)
-                if attempt < self.max_retries:
+                if attempt < retry_limit:
                     time.sleep(min(2**attempt, 8))
                     continue
                 raise ProviderError(
@@ -268,7 +271,7 @@ class PinnedHTTP:
                     retryable=False,
                 )
 
-            if response.status_code in RETRY_STATUS and attempt < self.max_retries:
+            if response.status_code in RETRY_STATUS and attempt < retry_limit:
                 time.sleep(min(2**attempt, 8))
                 continue
 

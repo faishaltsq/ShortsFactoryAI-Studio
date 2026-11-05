@@ -108,6 +108,7 @@ class OllamaProvider:
         response = self._client(call).request(
             "POST",
             f"{call.base_url}/api/chat",
+            retry_safe=False,
             json=body,
             allow_private_hosts=call.allow_private_hosts,
             provider=call.provider,
@@ -132,10 +133,7 @@ class OllamaProvider:
             content=content,
             provider=call.provider,
             model=str(payload.get("model") or call.model),
-            usage=Usage(
-                prompt_tokens=int(payload.get("prompt_eval_count") or 0),
-                completion_tokens=int(payload.get("eval_count") or 0),
-            ),
+            usage=Usage.from_provider(payload.get("prompt_eval_count"), payload.get("eval_count")),
             elapsed_ms=max(0, now_ms() - started),
             raw={"done_reason": payload.get("done_reason"), "images": len(images)},
         )
@@ -166,6 +164,7 @@ class OllamaProvider:
             "POST",
             f"{call.base_url}/api/chat",
             json=body,
+            retry_safe=False,
             allow_private_hosts=call.allow_private_hosts,
             provider=call.provider,
         )
@@ -190,10 +189,7 @@ class OllamaProvider:
             content=content,
             provider=call.provider,
             model=str(payload.get("model") or call.model),
-            usage=Usage(
-                prompt_tokens=int(payload.get("prompt_eval_count") or 0),
-                completion_tokens=int(payload.get("eval_count") or 0),
-            ),
+            usage=Usage.from_provider(payload.get("prompt_eval_count"), payload.get("eval_count")),
             elapsed_ms=max(0, now_ms() - started),
             raw={"done_reason": payload.get("done_reason")},
         )

@@ -243,6 +243,7 @@ def _vision_call(state: Any, job: Any) -> tuple[ResolvedCall, Provider] | None:
         tracker=state.usage,
         agent=QC_AGENT,
         job_id=getattr(job, "id", None),
+        journal=state.requests,
         price_in=spec.price_in_per_mtok if spec else None,
         price_out=spec.price_out_per_mtok if spec else None,
     )

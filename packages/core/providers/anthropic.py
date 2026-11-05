@@ -62,18 +62,13 @@ class AnthropicProvider:
         return headers
 
     def health(self, call: ResolvedCall) -> Health:
-        """Anthropic has no free models endpoint; a 1-token message is the honest probe."""
+        """Probe the existing models endpoint, never an unjournaled paid message."""
         started = now_ms()
         try:
             response = self._client(call).request(
-                "POST",
-                f"{call.base_url}/v1/messages",
+                "GET",
+                f"{call.base_url}/v1/models",
                 headers=self._headers(call),
-                json={
-                    "model": call.model,
-                    "max_tokens": 1,
-                    "messages": [{"role": "user", "content": "hi"}],
-                },
                 allow_private_hosts=call.allow_private_hosts,
                 secrets=(call.credential,),
                 provider=call.provider,
@@ -153,6 +148,7 @@ class AnthropicProvider:
         response = self._client(call).request(
             "POST",
             f"{call.base_url}/v1/messages",
+            retry_safe=False,
             headers=self._headers(call),
             json=body,
             allow_private_hosts=call.allow_private_hosts,
@@ -185,10 +181,7 @@ class AnthropicProvider:
             content=text,
             provider=call.provider,
             model=str(payload.get("model") or call.model),
-            usage=Usage(
-                prompt_tokens=int(raw_usage.get("input_tokens") or 0),
-                completion_tokens=int(raw_usage.get("output_tokens") or 0),
-            ),
+            usage=Usage.from_provider(raw_usage.get("input_tokens"), raw_usage.get("output_tokens")),
             elapsed_ms=max(0, now_ms() - started),
             raw={"stop_reason": payload.get("stop_reason"), "images": len(images)},
         )
@@ -211,6 +204,7 @@ class AnthropicProvider:
             f"{call.base_url}/v1/messages",
             headers=self._headers(call),
             json=body,
+            retry_safe=False,
             allow_private_hosts=call.allow_private_hosts,
             secrets=(call.credential,),
             provider=call.provider,
@@ -241,10 +235,7 @@ class AnthropicProvider:
             content=text,
             provider=call.provider,
             model=str(payload.get("model") or call.model),
-            usage=Usage(
-                prompt_tokens=int(raw_usage.get("input_tokens") or 0),
-                completion_tokens=int(raw_usage.get("output_tokens") or 0),
-            ),
+            usage=Usage.from_provider(raw_usage.get("input_tokens"), raw_usage.get("output_tokens")),
             elapsed_ms=max(0, now_ms() - started),
             raw={"stop_reason": payload.get("stop_reason")},
         )
