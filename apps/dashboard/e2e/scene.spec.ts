@@ -2,6 +2,7 @@ import { expect, test, type APIRequestContext, type Page } from "@playwright/tes
 import type { StudioStatus } from "../src/lib/api";
 import { characterState, type CharacterState } from "../src/lib/studioState";
 import { ZONES } from "../src/three/zones";
+import { workflowAgentIds } from "./workflow-roster";
 
 /**
  * The 3D tier, asserted from the DOM seam the canvas publishes.
@@ -127,7 +128,7 @@ test("the 3D tier mirrors one character per agent, and every state equals the pr
   const jobId = await startMockJob(request, "E2E scene parity");
   try {
     await gotoStudio(page, TIER);
-    await expect(page.locator(MIRROR)).toHaveCount(14);
+    await expect(page.locator(MIRROR)).toHaveCount((await workflowAgentIds(request)).length);
 
     // Positive control: without visible work the parity check below would also pass on a
     // permanently dead projection.
@@ -168,7 +169,7 @@ test("the mirror never claims work the log does not have, and never animates a n
   const jobId = await startMockJob(request, "E2E scene no-fake-work");
   try {
     await gotoStudio(page, TIER);
-    await expect(page.locator(MIRROR)).toHaveCount(14);
+    await expect(page.locator(MIRROR)).toHaveCount((await workflowAgentIds(request)).length);
     await expect(page.locator(`${MIRROR}[data-state="working"]`).first()).toBeVisible({
       timeout: 30_000,
     });
@@ -302,13 +303,13 @@ test("the frameloop runs on every tier and stops only when the document is hidde
 
 test("the fallback and the canvas agree on every character state", async ({ page, request }) => {
   await gotoStudio(page, TIER);
-  await expect(page.locator(MIRROR)).toHaveCount(14);
+  await expect(page.locator(MIRROR)).toHaveCount((await workflowAgentIds(request)).length);
   const canvasRows = await mirror(page);
 
   await page.getByLabel("Tampilan studio").selectOption("off");
   await expect(page.getByRole("heading", { name: "Ruang Direktur" })).toBeVisible();
   const sidebar = page.locator('ul[aria-label="Karakter studio"] [data-agent]');
-  await expect(sidebar).toHaveCount(14);
+  await expect(sidebar).toHaveCount((await workflowAgentIds(request)).length);
   const sidebarRows = await sidebar.evaluateAll((nodes) =>
     nodes.map((node) => ({
       id: node.getAttribute("data-agent"),

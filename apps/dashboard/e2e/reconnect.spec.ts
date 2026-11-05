@@ -1,6 +1,7 @@
 import { expect, test, type APIRequestContext, type Page } from "@playwright/test";
 import type { StudioStatus } from "../src/lib/api";
 import { characterState } from "../src/lib/studioState";
+import { workflowAgentIds } from "./workflow-roster";
 
 /**
  * Reconnect: no gap, no duplicate.
@@ -155,7 +156,8 @@ test("a reconnect during a run restores the same state and replays nothing", asy
   // negative rule, not convergence — the page may show stale state it could not refresh, but it
   // must never show `failed` or `blocked` that the log does not have, and it must not be blank.
   const duringOutage = await rendered(page);
-  expect(duringOutage.length, "the outage left no characters rendered").toBe(14);
+  const expected = await workflowAgentIds(request);
+  expect(duringOutage.map((row) => row.id).sort(), "the outage lost workflow characters").toEqual(expected);
   const duringSnapshot = readAgents(await (await request.get(`${API}/api/studio/snapshot`)).json());
   const settled = new Set(
     duringSnapshot
