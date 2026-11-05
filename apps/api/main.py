@@ -41,6 +41,7 @@ from .schemas import (
     CancelBody,
     CreateJobBody,
     DiscoverTopicsBody,
+    ManualReviewBody,
     MetadataBody,
     PresetBody,
     ProviderBody,
@@ -320,6 +321,17 @@ def create_app(state: AppState | None = None) -> FastAPI:
         return Response(content=data, headers=headers, media_type="video/mp4")
 
     # ---------------------------------------------------------------- approval
+    @app.post("/api/jobs/{job_id}/manual-review-policy")
+    def permit_manual_review(
+        job_id: str, body: ManualReviewBody, _: None = Depends(require_token)
+    ) -> dict[str, Any]:
+        try:
+            return service.permit_manual_review(job_id, body.operator, body.reason, body.render_sha256)
+        except KeyError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except service.ApprovalRefused as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
     @app.post("/api/jobs/{job_id}/approve")
     def approve_job(
         job_id: str, body: ApproveBody, _: None = Depends(require_token)

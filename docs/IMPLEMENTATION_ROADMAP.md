@@ -238,6 +238,12 @@ exits non-zero on any violation and removes its temporary data directory unless 
       fabricated to satisfy the mixer.
 
 ### 2.5 QA
+- **V3-E semantic inspection:** the current path uses individual checksum-bound MP4 frames,
+  eight explicit semantic criteria per scene, journaled vision requests and current-context
+  revalidation. Readiness is fail-closed; UNVERIFIED requires explicit per-render operator/reason
+  review permission and FAIL cannot be waived. This is separate from the historical contact-sheet
+  proof below. Science remains UNVERIFIED without retrieved source/quote evidence; no live V3
+  benchmark or production model-quality claim is implied. See `SEMANTIC_VISUAL_QA.md`.
 - [x] Technical checks (all of FR-7.1), written to `technical-qc.json` even when the gate blocks.
       Expected values come from `render-props.json` and `audio.json`, never from `render.json`.
 - [x] Creative checks with measured values: static ratio, fade ratio, text density, shot variety,

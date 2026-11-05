@@ -17,6 +17,19 @@
       "title": "Checks",
       "type": "object"
     },
+    "context_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Context Sha256"
+    },
     "created_at": {
       "title": "Created At",
       "type": "string"
@@ -26,12 +39,23 @@
       "title": "Creative Passed",
       "type": "boolean"
     },
+    "human_approved": {
+      "const": false,
+      "default": false,
+      "title": "Human Approved",
+      "type": "boolean"
+    },
     "inputs_sha256": {
       "default": "",
       "maxLength": 64,
       "minLength": 64,
       "title": "Inputs Sha256",
       "type": "string"
+    },
+    "manual_review_eligible": {
+      "default": false,
+      "title": "Manual Review Eligible",
+      "type": "boolean"
     },
     "provenance": {
       "additionalProperties": true,
@@ -48,14 +72,52 @@
       "title": "Reason",
       "type": "string"
     },
+    "review_basis": {
+      "default": "blocked",
+      "enum": [
+        "semantic_pass",
+        "operator_policy",
+        "blocked"
+      ],
+      "title": "Review Basis",
+      "type": "string"
+    },
+    "review_policy_sha256": {
+      "anyOf": [
+        {
+          "pattern": "^[0-9a-f]{64}$",
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Review Policy Sha256"
+    },
     "schema_version": {
       "default": 1,
       "title": "Schema Version",
       "type": "integer"
     },
+    "semantic_status": {
+      "default": "UNVERIFIED",
+      "enum": [
+        "PASS",
+        "FAIL",
+        "UNVERIFIED"
+      ],
+      "title": "Semantic Status",
+      "type": "string"
+    },
     "technical_passed": {
       "default": false,
       "title": "Technical Passed",
+      "type": "boolean"
+    },
+    "technical_ready": {
+      "default": false,
+      "title": "Technical Ready",
       "type": "boolean"
     },
     "visual_status": {
@@ -63,6 +125,7 @@
       "enum": [
         "passed",
         "failed",
+        "unverified",
         "skipped_no_vision_provider"
       ],
       "title": "Visual Status",

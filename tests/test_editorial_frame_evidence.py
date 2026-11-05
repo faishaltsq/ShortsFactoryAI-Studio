@@ -53,3 +53,9 @@ def test_extraction_failure_persists_unverified_without_requesting_static_repair
     assert evidence["scene_metrics"][0]["delta_bm"] is None
     assert "incomplete decoder output" in evidence["error"]
     assert state.usage.for_job(job.id) == []
+    manifest = state.store.read_artifact(job.id, "visual-evidence.json")
+    assert manifest["complete"] is False
+    assert manifest["inspection_status"] == "UNVERIFIED"
+    assert manifest["provider"] is None and manifest["model"] is None
+    assert qa["semantic"]["status"] == "UNVERIFIED"
+    assert all(item["repair_scope"] == "none" for item in qa["semantic"]["criteria"])

@@ -12,6 +12,9 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator, model_valida
 
 from .base import Artifact
 from .scene import SceneSpec, SubtitleCue, WordTimestamp
+from .semantic import ManualReviewPolicyArtifact as ManualReviewPolicyArtifact
+from .semantic import SemanticInspection as SemanticInspection
+from .semantic import VisualEvidenceArtifact as VisualEvidenceArtifact
 
 ContentKind = Literal["factual", "fictional"]
 ProviderMode = Literal["live", "mock"]
@@ -545,7 +548,7 @@ class RenderArtifact(Artifact):
     scene_hashes: dict[str, str] = Field(default_factory=dict)
 
 
-VisualStatus = Literal["passed", "failed", "skipped_no_vision_provider"]
+VisualStatus = Literal["passed", "failed", "unverified", "skipped_no_vision_provider"]
 
 #: A repair is a recorded decision, never a hidden retry. ``blocked`` is the only automatic
 #: outcome this build can produce: re-running a deterministic black or frozen render cannot
@@ -621,6 +624,13 @@ class ReadinessArtifact(Artifact):
     technical_passed: bool = False
     creative_passed: bool = False
     visual_status: VisualStatus = "skipped_no_vision_provider"
+    technical_ready: bool = False
+    semantic_status: Literal["PASS", "FAIL", "UNVERIFIED"] = "UNVERIFIED"
+    manual_review_eligible: bool = False
+    human_approved: Literal[False] = False
+    review_basis: Literal["semantic_pass", "operator_policy", "blocked"] = "blocked"
+    review_policy_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    context_sha256: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
     inputs_sha256: str = Field(default="", min_length=64, max_length=64)
     reason: str = ""
 
@@ -628,6 +638,14 @@ class ReadinessArtifact(Artifact):
     def _ready_matches_its_evidence(self) -> ReadinessArtifact:
         if not self.ready:
             return self
+        if not self.manual_review_eligible or not self.technical_ready:
+            raise ValueError("readiness requires current technical evidence and review eligibility")
+        if self.semantic_status == "FAIL":
+            raise ValueError("semantic FAIL cannot be waived for manual review")
+        if self.semantic_status == "UNVERIFIED" and (
+            self.review_basis != "operator_policy" or not self.review_policy_sha256
+        ):
+            raise ValueError("UNVERIFIED readiness requires an explicit auditable policy binding")
         if self.blockers:
             raise ValueError(f"readiness cannot be true while blockers remain: {self.blockers}")
         untrue = sorted(name for name, ok in self.checks.items() if not ok)
@@ -648,12 +666,13 @@ class QaArtifact(Artifact):
     technical: dict[str, Any] = Field(default_factory=dict)
     creative: dict[str, Any] = Field(default_factory=dict)
     visual: dict[str, Any] = Field(default_factory=dict)
+    semantic: SemanticInspection | None = None
     repairs: list[dict[str, Any]] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _visual_status_is_explicit(self) -> QaArtifact:
         status = self.visual.get("status")
-        allowed = {"passed", "failed", "skipped_no_vision_provider"}
+        allowed = {"passed", "failed", "unverified", "skipped_no_vision_provider"}
         if status not in allowed:
             raise ValueError(
                 f"visual.status must be one of {sorted(allowed)}; got {status!r}. "

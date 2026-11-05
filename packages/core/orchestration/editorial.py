@@ -26,12 +26,17 @@ import json
 from pathlib import Path
 from typing import Any
 
-from ..agents.vision import inspect_frames, skip_no_provider
+from ..agents.vision import inspect_frames, skip_no_provider, unverified_inspection
 from ..contracts.artifacts import (
+    AudioArtifact,
+    ManualReviewPolicyArtifact,
     QaArtifact,
     ReadinessArtifact,
+    RenderArtifact,
+    SemanticInspection,
     StoryboardArtifact,
     TechnicalQaArtifact,
+    VisualEvidenceArtifact,
 )
 from ..contracts.base import validate_artifact
 from ..contracts.state import JobState
@@ -42,6 +47,7 @@ from ..media.qc import (
     evaluate_technical,
     extract_bme_frames,
     extract_contact_sheet,
+    extract_visual_evidence,
     get_bme_frame_indices,
     measure_loudness,
     measure_static,
@@ -140,6 +146,7 @@ def build_qa_artifact(
             "reason": str(visual.get("reason") or ""),
         },
         "repairs": list(repairs),
+        "semantic": visual.get("semantic"),
     }
     validate_artifact(QaArtifact, payload)
     return payload
@@ -152,12 +159,34 @@ def build_readiness(
     visual: dict[str, Any],
     checksum_valid: bool,
     inputs_sha256: str,
+    job_id: str | None = None,
+    render_sha256: str | None = None,
+    manual_review_policy: dict[str, Any] | None = None,
+    context_sha256: str | None = None,
 ) -> dict[str, Any]:
     """The gate verdict. Every blocker is named, not just the first one found."""
     technical_ok = bool(technical.get("passed"))
     creative_ok = bool(creative.get("passed"))
     visual_status = str(visual.get("status"))
-    visual_ok = visual_status != "failed"
+    semantic_status = "UNVERIFIED"
+    try:
+        semantic = SemanticInspection.model_validate(visual.get("semantic"))
+        if (semantic.job_id, semantic.render_sha256, semantic.inputs_sha256) == (
+            job_id, render_sha256, inputs_sha256
+        ):
+            semantic_status = semantic.status
+    except ValueError:
+        pass  # Legacy/malformed results are unknown, never implicit semantic evidence.
+    policy = None
+    try:
+        candidate = ManualReviewPolicyArtifact.model_validate(manual_review_policy)
+        if candidate.permits(job_id, render_sha256, inputs_sha256, context_sha256):
+            policy = candidate
+    except ValueError:
+        pass
+    visual_ok = visual_status != "failed" and (
+        semantic_status == "PASS" or (semantic_status == "UNVERIFIED" and policy is not None)
+    )
     checks = {
         "technical": technical_ok,
         "creative": creative_ok,
@@ -171,6 +200,13 @@ def build_readiness(
         "checks": checks,
         "blockers": blockers,
         "technical_passed": technical_ok,
+        "technical_ready": technical_ok and bool(checksum_valid),
+        "semantic_status": semantic_status,
+        "manual_review_eligible": visual_ok and technical_ok and creative_ok and bool(checksum_valid),
+        "human_approved": False,
+        "review_basis": "semantic_pass" if semantic_status == "PASS" else "operator_policy" if visual_ok else "blocked",
+        "review_policy_sha256": policy.content_hash() if policy is not None else None,
+        "context_sha256": context_sha256,
         "creative_passed": creative_ok,
         "visual_status": visual_status,
         "inputs_sha256": inputs_sha256,
@@ -193,6 +229,89 @@ def _storyboard(job_dir: Path) -> dict[str, Any]:
     text = (job_dir / "storyboard.json").read_text(encoding="utf-8")
     storyboard: dict[str, Any] = json.loads(text)
     return storyboard
+
+
+def semantic_context(store: Any, job_id: str, props: dict[str, Any]) -> tuple[str, dict[str, str]]:
+    """Fingerprint actual narration/requirements, not just scene timing or declared objects."""
+    context: dict[str, Any] = {"props": {k: v for k, v in props.items() if k != "created_at"}}
+    for name in ("script.json", "visual-plan.json", "research.json", "audio.json"):
+        source = _optional(store, job_id, name)
+        context[name] = {k: v for k, v in source.items() if k != "created_at"} if source is not None else None
+    script: dict[str, Any] = context["script.json"] or {}
+    audio: dict[str, Any] = context["audio.json"] or {}
+    plan: dict[str, Any] = context["visual-plan.json"] or {}
+    segments = {segment.get("id"): segment for segment in script.get("segments", []) if isinstance(segment, dict)}
+    requirements: dict[str, str] = {}
+    for scene in props.get("scenes", []):
+        if not isinstance(scene, dict) or not isinstance(scene.get("sceneId"), str):
+            continue
+        segment = segments.get(scene.get("segment"), {})
+        requirements[scene["sceneId"]] = json.dumps({
+            "narration": segment.get("text"), "storyboard_requirement": scene,
+            "visual_beats": [beat for beat in plan.get("beats", []) if isinstance(beat, dict)
+                             and beat.get("narrationSegmentId") == scene.get("segment")],
+            "audio_scenes": [entry for entry in audio.get("scenes", []) if isinstance(entry, dict)
+                             and entry.get("sceneId") == scene["sceneId"]],
+            "subtitle_cues": audio.get("subtitles", []),
+        }, ensure_ascii=False, sort_keys=True)
+    return content_hash(context), requirements
+
+
+def evaluate_job_readiness(store: Any, job_id: str) -> dict[str, Any]:
+    """One authoritative read-only gate shared by DirectorAgent, approval and publishing.
+
+    Re-read current bytes, semantic source bindings and explicit policy. No inference or repair.
+    A cached readiness/visual flag cannot supply missing semantic evidence.
+    """
+    job_dir = Path(store.job_dir(job_id))
+    render = RenderArtifact.model_validate(store.read_artifact(job_id, "render.json"))
+    audio = AudioArtifact.model_validate(store.read_artifact(job_id, "audio.json"))
+    storyboard = store.read_artifact(job_id, "storyboard.json")
+    StoryboardArtifact.model_validate(storyboard)
+    technical = TechnicalQaArtifact.model_validate(store.read_artifact(job_id, TECHNICAL_NAME))
+    qa = QaArtifact.model_validate(store.read_artifact(job_id, QA_NAME))
+    inputs = compute_inputs_hash(render_sha256=render.sha256,
+                                narration_ms=float(audio.narration.get("durationMs") or 0), storyboard=storyboard)
+    video = (job_dir / render.src).resolve()
+    video.relative_to(job_dir.resolve())
+    checksum_valid = video.is_file() and sha256_file(video) == render.sha256
+    props = _storyboard(job_dir)
+    context, _ = semantic_context(store, job_id, props)
+    visual = dict(qa.visual)
+    visual["semantic"] = None
+    if qa.semantic is not None:
+        try:
+            manifest = VisualEvidenceArtifact.model_validate(store.read_artifact(job_id, "visual-evidence.json"))
+            if (manifest.job_id, manifest.render_sha256, manifest.inputs_sha256, manifest.context_sha256) != (
+                job_id, render.sha256, inputs, context
+            ):
+                raise ValueError("semantic context drifted")
+            if (qa.semantic.job_id, qa.semantic.render_sha256, qa.semantic.inputs_sha256, qa.semantic.manifest_sha256) != (
+                job_id, render.sha256, inputs, manifest.evidence_hash()
+            ) or qa.semantic.scene_ids != manifest.scene_ids:
+                raise ValueError("semantic inspection is not bound to current evidence")
+            frames = {frame.frame_id: frame for frame in manifest.frames}
+            for frame in manifest.frames:
+                if sha256_file(job_dir / frame.file) != frame.sha256:
+                    raise ValueError("frame bytes changed")
+            for criterion in qa.semantic.criteria:
+                if any(fid not in frames for fid in criterion.frame_ids):
+                    raise ValueError("inspection cites unknown frames")
+                if criterion.status != "UNVERIFIED" and (
+                    not manifest.complete or not any(frames[fid].scene_id == criterion.scene_id for fid in criterion.frame_ids)
+                ):
+                    raise ValueError("inspection lacks scene evidence")
+            visual["semantic"] = qa.semantic.model_dump(mode="json")
+        except (OSError, ValueError, KeyError):
+            pass  # Unknown/stale evidence stays unknown; a legacy failed flag still blocks.
+    technical_payload = technical.model_dump(mode="json")
+    if technical.inputs_sha256 != inputs:
+        technical_payload["passed"] = False
+    return build_readiness(
+        technical=technical_payload, creative=qa.creative, visual=visual, checksum_valid=checksum_valid,
+        inputs_sha256=inputs, job_id=job_id, render_sha256=render.sha256, context_sha256=context,
+        manual_review_policy=_optional(store, job_id, "manual-review-policy.json"),
+    )
 
 
 def _detectors(path: Path) -> dict[str, Any]:
@@ -340,39 +459,40 @@ def build_editorial_qc_stage(state: Any) -> Stage:
 
             sheet_path = ctx.alloc(SHEET_NAME)
             try:
-                _, frames_extracted = extract_contact_sheet(video, {"storyboard": props}, sheet_path)
-            except RuntimeError as exc:
-                frames_extracted = 0
-                sheet_note = redact(str(exc), limit=200)
-            else:
-                sheet_note = ""
-
-            resolved = _vision_call(state, job)
+                extract_contact_sheet(video, {"storyboard": props}, sheet_path)
+            except RuntimeError:
+                pass  # This optional legacy preview is never semantic proof.
+            if sheet_path.is_file():
+                ctx.stage_file(SHEET_NAME, sheet_path)
+            ctx.assert_active()
+            context_sha256, requirements = semantic_context(store, job_id, props)
+            manifest = extract_visual_evidence(
+                video, props, ctx.staging, job_id=job_id, render_sha256=str(render.get("sha256") or ""),
+                inputs_sha256=inputs_sha256, context_sha256=context_sha256, requirements=requirements,
+            )
+            for frame in manifest.frames:
+                ctx.stage_file(frame.file, ctx.alloc(frame.file))
+            ctx.assert_active()
+            resolved = _vision_call(state, job) if manifest.complete else None
             if resolved is None:
-                visual = skip_no_provider(frames_extracted=frames_extracted).to_json()
-            elif frames_extracted == 0:
-                visual = {
-                    "status": "failed",
-                    "provider": resolved[0].provider,
-                    "frames_extracted": 0,
-                    "frames_inspected": 0,
-                    "findings": [
-                        {"atMs": 0, "issue": f"contact sheet unavailable: {sheet_note}", "severity": "blocker"}
-                    ],
-                    "model": resolved[0].model,
-                    "reason": "no contact sheet could be produced",
-                }
+                visual = (skip_no_provider(frames_extracted=len(manifest.frames), manifest=manifest)
+                          if manifest.complete else unverified_inspection(manifest, manifest.reason)).to_json()
             else:
                 from ..providers.base import VisionImage
+                try:
+                    images = [VisionImage(data=ctx.alloc(frame.file).read_bytes(), label=frame.frame_id)
+                              for frame in manifest.frames]
+                    visual = inspect_frames(call=resolved[0], provider=resolved[1], images=images,
+                                            storyboard=props, manifest=manifest).to_json()
+                except (OSError, ValueError) as exc:
+                    visual = unverified_inspection(manifest, redact(str(exc), limit=400)).to_json()
 
-                images = [VisionImage(data=sheet_path.read_bytes(), media_type="image/jpeg")]
-                visual = inspect_frames(
-                    call=resolved[0],
-                    provider=resolved[1],
-                    images=images,
-                    storyboard={"storyboard": props},
-                ).to_json()
-
+            semantic = visual.get("semantic") or {}
+            manifest = manifest.model_copy(update={
+                "inspection_status": semantic.get("status", "UNVERIFIED"),
+                "provider": visual.get("provider"), "model": visual.get("model") or None,
+            })
+            ctx.write_artifact("visual-evidence.json", manifest.to_json())
             checksum_valid = sha256_file(video) == str(render.get("sha256") or "")
             readiness = build_readiness(
                 technical=technical,
@@ -380,6 +500,9 @@ def build_editorial_qc_stage(state: Any) -> Stage:
                 visual=visual,
                 checksum_valid=checksum_valid,
                 inputs_sha256=inputs_sha256,
+                job_id=job_id, render_sha256=str(render.get("sha256") or ""),
+                context_sha256=context_sha256,
+                manual_review_policy=_optional(store, job_id, "manual-review-policy.json"),
             )
             repairs = [
                 repair_record(
@@ -412,7 +535,7 @@ def build_editorial_qc_stage(state: Any) -> Stage:
                     .get("bme_dynamics", {})
                     .get("static_scenes", [])
                 )
-            if static_scenes:
+            if static_scenes and readiness["semantic_status"] != "UNVERIFIED":
                 reason = f"editorial QC flagged static scenes for repair: {', '.join(static_scenes)}"
                 _emit(
                     state,
@@ -422,8 +545,6 @@ def build_editorial_qc_stage(state: Any) -> Stage:
                     reason,
                     agent=QC_AGENT,
                 )
-                if sheet_path.is_file():
-                    ctx.stage_file(SHEET_NAME, sheet_path)
                 return StageOutcome(
                     ok=True,
                     control="qa_repair_required",
@@ -443,8 +564,6 @@ def build_editorial_qc_stage(state: Any) -> Stage:
             agent=QC_AGENT,
             progress=1.0,
         )
-        if sheet_path.is_file():
-            ctx.stage_file(SHEET_NAME, sheet_path)
         return StageOutcome(ok=True, artifacts=[QA_NAME, SHEET_NAME])
 
     return Stage(
@@ -568,21 +687,8 @@ def build_readiness_stage(state: Any) -> Stage:
 
         _emit(state, job_id, JobState.READY_FOR_APPROVAL.value, "stage_started",
               "DirectorAgent memeriksa kelayakan", agent=READINESS_AGENT)
-        job_dir = Path(store.job_dir(job_id))
         try:
-            render = store.read_artifact(job_id, "render.json")
-            audio = store.read_artifact(job_id, "audio.json")
-            storyboard = store.read_artifact(job_id, "storyboard.json")
-            technical = store.read_artifact(job_id, TECHNICAL_NAME)
-            qa = store.read_artifact(job_id, QA_NAME)
-            video = job_dir / str(render.get("src") or "output.mp4")
-            narration_ms = float((audio.get("narration") or {}).get("durationMs") or 0)
-            expected = compute_inputs_hash(
-                render_sha256=str(render.get("sha256") or ""),
-                narration_ms=narration_ms,
-                storyboard=storyboard,
-            )
-            checksum_valid = sha256_file(video) == str(render.get("sha256") or "")
+            readiness = evaluate_job_readiness(store, job_id)
         except Exception as exc:  # noqa: BLE001 - unreadable evidence is a blocked gate
             detail = redact(f"{type(exc).__name__}: {exc}", limit=400)
             _emit(state, job_id, JobState.READY_FOR_APPROVAL.value, "failed", detail,
@@ -590,29 +696,6 @@ def build_readiness_stage(state: Any) -> Stage:
             raise StageError("qa_blocked", f"cannot read the QC evidence: {detail}",
                              retryable=False) from exc
 
-        readiness = build_readiness(
-            technical=technical,
-            creative=qa.get("creative") or {},
-            visual=qa.get("visual") or {},
-            checksum_valid=checksum_valid,
-            inputs_sha256=expected,
-        )
-        # A stage whose inputs have drifted must not certify. ``technical-qc.json`` is the
-        # artifact that records a measurement together with the hash of what it measured, so it
-        # is the authoritative binding; ``qc.json`` carries verdicts only and no hash, which is
-        # why it is not consulted here.
-        recorded = technical.get("inputs_sha256")
-        if isinstance(recorded, str) and recorded and recorded != expected:
-            readiness = build_readiness(
-                technical={**technical, "passed": False},
-                creative=qa.get("creative") or {},
-                visual=qa.get("visual") or {},
-                checksum_valid=False,
-                inputs_sha256=expected,
-            )
-            readiness["blockers"] = sorted(set(readiness["blockers"]) | {"inputs_drifted"})
-            readiness["ready"] = False
-            readiness["reason"] = "blocked: " + ", ".join(readiness["blockers"])
         ctx.write_artifact(READINESS_NAME, readiness)
 
         if not readiness["ready"]:
@@ -632,6 +715,16 @@ def build_readiness_stage(state: Any) -> Stage:
         )
         return StageOutcome(ok=True, artifacts=[READINESS_NAME])
 
+    def reusable(payload: dict[str, Any], job_id: str) -> bool:
+        try:
+            current = evaluate_job_readiness(state.store, job_id)
+            keys = ("inputs_sha256", "context_sha256", "semantic_status", "review_policy_sha256")
+            return payload.get("ready") is True and current["ready"] is True and all(
+                payload.get(key) == current.get(key) for key in keys
+            )
+        except Exception:  # noqa: BLE001 - corrupt or stale cache is not a completed review gate
+            return False
+
     return Stage(
         name=READINESS_AGENT,
         state=JobState.READY_FOR_APPROVAL,
@@ -639,6 +732,7 @@ def build_readiness_stage(state: Any) -> Stage:
         run=run,
         contract=ReadinessArtifact,
         contract_artifact=READINESS_NAME,
+        done_when=reusable,
     )
 
 

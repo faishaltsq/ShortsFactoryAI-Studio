@@ -1,11 +1,11 @@
 """A job driven through the real stages with a vision provider that speaks the real wire format.
 
-This is the test that makes `visual.status == "passed"` a fact about the pipeline rather than a
-fact about a stub object. Everything is loopback:
+This proves semantic evidence and explicit manual review through the pipeline, not model accuracy
+or scientific verification. Everything is loopback:
 
 - the narration is real SAPI output, so `audio.json` timings are measured;
 - the render is a real Remotion subprocess, so `technical-qc.json` measures a real file;
-- the contact sheet is extracted by the real ffmpeg path;
+- individual sampled PNGs are extracted by the real ffmpeg path;
 - the vision provider is `OpenAICompatProvider` over `PinnedHTTP` against a loopback `StubServer`
   that answers in the OpenAI chat-completions shape.
 
@@ -29,18 +29,18 @@ from tests.stub_server import StubServer
 pytestmark = pytest.mark.slow
 
 
-def _stub_answer(status: str, frames: int, findings: list[dict] | None = None) -> dict:
+def _stub_answer(request, *, failure=False) -> dict:
+    from packages.core.contracts.semantic import VisualEvidenceArtifact
+    from tests.test_semantic_vision import answer
+
+    parts = request.body["messages"][-1]["content"]
+    prompt = next(part["text"] for part in parts if part.get("type") == "text")
+    manifest = VisualEvidenceArtifact.model_validate(json.loads(prompt)["frame_manifest"])
     return {
         "choices": [
             {
                 "message": {
-                    "content": json.dumps(
-                        {
-                            "status": status,
-                            "frames_inspected": frames,
-                            "findings": findings or [],
-                        }
-                    )
+                    "content": json.dumps(answer(manifest, failure=failure))
                 },
                 "finish_reason": "stop",
             }
@@ -50,7 +50,7 @@ def _stub_answer(status: str, frames: int, findings: list[dict] | None = None) -
     }
 
 
-def _run_job(tmp_path, server: StubServer):
+def _run_job(tmp_path, server: StubServer, monkeypatch):
     """Build the app, register the vision provider, run one job to a terminal state."""
     from apps.api.main import create_app
     from apps.api.settings import Settings
@@ -66,7 +66,7 @@ def _run_job(tmp_path, server: StubServer):
     # Mock resource telemetry so the render admission gate does not block on low host RAM.
     # Every other rendering test does this; this file omitted it and failed under memory pressure.
     from packages.core.orchestration import resources
-    resources.probe_telemetry = lambda **_kw: resources.Telemetry(8192, 8192)  # type: ignore[assignment]
+    monkeypatch.setattr(resources, "probe_telemetry", lambda **_kw: resources.Telemetry(8192, 8192))
     state = AppState.build(settings, budget=Budget())
 
     # A vision-capable provider at the loopback stub. `allow_private_hosts` is the documented
@@ -118,57 +118,76 @@ def _run_job(tmp_path, server: StubServer):
     deadline = time.time() + 900
     terminal = {JobState.READY_FOR_APPROVAL, JobState.BLOCKED, JobState.FAILED}
     store = state.store
-    while time.time() < deadline and store.get(job["id"]).state not in terminal:
+    while time.time() < deadline and (store.get(job["id"]).state not in terminal or job["id"] in state.running):
         time.sleep(2)
-    return job["id"], store, Path(store.job_dir(job["id"]))
+    assert store.get(job["id"]).state in terminal and job["id"] not in state.running
+    return job["id"], state, Path(store.job_dir(job["id"])), client
 
 
-def test_a_vision_pass_reaches_ready_for_approval(tmp_path):
+def test_a_scripted_visual_pass_without_scientific_evidence_requires_explicit_manual_policy(tmp_path, monkeypatch):
     with StubServer() as server:
         server.route("GET", "/v1/models", body={"data": [{"id": "vision-stub"}]})
-        # Five frames is what the keyframe plan extracts for this storyboard; the stub is told the
-        # count through the prompt, and the answer must account for exactly that many.
-        server.route("POST", "/v1/chat/completions", body=_stub_answer("passed", 5))
+        server.route("POST", "/v1/chat/completions", body=_stub_answer)
 
-        job_id, store, job_dir = _run_job(tmp_path, server)
+        job_id, state, job_dir, client = _run_job(tmp_path, server, monkeypatch)
         recorded = list(server.recorded)
 
+    store = state.store
     qc = json.loads((job_dir / "qc.json").read_text(encoding="utf-8"))
-    readiness = json.loads((job_dir / "readiness.json").read_text(encoding="utf-8"))
+    manifest = json.loads((job_dir / "visual-evidence.json").read_text(encoding="utf-8"))
 
-    assert store.get(job_id).state is JobState.READY_FOR_APPROVAL, (
+    assert store.get(job_id).state is JobState.BLOCKED, (
         f"{store.get(job_id).state} / {store.get(job_id).last_error}"
     )
-    assert qc["visual"]["status"] == "passed"
+    assert qc["visual"]["status"] == "unverified"
+    assert qc["semantic"]["status"] == "UNVERIFIED"
     assert qc["visual"]["provider"] == "vision-stub"
-    assert qc["visual"]["frames_inspected"] == qc["visual"]["frames_extracted"] == 5
+    assert qc["visual"]["frames_inspected"] == qc["visual"]["frames_extracted"] == len(manifest["frames"])
+    assert len(manifest["frames"]) > 6
     assert qc["visual"]["findings"] == []
-    assert readiness["ready"] is True
-    assert readiness["visual_status"] == "passed"
+    rows = [row for row in state.requests.statuses(job_id) if row["agent"] == "QualityAgent"]
+    assert len(rows) == 1 and rows[0]["status"] == "completed"
+    assert not store.has_artifact(job_id, "approval.json")
+    render = store.read_artifact(job_id, "render.json")
+    permission = client.post(f"/api/jobs/{job_id}/manual-review-policy", json={
+        "operator": "fixture-reviewer", "reason": "Explicit fixture manual review permission",
+        "render_sha256": render["sha256"], "allow_unverified": True,
+    })
+    assert permission.status_code == 200, permission.text
+    from packages.core.orchestration.editorial import build_readiness_stage
+    from packages.core.orchestration.runner import run_stages
+    report = run_stages(store=store, job_id=job_id, stages=[build_readiness_stage(state)])
+    assert report["ok"], report
+    readiness = store.read_artifact(job_id, "readiness.json")
+    assert readiness["ready"] is True and readiness["semantic_status"] == "UNVERIFIED"
+    assert readiness["human_approved"] is False
+    assert not store.has_artifact(job_id, "approval.json")
 
     # The image really travelled: one POST to the chat endpoint carrying a data URI.
     chat = [r for r in recorded if r.path.endswith("/chat/completions")]
     assert len(chat) == 1, "exactly one vision call"
     parts = chat[0].body["messages"][-1]["content"]
     image_parts = [p for p in parts if p.get("type") == "image_url"]
-    assert len(image_parts) == 1
-    assert image_parts[0]["image_url"]["url"].startswith("data:image/jpeg;base64,")
+    assert len(image_parts) == len(manifest["frames"])
+    import base64
+    import hashlib
+    for image, frame in zip(image_parts, manifest["frames"], strict=True):
+        prefix, data = image["image_url"]["url"].split(",", 1)
+        assert prefix == "data:image/png;base64"
+        assert hashlib.sha256(base64.b64decode(data)).hexdigest() == frame["sha256"]
 
 
-def test_a_major_finding_blocks_the_job_with_a_recorded_repair(tmp_path):
+def test_a_major_finding_blocks_the_job_with_a_recorded_repair(tmp_path, monkeypatch):
     with StubServer() as server:
         server.route("GET", "/v1/models", body={"data": [{"id": "vision-stub"}]})
         server.route(
             "POST",
             "/v1/chat/completions",
-            body=_stub_answer(
-                "passed",
-                5,
-                [{"atMs": 1200, "issue": "karakter hilang dari bingkai", "severity": "major"}],
-            ),
+            body=lambda request: _stub_answer(request, failure=True),
         )
-        job_id, store, job_dir = _run_job(tmp_path, server)
+        job_id, state, job_dir, _client = _run_job(tmp_path, server, monkeypatch)
 
+    store = state.store
     record = store.get(job_id)
     qc = json.loads((job_dir / "qc.json").read_text(encoding="utf-8"))
 

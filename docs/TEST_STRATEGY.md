@@ -201,9 +201,27 @@ Two rules that the table encodes:
    file as unproven. `verify_video.py` also parses real event markers (`black_start:`,
    `freeze_start:`, `silence_start:`) rather than the filter's own banner, because `name in log`
    matched every invocation.
-2. **A skip is not a pass.** `skipped_no_vision_provider` reaches `READY_FOR_APPROVAL` — it is
-   visible and non-passing — while `failed` blocks it. The contract refuses a skip that names a
-   provider or claims inspected frames.
+2. **A skip is not a pass.** V3-E blocks uninspected semantic evidence by default. An explicit
+   current render/context-bound operator policy can permit manual review, but the semantic
+   result remains UNVERIFIED. FAIL cannot be waived. The legacy direct contact-sheet inspector
+   still refuses a skip that names a provider or claims inspected frames; its table entries above
+   do not establish semantic correctness.
+
+### V3-E rendered-pixel semantic proof
+
+`test_semantic_contracts.py`, `test_semantic_frames.py`, `test_semantic_vision.py`,
+`test_semantic_readiness.py`, and `test_semantic_approval.py` cover strict eight-category
+coverage, real ffmpeg frame extraction/action/transition sampling, image identities, missing
+frames/model errors/malformed responses, journal replay across wall-clock changes, unsupported
+science and missing narration, explicit permission, stale context, literal boolean opt-in,
+competing leases, and named human decisions. `test_editorial_frame_evidence.py` proves unknown
+evidence survives the stage persistence boundary without a repair request.
+
+`test_vision_pipeline.py` uses loopback wire responses and real fixture renders through the normal
+journaled pipeline. `test_benchmark_evidence.py` rejects legacy passing frame counters as semantic
+proof. These are fixture/contract/integration proofs, not live inference, factual verification or
+production-quality benchmarks. Scientific accuracy remains UNVERIFIED until source retrieval and
+quote evidence exist; operator permission is not a substitute semantic PASS.
 
 ## 6. Running
 
