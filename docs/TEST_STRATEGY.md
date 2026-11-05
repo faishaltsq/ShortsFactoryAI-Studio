@@ -113,6 +113,17 @@ missing, delete that provision in the test and re-run.
   never asserted — it scores 14.34 dB between the two renderers and 14.38 dB against unrelated
   content, so it cannot distinguish parity from difference.
 
+### B/M/E evidence identity (V3)
+
+`tests/test_qc_bme.py` proves that duplicate or out-of-order B/M/E requests map back to the
+correct frame. FFmpeg emits unique selected frames in timeline order, not one output frame per
+request. A generated three-frame media fixture exercises duplicate short-scene samples and
+refuses out-of-range requests by decoded byte/frame count. Missing scene samples make the
+measurement `UNVERIFIED`, with null deltas and an explicit `unmeasured_scenes` list, rather than
+silently disappearing or being reported as measured-static. Static observations are `FAIL`;
+complete dynamic samples are `PASS` for pixel change only. None of these outcomes certifies
+subject recognition, causal fidelity, or visual storytelling.
+
 ### UI
 - Every visible character state equals the persisted event status (Playwright reads
   `data-state` and compares to the API response).

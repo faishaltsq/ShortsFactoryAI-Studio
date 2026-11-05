@@ -733,9 +733,9 @@ def extract_bme_frames(
     if not scene_points:
         return []
 
-    all_frames: list[int] = []
-    for b, m, e in scene_points:
-        all_frames.extend((b, m, e))
+    # ffmpeg emits each selected frame once, in timeline order, even when requests
+    # repeat a frame (short scenes) or arrive out of order. Map by frame identity.
+    all_frames = sorted({frame for points in scene_points for frame in points})
 
     select_expr = "+".join(f"eq(n\\,{f})" for f in all_frames)
     frame_size = width * height
@@ -764,14 +764,17 @@ def extract_bme_frames(
         raise RuntimeError(f"ffmpeg B/M/E frame extraction failed: {err}")
 
     raw_data = proc.stdout
-    results: list[tuple[bytes, bytes, bytes]] = []
-    for i in range(len(scene_points)):
-        offset = i * 3 * frame_size
-        fb = raw_data[offset : offset + frame_size]
-        fm = raw_data[offset + frame_size : offset + 2 * frame_size]
-        fe = raw_data[offset + 2 * frame_size : offset + 3 * frame_size]
-        results.append((fb, fm, fe))
-    return results
+    expected_bytes = len(all_frames) * frame_size
+    if len(raw_data) != expected_bytes:
+        raise RuntimeError(
+            f"B/M/E frame count mismatch: expected {len(all_frames)} complete frames "
+            f"({expected_bytes} bytes), got {len(raw_data)} bytes"
+        )
+    by_frame = {
+        frame: raw_data[index * frame_size : (index + 1) * frame_size]
+        for index, frame in enumerate(all_frames)
+    }
+    return [(by_frame[b], by_frame[m], by_frame[e]) for b, m, e in scene_points]
 
 
 def evaluate_bme_dynamics(
@@ -782,18 +785,20 @@ def evaluate_bme_dynamics(
 ) -> dict[str, Any]:
     """Evaluate pixel dynamics across Beginning, Middle, End keyframes for each scene."""
     static_scenes: list[str] = []
+    unmeasured_scenes: list[str] = []
     scene_metrics: list[dict[str, Any]] = []
 
     for index, scene in enumerate(scenes):
         scene_id = str(scene.get("sceneId") or f"sc{index}")
-        if index >= len(bme_frames):
+        samples = bme_frames[index] if index < len(bme_frames) else None
+        if samples is None or any(not frame for frame in samples) or len({len(frame) for frame in samples}) != 1:
+            unmeasured_scenes.append(scene_id)
+            scene_metrics.append({
+                "sceneId": scene_id, "delta_bm": None, "delta_me": None,
+                "static": None, "measured": False, "reason": "missing or incomplete frame samples",
+            })
             continue
-        fb, fm, fe = bme_frames[index]
-        if not fb or not fm or not fe or not (len(fb) == len(fm) == len(fe)):
-            static_scenes.append(scene_id)
-            scene_metrics.append({"sceneId": scene_id, "delta_bm": 0.0, "delta_me": 0.0, "static": True})
-            continue
-
+        fb, fm, fe = samples
         delta_bm = calculate_frame_delta(fb, fm)
         delta_me = calculate_frame_delta(fm, fe)
         is_static = (delta_bm < min_delta) or (delta_me < min_delta)
@@ -805,13 +810,16 @@ def evaluate_bme_dynamics(
                 "delta_bm": round(delta_bm, 5),
                 "delta_me": round(delta_me, 5),
                 "static": is_static,
+                "measured": True,
             }
         )
 
-    passed = len(static_scenes) == 0
+    passed = bool(scenes) and not static_scenes and not unmeasured_scenes
     return {
         "passed": passed,
+        "status": "FAIL" if static_scenes else ("PASS" if passed else "UNVERIFIED"),
         "static_scenes": static_scenes,
+        "unmeasured_scenes": unmeasured_scenes,
         "scene_metrics": scene_metrics,
         "min_delta_threshold": min_delta,
     }
