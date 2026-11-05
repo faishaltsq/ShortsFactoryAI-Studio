@@ -114,6 +114,10 @@ def test_technical_qa_requires_the_thresholds_it_was_judged_against():
 def _readiness(**overrides):
     payload = {
         "ready": True,
+        "technical_ready": True,
+        "manual_review_eligible": True,
+        "semantic_status": "PASS",
+        "review_basis": "semantic_pass",
         "checks": {"technical": True, "creative": True, "visual": True, "checksum": True},
         "blockers": [],
         "technical_passed": True,
@@ -153,10 +157,10 @@ def test_readiness_rejects_ready_true_when_visual_failed():
         validate_artifact(ReadinessArtifact, _readiness(visual_status="failed"))
 
 
-def test_readiness_allows_a_skip_to_be_ready():
-    """A skip is visible and non-passing, but it is not a blocker. STATE_MACHINE invariant 3."""
+def test_readiness_allows_unknown_only_with_explicit_policy_binding():
     art = validate_artifact(
-        ReadinessArtifact, _readiness(visual_status="skipped_no_vision_provider")
+        ReadinessArtifact, _readiness(visual_status="skipped_no_vision_provider", semantic_status="UNVERIFIED",
+                                     review_basis="operator_policy", review_policy_sha256="b" * 64)
     )
     assert art.ready is True
 

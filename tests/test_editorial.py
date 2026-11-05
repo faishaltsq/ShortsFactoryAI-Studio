@@ -177,19 +177,22 @@ def test_the_input_hash_is_a_full_sha256():
 
 
 def test_a_clean_job_is_ready():
+    from tests.test_semantic_contracts import assessment
+    semantic = {**assessment(), "inputs_sha256": SHA}
     readiness = build_readiness(
         technical=_technical(),
         creative=_creative(),
-        visual=_visual(),
+        visual={**_visual(status="passed", provider="fixture-vision", frames_inspected=3), "semantic": semantic},
         checksum_valid=True,
         inputs_sha256=SHA,
+        job_id="fixture", render_sha256="a" * 64,
     )
     validate_artifact(ReadinessArtifact, readiness)
     assert readiness["ready"] is True
     assert readiness["blockers"] == []
 
 
-def test_a_skipped_visual_pass_does_not_block_readiness():
+def test_a_skipped_visual_pass_without_explicit_policy_blocks_readiness():
     readiness = build_readiness(
         technical=_technical(),
         creative=_creative(),
@@ -198,7 +201,7 @@ def test_a_skipped_visual_pass_does_not_block_readiness():
         inputs_sha256=SHA,
     )
     assert readiness["visual_status"] == "skipped_no_vision_provider"
-    assert readiness["ready"] is True
+    assert readiness["ready"] is False
 
 
 def test_a_failed_visual_pass_blocks_readiness():
@@ -248,7 +251,7 @@ def test_every_blocker_is_named_at_once():
         technical=technical, creative=creative, visual=_visual(),
         checksum_valid=False, inputs_sha256=SHA,
     )
-    assert set(readiness["blockers"]) == {"technical", "creative", "checksum"}
+    assert set(readiness["blockers"]) == {"technical", "creative", "checksum", "visual"}
 
 
 def test_readiness_records_the_input_hash_it_was_computed_from():

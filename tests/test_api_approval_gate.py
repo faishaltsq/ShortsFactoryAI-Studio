@@ -58,7 +58,7 @@ def _sha(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def _ready_job(client, app, *, provider_mode: str = "mock") -> tuple[str, dict]:
+def _ready_job(client, app, *, provider_mode: str = "mock", manual_review: bool = True) -> tuple[str, dict]:
     """A job at READY_FOR_APPROVAL with every artifact the gate requires, all coherent."""
     job = client.post(
         "/api/jobs", json={"title": "Uji", "provider_mode": provider_mode}
@@ -186,6 +186,20 @@ def _ready_job(client, app, *, provider_mode: str = "mock") -> tuple[str, dict]:
             "inputs_sha256": inputs,
         },
     )
+    # These fixtures intentionally have no vision provider. Eligibility now requires a named,
+    # render/context-bound permission; this is not semantic PASS or final human approval.
+    from packages.core.contracts.artifacts import ManualReviewPolicyArtifact
+    from packages.core.orchestration.editorial import evaluate_job_readiness
+
+    current = evaluate_job_readiness(store, job_id)
+    if manual_review:
+        policy = ManualReviewPolicyArtifact(
+            job_id=job_id, render_sha256=digest, inputs_sha256=inputs,
+            context_sha256=current["context_sha256"], operator="fixture-reviewer",
+            reason="Explicit permission for fixture human video review", allow_unverified=True,
+        )
+        store.write_artifact(job_id, "manual-review-policy.json", policy.to_json())
+    store.write_artifact(job_id, "readiness.json", evaluate_job_readiness(store, job_id))
     return job_id, {"inputs": inputs, "sha256": digest, "payload": payload}
 
 
@@ -196,7 +210,7 @@ def _approve(client, job_id: str):
 # -- the honest path ---------------------------------------------------------------------------
 
 
-def test_a_fully_evidenced_live_job_can_be_approved(client, app):
+def test_a_live_job_with_explicit_manual_review_permission_can_be_approved(client, app):
     job_id, _ = _ready_job(client, app, provider_mode="live")
     response = _approve(client, job_id)
     assert response.status_code == 200, response.text
@@ -312,13 +326,13 @@ def test_a_failed_visual_pass_blocks(client, app):
     )
     response = _approve(client, job_id)
     assert response.status_code == 409
-    assert "visual" in response.json()["detail"]
+    assert "semantic_review_eligible" in response.json()["detail"]
 
 
-def test_a_skipped_visual_pass_does_not_block(client, app):
-    job_id, _ = _ready_job(client, app, provider_mode="live")
+def test_a_skipped_visual_pass_without_permission_blocks(client, app):
+    job_id, _ = _ready_job(client, app, provider_mode="live", manual_review=False)
     response = _approve(client, job_id)
-    assert response.status_code == 200, response.text
+    assert response.status_code == 409, response.text
 
 
 def test_a_readiness_artifact_that_says_not_ready_blocks(client, app):

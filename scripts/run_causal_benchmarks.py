@@ -37,11 +37,12 @@ from packages.core.contracts.artifacts import (  # noqa: E402
     RenderArtifact,
     StoryboardArtifact,
     TechnicalQaArtifact,
+    VisualEvidenceArtifact,
 )
 from packages.core.contracts.base import validate_artifact  # noqa: E402
 from packages.core.contracts.state import JobState  # noqa: E402
 from packages.core.media.qc import sha256_file  # noqa: E402
-from packages.core.orchestration.editorial import compute_inputs_hash  # noqa: E402
+from packages.core.orchestration.editorial import compute_inputs_hash, evaluate_job_readiness  # noqa: E402
 from packages.core.orchestration.leases import LeaseKeeper  # noqa: E402
 from packages.core.orchestration.pipeline import run_job  # noqa: E402
 
@@ -275,6 +276,7 @@ def collect_evidence(state: AppState, job_id: str) -> dict[str, Any]:
                 "audio.json": AudioArtifact, "render.json": RenderArtifact,
                 "motion-code.json": MotionCodeArtifact, "technical-qc.json": TechnicalQaArtifact,
                 "readiness.json": ReadinessArtifact,
+                "visual-evidence.json": VisualEvidenceArtifact,
             }.get(name)
             if contract is not None:
                 # Validate without taking model defaults as observations in the source file.
@@ -294,6 +296,7 @@ def collect_evidence(state: AppState, job_id: str) -> dict[str, Any]:
     motion = load("motion-code.json")
     technical = load("technical-qc.json")
     readiness = load("readiness.json")
+    load("visual-evidence.json")
     creative = _object(qa.get("creative"))
     bme = _object(_object(creative.get("metrics")).get("bme_dynamics"))
     bme_status = bme_verdict(bme, storyboard.get("scenes"))
@@ -320,18 +323,22 @@ def collect_evidence(state: AppState, job_id: str) -> dict[str, Any]:
     digest = render.get("sha256") if verified_video else None
     binding = compute_inputs_hash(render_sha256=digest, narration_ms=duration, storyboard=storyboard) if digest and duration else None
     bound = binding is not None and technical.get("inputs_sha256") == binding and readiness.get("inputs_sha256") == binding
-    checks = [technical.get("passed"), _object(qa.get("technical")).get("passed"), creative.get("passed"), readiness.get("ready")]
+    checks = [technical.get("passed"), _object(qa.get("technical")).get("passed"), creative.get("passed")]
     visual = _object(qa.get("visual"))
-    inspected = visual.get("frames_inspected")
-    visual_verified = visual.get("status") == "passed" and type(inspected) is int and inspected > 0 and inspected == visual.get("frames_extracted")
+    try:
+        current_readiness = evaluate_job_readiness(store, job_id)
+        semantic_status = current_readiness["semantic_status"]
+    except Exception:  # noqa: BLE001 - no bound semantic evidence means no semantic conclusion
+        semantic_status = "UNVERIFIED"
+    visual_verified = semantic_status == "PASS"
     complete = (
         not issues and verified_video and bound and bme_status == "PASS"
-        and all(v is True for v in checks) and renderer is not None and fallback is not None
+        and all(v is True for v in checks) and readiness.get("ready") is True and renderer is not None and fallback is not None
         and rate is not None and alignment is not None and visual_verified
         and motion.get("validated_by_codeguard") is True
         and store.get(job_id).state is JobState.READY_FOR_APPROVAL
     )
-    failed = bme_status == "FAIL" or any(v is False for v in checks) or visual.get("status") == "failed"
+    failed = bme_status == "FAIL" or any(v is False for v in checks) or semantic_status == "FAIL" or visual.get("status") == "failed"
     status = "PASS" if complete else ("FAIL" if failed else "UNVERIFIED")
     request_rows = state.requests.statuses(job_id)
     costs = []
@@ -343,7 +350,7 @@ def collect_evidence(state: AppState, job_id: str) -> dict[str, Any]:
             costs.append(cost)
     cost_total = sum(costs) if costs and len(costs) == len(request_rows) else None
     return {
-        "evidence_format": "v3-d", "status": status,
+        "evidence_format": "v3-e", "status": status,
         "final_state": store.get(job_id).state.value,
         "renderer_actual": renderer, "fallback_used": fallback, "render_sha256": digest,
         "video_path": str(video) if video.is_file() else None,
@@ -361,7 +368,7 @@ def collect_evidence(state: AppState, job_id: str) -> dict[str, Any]:
         ],
         "motion_code_skills": motion.get("skill_hashes") if isinstance(motion.get("skill_hashes"), list) else None,
         "bme_status": bme_status, "bme_passed": bme_status == "PASS", "bme_metrics": rows,
-        "semantic_visual_status": "PASS" if visual_verified else ("FAIL" if visual.get("status") == "failed" else "UNVERIFIED"),
+        "semantic_visual_status": semantic_status,
         "artifact_sources": sources, "issues": issues,
         "evidence": {
             "renderer": metric(renderer, "render.json", "recorded"),
@@ -369,6 +376,8 @@ def collect_evidence(state: AppState, job_id: str) -> dict[str, Any]:
             "tts_alignment_mode": metric(alignment, "tts_metadata.json#alignment_mode", "recorded"),
             "narration_duration_s": metric(duration / 1000 if duration is not None else None, "audio.json#narration.durationMs", "recorded"),
             "bme": metric(bme_status if bme_status != "UNVERIFIED" else None, "qc.json#creative.metrics.bme_dynamics", "recorded"),
+            "semantic_visual": metric(semantic_status if semantic_status != "UNVERIFIED" else None,
+                                      "qc.json#semantic + visual-evidence.json + current render/context binding", "recorded"),
             "cost_usd": metric(cost_total, "provider_requests.usage_json.est_cost_usd (complete reported-usage coverage only)", "estimated"),
             "billed_cost_usd": metric(None, "no provider invoice source"),
         },
@@ -387,7 +396,7 @@ def generate_markdown_report(results: list[dict[str, Any]]) -> str:
              "", "| Benchmark | Job | State | Evidence verdict | B/M/E |",
              "| --- | --- | --- | --- | --- |"]
     for res in results:
-        current = res.get("evidence_format") == "v3-d" and isinstance(res.get("evidence"), dict)
+        current = res.get("evidence_format") == "v3-e" and isinstance(res.get("evidence"), dict)
         verdict = res.get("status") if current and res.get("status") in {"PASS", "FAIL", "UNVERIFIED"} else "UNVERIFIED"
         bme = res.get("bme_status") if current and res.get("bme_status") in {"PASS", "FAIL", "UNVERIFIED"} else "UNVERIFIED"
         lines.append(f"| {res.get('name', 'unavailable')} | {res.get('job_id', 'unavailable')} | {res.get('final_state', 'unavailable')} | {verdict} | {bme} |")
@@ -466,7 +475,7 @@ def main(argv: list[str] | None = None) -> int:
     print(f"\nBenchmark report written to: {args.report_file}")
 
     all_passed = bool(selected) and all(
-        b["key"] in cached and cached[b["key"]].get("evidence_format") == "v3-d"
+        b["key"] in cached and cached[b["key"]].get("evidence_format") == "v3-e"
         and cached[b["key"]].get("status") == "PASS" and cached[b["key"]].get("ok") is True
         for b in selected
     )

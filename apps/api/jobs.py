@@ -9,10 +9,11 @@ from __future__ import annotations
 
 import threading
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from packages.core.contracts.artifacts import (
     AudioArtifact,
+    ManualReviewPolicyArtifact,
     QaArtifact,
     ReadinessArtifact,
     RenderArtifact,
@@ -22,7 +23,7 @@ from packages.core.contracts.artifacts import (
 from packages.core.contracts.base import ArtifactValidationError, validate_artifact
 from packages.core.contracts.state import JobState
 from packages.core.media.qc import sha256_file
-from packages.core.orchestration.editorial import compute_inputs_hash
+from packages.core.orchestration.editorial import compute_inputs_hash, evaluate_job_readiness
 from packages.core.orchestration.jobstore import JobRecord
 from packages.core.orchestration.leases import LeaseKeeper, LeaseLost
 from packages.core.orchestration.pipeline import (
@@ -35,6 +36,7 @@ from packages.core.orchestration.runner import run_stages
 from packages.core.publish.stage import build_publish_stage
 from packages.core.publish.thumbnail import build_thumbnail_stage
 from packages.core.publish.transport import PublicationTransport
+from packages.core.security.redact import redact
 
 from .state import AppState
 
@@ -262,50 +264,96 @@ class JobService:
         return {"job_id": job_id, **report}
 
     # -- approval --------------------------------------------------------------------------
-    def approve(self, job_id: str, operator: str) -> dict[str, Any]:
-        job = self.state.store.get(job_id)
-        if job.state is not JobState.READY_FOR_APPROVAL:
-            raise self.ApprovalRefused(
-                f"approval is only possible at READY_FOR_APPROVAL, job is {job.state.value}"
+    def permit_manual_review(self, job_id: str, operator: str, reason: str, render_sha256: str) -> dict[str, Any]:
+        """Permit review of unknown evidence; never approve, publish, repair or retry inference."""
+        keeper = LeaseKeeper(self.state.store.db_path, owner=f"manual-review-{id(self)}")
+        self.state.store.get(job_id)
+        try:
+            keeper.acquire(job_id)
+        except LeaseLost as exc:
+            raise self.ApprovalRefused("manual policy requires an idle job with an available lease") from exc
+        try:
+            store = self.state.store
+            job = store.get(job_id)
+            if job.state not in {JobState.BLOCKED, JobState.EDITORIAL_QC, JobState.READY_FOR_APPROVAL}:
+                raise self.ApprovalRefused("manual policy is only available at the editorial review boundary")
+            try:
+                current = evaluate_job_readiness(store, job_id)
+                render = RenderArtifact.model_validate(store.read_artifact(job_id, "render.json"))
+                qa = QaArtifact.model_validate(store.read_artifact(job_id, "qc.json"))
+            except Exception as exc:  # noqa: BLE001 - invalid evidence must refuse permission
+                raise self.ApprovalRefused("valid current QC evidence is required for manual review") from exc
+            if render.sha256 != render_sha256:
+                raise self.ApprovalRefused("manual policy names a different render")
+            if qa.visual.get("status") == "failed" or (qa.semantic is not None and qa.semantic.status == "FAIL"):
+                raise self.ApprovalRefused("semantic FAIL cannot be waived")
+            if set(current["blockers"]) - {"visual"}:
+                raise self.ApprovalRefused("manual review cannot waive technical, creative or checksum failures")
+            policy = ManualReviewPolicyArtifact(
+                job_id=job_id, render_sha256=render_sha256, inputs_sha256=current["inputs_sha256"],
+                context_sha256=current["context_sha256"], operator=redact(operator, limit=120),
+                reason=redact(reason, limit=1000), allow_unverified=True,
             )
-        checks = self._approval_checks(job)
-        failed = [name for name, ok in checks.items() if not ok]
-        if failed:
-            raise self.ApprovalRefused("gate checks failed: " + ", ".join(failed))
-        # The render this decision is about. ``_approval_checks`` already recomputed the file's
-        # digest and refused a mismatch, so this is the same value it validated — and recording it
-        # is what lets ``JobStore.transition`` refuse a stale approval later.
-        render = _validated(self.state.store, job_id, "render.json", RenderArtifact)
-        artifact = {
-            "schema_version": 1,
-            "decision": "approved",
-            "operator": operator,
-            "reason": None,
-            "checks": checks,
-            "decided_at": job.updated_at,
-            "render_sha256": render.sha256 if render is not None else None,
-        }
-        self.state.store.write_artifact(job_id, "approval.json", artifact)
-        self.state.store.transition(job_id, JobState.APPROVED, detail=f"approved by {operator}")
-        return {"job_id": job_id, "decision": "approved", "checks": checks}
+            history = f"manual-review-policy-{policy.content_hash()}.json"
+            if store.has_artifact(job_id, history):
+                recorded = ManualReviewPolicyArtifact.model_validate(store.read_artifact(job_id, history))
+                if recorded.content_hash() != policy.content_hash():
+                    raise self.ApprovalRefused("manual policy history is inconsistent")
+                policy = recorded
+            store.commit_stage(job_id, token=keeper.token, json_artifacts=[
+                (history, policy.to_json()), ("manual-review-policy.json", policy.to_json()),
+            ])
+            self.state.events.emit(job_id=job_id, agent_id="DirectorAgent", event_type="manual_review_policy",
+                                   description=f"Review permission by {policy.operator}: {policy.reason}; render {render_sha256}")
+            return {"job_id": job_id, "approved": False, "policy": policy.to_json()}
+        except LeaseLost as exc:
+            raise self.ApprovalRefused("manual review lease was lost; recheck the current job before deciding") from exc
+        finally:
+            keeper.release()
+
+    def approve(self, job_id: str, operator: str) -> dict[str, Any]:
+        if not operator.strip():
+            raise self.ApprovalRefused("approval requires a named operator")
+        return self._decide(job_id, operator, decision="approved")
 
     def reject(self, job_id: str, operator: str, reason: str) -> dict[str, Any]:
-        job = self.state.store.get(job_id)
-        if job.state is not JobState.READY_FOR_APPROVAL:
-            raise self.ApprovalRefused(
-                f"rejection is only possible at READY_FOR_APPROVAL, job is {job.state.value}"
-            )
-        artifact = {
-            "schema_version": 1,
-            "decision": "rejected",
-            "operator": operator,
-            "reason": reason,
-            "checks": self._approval_checks(job),
-            "decided_at": job.updated_at,
-        }
-        self.state.store.write_artifact(job_id, "approval.json", artifact)
-        self.state.store.transition(job_id, JobState.REJECTED, detail=f"rejected by {operator}")
-        return {"job_id": job_id, "decision": "rejected", "reason": reason}
+        if not operator.strip() or not reason.strip():
+            raise self.ApprovalRefused("rejection requires a named operator and reason")
+        return self._decide(job_id, operator, decision="rejected", reason=reason)
+
+    def _decide(
+        self, job_id: str, operator: str, *, decision: Literal["approved", "rejected"], reason: str | None = None,
+    ) -> dict[str, Any]:
+        keeper = LeaseKeeper(self.state.store.db_path, owner=f"human-decision-{id(self)}")
+        self.state.store.get(job_id)
+        try:
+            keeper.acquire(job_id)
+        except LeaseLost as exc:
+            raise self.ApprovalRefused("human decision requires an idle job with an available lease") from exc
+        try:
+            job = self.state.store.get(job_id)
+            if job.state is not JobState.READY_FOR_APPROVAL:
+                raise self.ApprovalRefused(
+                    f"human decision is only possible at READY_FOR_APPROVAL, job is {job.state.value}"
+                )
+            checks = self._approval_checks(job)
+            if decision == "approved" and (failed := [name for name, ok in checks.items() if not ok]):
+                raise self.ApprovalRefused("gate checks failed: " + ", ".join(failed))
+            render = _validated(self.state.store, job_id, "render.json", RenderArtifact)
+            artifact = {
+                "schema_version": 1, "decision": decision, "operator": operator, "reason": reason,
+                "checks": checks, "decided_at": job.updated_at,
+                "render_sha256": render.sha256 if render is not None else None,
+            }
+            self.state.store.commit_stage(job_id, token=keeper.token, json_artifacts=[("approval.json", artifact)])
+            keeper.assert_owned()
+            target = JobState.APPROVED if decision == "approved" else JobState.REJECTED
+            self.state.store.transition(job_id, target, detail=f"{decision} by {operator}")
+            return {"job_id": job_id, "decision": decision, **({"checks": checks} if decision == "approved" else {"reason": reason})}
+        except LeaseLost as exc:
+            raise self.ApprovalRefused("human decision lease was lost; recheck the current job before deciding") from exc
+        finally:
+            keeper.release()
 
     def _approval_checks(self, job: JobRecord) -> dict[str, bool]:
         """Server-side gate. The browser cannot assert any of this.
@@ -336,8 +384,12 @@ class JobService:
         technical_ok = technical is not None and technical.passed
         editorial_ok = qa is not None
         creative_ok = qa is not None and bool(qa.creative.get("passed"))
-        visual_status = str(qa.visual.get("status")) if qa is not None else "missing"
-        visual_ok = visual_status != "failed"
+        current_readiness = None
+        try:
+            current_readiness = evaluate_job_readiness(store, job.id)
+        except Exception:  # noqa: BLE001 - missing current evidence cannot authorize approval
+            pass
+        visual_ok = current_readiness is not None and current_readiness["ready"] is True
 
         # Readiness must be ready *and* bound to the same inputs this gate just measured. A
         # verdict computed against other bytes is not a verdict about these bytes.
@@ -354,7 +406,13 @@ class JobService:
                     narration_ms=narration_ms,
                     storyboard=storyboard.model_dump(mode="json"),
                 )
-                readiness_ok = readiness.inputs_sha256 == expected
+                readiness_ok = readiness.inputs_sha256 == expected and current_readiness is not None
+                if current_readiness is not None:
+                    readiness_ok = readiness_ok and (
+                        readiness.context_sha256 == current_readiness["context_sha256"]
+                        and readiness.review_policy_sha256 == current_readiness["review_policy_sha256"]
+                        and readiness.semantic_status == current_readiness["semantic_status"]
+                    )
                 if technical is not None:
                     readiness_ok = readiness_ok and technical.inputs_sha256 == expected
 
@@ -377,7 +435,7 @@ class JobService:
             "technical_passed": technical_ok,
             "editorial_present": editorial_ok,
             "creative_passed": creative_ok,
-            "visual_not_failed": visual_ok,
+            "semantic_review_eligible": visual_ok,
             "readiness_bound": readiness_ok,
             "publishable": publishable,
         }

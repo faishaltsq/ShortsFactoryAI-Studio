@@ -77,21 +77,21 @@ class StubServer:
                     parsed = json.loads(raw) if raw else None
                 except (json.JSONDecodeError, ValueError):
                     parsed = None
-                outer.recorded.append(
-                    Recorded(
+                record = Recorded(
                         method=self.command,
                         path=self.path,
                         headers={k.lower(): v for k, v in self.headers.items()},
                         body=parsed,
                         raw=raw,
-                    )
                 )
+                outer.recorded.append(record)
                 spec = outer.routes.get((self.command, self.path))
                 if spec is None:
                     payload = json.dumps({"error": "not found"}).encode()
                     self.send_response(404)
                 else:
-                    payload = json.dumps(spec.body).encode()
+                    body = spec.body(record) if callable(spec.body) else spec.body
+                    payload = json.dumps(body).encode()
                     self.send_response(spec.status)
                 self.send_header("Content-Type", "application/json")
                 self.send_header("Content-Length", str(len(payload)))

@@ -45,6 +45,16 @@ def test_missing_artifacts_never_get_positive_defaults(recorded_job):
     assert "123.45" not in report
 
 
+def test_legacy_visual_counts_do_not_certify_semantics(recorded_job):
+    state, job, _, _ = recorded_job
+    state.store.write_artifact(job.id, "qc.json", {
+        "technical": {"passed": True}, "creative": {"passed": True, "metrics": {"static_ratio": 0.1}},
+        "visual": {"status": "passed", "provider": "fixture", "frames_extracted": 3,
+                   "frames_inspected": 3, "findings": []}, "repairs": [],
+    })
+    assert verify(recorded_job)["semantic_visual_status"] == "UNVERIFIED"
+
+
 @pytest.mark.parametrize("qc", [[], {"creative": []}, {"creative": {"metrics": None}},
     {"creative": {"metrics": {"bme_dynamics": {"passed": True, "scene_metrics": []}}}},
     {"creative": {"metrics": {"bme_dynamics": {"passed": "true"}}}},

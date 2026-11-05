@@ -19,8 +19,8 @@ sequences itself.
 | `MotionCoderAgent` | worker | `storyboard.json`, `creative-motion-brief.json`, `visual-plan.json`, `script.json`, `research.json`, `assets.json`, measured narration timing | `motion-code.json` (TSX files, per-skill digests, narration timing digest) | yes |
 | `AudioAgent` | none | `storyboard.json` | `audio.json` (narration, cues, mix) | no (TTS) |
 | `EditorAgent` | none | storyboard + audio + motion plan | `edit.json` (scene order, transitions, captions) | no |
-| `QualityAgent` | strategist | render + props + audio + storyboard | `technical-qc.json` (FR-7.1, `TECHNICAL_QC`), `qc.json` + `qa-contact-sheet.jpg` (FR-7.2 and the visual pass, `EDITORIAL_QC`) | yes |
-| `DirectorAgent` | strategist | `technical-qc.json` + `qc.json` + render/audio/storyboard | `readiness.json` (the gate verdict, `READY_FOR_APPROVAL`) | no |
+| `QualityAgent` | strategist | actual render + props + narration/storyboard/visual requirements | `technical-qc.json` (FR-7.1), `qc.json`, `visual-evidence.json` + sampled PNGs; optional legacy contact-sheet preview | yes, through the existing request journal |
+| `DirectorAgent` | strategist | current technical/semantic QC + render/frame/source bindings + explicit operator policy when applicable | `readiness.json` (technical readiness, semantic status, manual eligibility; never human approval) | no |
 | `MetadataAgent` | worker | script + storyboard | `metadata.json` (title, description, tags, thumb concept) | yes |
 | `PublisherAgent` | none | approved job | `publication.json` (receipts) | no |
 | `FactoryOrchestrator` | deterministic | job row | state transitions | no |
@@ -30,6 +30,12 @@ measurement (every FR-7.1 check, including the detector runs), `qc.json` is judg
 metrics plus the visual pass). `DirectorAgent` writes `readiness.json` and owns the
 `READY_FOR_APPROVAL` transition; it recomputes the input binding rather than trusting the verdict
 the editorial stage produced. Artifact schemas are in DATA_CONTRACTS §10.
+V3-E treats all eight semantic categories as uncertain pixel interpretation, not storyboard
+declarations or B/M/E motion scores. Missing evidence is UNVERIFIED and cannot request creative
+repair. An explicit render/context-bound operator policy may permit manual review of UNVERIFIED,
+never waive FAIL or approve a job. Scientific accuracy remains UNVERIFIED without retrieved
+source/quote evidence. The policy and final approve/reject actions are lease-protected operator
+service operations, not autonomous agent decisions. See `SEMANTIC_VISUAL_QA.md`.
 
 Tier decides the price table and the default chain, not the binding: any agent may be bound
 to any provider explicitly.

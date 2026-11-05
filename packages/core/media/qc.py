@@ -38,6 +38,7 @@ from pathlib import Path
 from typing import Any
 
 from ..contracts.scene import OBJECT_KINDS
+from ..contracts.semantic import VisualEvidenceArtifact, VisualFrame
 
 #: The renderer's object vocabulary, imported rather than mirrored a second time.
 SHIPPED_OBJECT_KINDS: frozenset[str] = frozenset(OBJECT_KINDS)
@@ -686,6 +687,113 @@ def extract_contact_sheet(
         detail = (proc.stderr or proc.stdout or "").strip()[-600:]
         raise RuntimeError(f"ffmpeg could not build a contact sheet: {detail}")
     return target, count
+
+
+def extract_visual_evidence(
+    video: Path, props: dict[str, Any], target: Path, *, job_id: str,
+    render_sha256: str, inputs_sha256: str, context_sha256: str,
+    requirements: dict[str, str], timeout_s: int = 120,
+) -> VisualEvidenceArtifact:
+    """Extract actual RGB PNG samples without the six-frame contact-sheet cap.
+
+    Failures preserve unavailable evidence. The complete render is decoded once; fresh temporary
+    output prevents an old PNG from satisfying a failed extraction. Pixel variation is not scored.
+    """
+    import math
+    import os
+    import tempfile
+    from fractions import Fraction
+
+    from .render import probe_media
+
+    raw_scenes = props.get("scenes")
+    scenes = raw_scenes if isinstance(raw_scenes, list) else []
+    ids = [s["sceneId"] for s in scenes if isinstance(s, dict) and isinstance(s.get("sceneId"), str)]
+    # Invalid identities are not repaired into invented source tokens.
+    scene_ids = list(dict.fromkeys(ids))
+    raw_fps = props.get("fps")
+    fps = (float(raw_fps) if isinstance(raw_fps, (int, float)) and not isinstance(raw_fps, bool)
+           and raw_fps > 0 and math.isfinite(raw_fps) else None)
+    base: dict[str, Any] = {
+        "job_id": job_id, "render_sha256": render_sha256, "inputs_sha256": inputs_sha256,
+        "context_sha256": context_sha256, "fps": fps, "scene_ids": scene_ids,
+        "requirements": {sid: requirements.get(sid, "") for sid in scene_ids},
+    }
+    try:
+        if not scenes or len(scene_ids) != len(scenes) or fps is None:
+            raise ValueError("missing or malformed scene identities/timing")
+        if not video.is_file() or sha256_file(video) != render_sha256:
+            raise ValueError("render unavailable or checksum changed")
+        selected: dict[int, tuple[str, set[str]]] = {}
+        end = 0
+        for index, scene in enumerate(scenes):
+            start, duration = scene.get("startFrame"), scene.get("durationInFrames")
+            if type(start) is not int or type(duration) is not int or start != end or duration <= 0:
+                raise ValueError("scene timeline is incomplete, overlapping or malformed")
+            end = start + duration
+            sid = scene_ids[index]
+            beginning, middle, ending = get_bme_frame_indices(start, duration)
+            points = [(beginning, "begin"), (middle, "middle"), (ending, "end"),
+                      (start + duration // 4, "action"), (start + 3 * duration // 4, "action")]
+            motion = scene.get("motion") or {}
+            beats = motion.get("beats", []) if isinstance(motion, dict) else None
+            if not isinstance(beats, list):
+                raise ValueError("declared action timing is malformed")
+            for beat in beats:
+                at = beat.get("atFrame") if isinstance(beat, dict) else None
+                if type(at) is not int or at < 0 or at >= duration:
+                    raise ValueError("declared action moment is outside its scene")
+                for local_frame in range(max(0, at - 1), min(duration, at + 2)):
+                    points.append((start + local_frame, "action"))
+            if index:
+                points.append((start, "transition_after"))
+            if index + 1 < len(scenes):
+                points.append((end - 1, "transition_before"))
+            for number, role in points:
+                entry = selected.setdefault(number, (sid, set()))
+                entry[1].add(role)
+        if len(selected) > 128:
+            raise ValueError("frame evidence exceeds the bounded 128-sample inspection limit; no partial pass")
+        streams = [s for s in probe_media(video).get("streams", []) if s.get("codec_type") == "video"]
+        if len(streams) != 1 or int(streams[0]["nb_read_frames"]) != end:
+            raise ValueError("actual decoded timeline does not match scene coverage")
+        actual_fps = float(Fraction(streams[0]["avg_frame_rate"]))
+        if abs(actual_fps - fps) > 0.01:
+            raise ValueError("actual frame rate does not match declared scene timing")
+        base["fps"] = actual_fps
+        numbers = sorted(selected)
+        expression = "+".join(f"eq(n\\,{number})" for number in numbers)
+        target.mkdir(parents=True, exist_ok=True)
+        with tempfile.TemporaryDirectory(dir=target, ignore_cleanup_errors=True) as scratch:
+            pattern = Path(scratch) / "qa-frame-%05d.png"
+            proc = subprocess.run(
+                ["ffmpeg", "-v", "error", "-y", "-i", str(video), "-vf",
+                 f"select={expression},scale=540:960:force_original_aspect_ratio=decrease",
+                 "-fps_mode", "vfr", "-start_number", "0", str(pattern)],
+                capture_output=True, timeout=timeout_s, check=False,
+            )
+            images = sorted(Path(scratch).glob("qa-frame-*.png"))
+            if proc.returncode or len(images) != len(numbers):
+                raise ValueError("decoder did not return every requested frame")
+            if sha256_file(video) != render_sha256:
+                raise ValueError("render changed during evidence extraction")
+            frames: list[VisualFrame] = []
+            for number, image in zip(numbers, images, strict=True):
+                if not image.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
+                    raise ValueError("decoder returned a malformed image")
+                sid, roles = selected[number]
+                frames.append(VisualFrame.model_validate({
+                    "frame_id": f"f{number}", "scene_id": sid, "frame": number,
+                    "at_ms": number * 1000 / actual_fps, "roles": sorted(roles),
+                    "file": image.name, "sha256": sha256_file(image),
+                    "requirement_ref": sid,
+                }))
+                os.replace(image, target / image.name)
+        return VisualEvidenceArtifact(**base, frames=frames, complete=True,
+                                      reason="Decoded B/M/E, action samples and scene transitions from bound MP4")
+    except (OSError, ValueError, RuntimeError, KeyError, subprocess.SubprocessError) as exc:
+        return VisualEvidenceArtifact(**base, frames=[], complete=False,
+                                      reason=f"UNVERIFIED: {type(exc).__name__}: {exc}")
 
 
 # -- B/M/E keyframe dynamics -------------------------------------------------------------------

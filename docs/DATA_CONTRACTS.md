@@ -465,10 +465,14 @@ can detect is deterministic — re-running a black or frozen render cannot conve
 ```jsonc
 {
   "schema_version": 1, "kind": "readiness",
-  "ready": true,
-  "checks": { "technical": true, "creative": true, "visual": true, "checksum": true },
-  "blockers": [],
+  "ready": false,
+  "checks": { "technical": true, "creative": true, "visual": false, "checksum": true },
+  "blockers": ["visual"],
   "technical_passed": true, "creative_passed": true,
+  "technical_ready": true, "semantic_status": "UNVERIFIED",
+  "manual_review_eligible": false, "human_approved": false,
+  "review_basis": "blocked", "review_policy_sha256": null,
+  "context_sha256": "…64 hex…",
   "visual_status": "skipped_no_vision_provider",
   "inputs_sha256": "…64 hex…"
 }
@@ -476,7 +480,9 @@ can detect is deterministic — re-running a black or frozen render cannot conve
 
 `ready: true` is refused by the contract while any blocker remains, any check is false,
 `technical_passed`/`creative_passed` is false, or `visual_status` is `failed`. A skip is not a
-blocker — it is visible and non-passing.
+blocker only when a current, explicit operator policy permits manual review of UNVERIFIED
+evidence. Without that policy, missing or skipped inspection blocks readiness. A semantic FAIL
+cannot be waived; eligibility and final human approval remain separate.
 
 `inputs_sha256` binds the verdict to the bytes and timings it judged:
 
@@ -492,13 +498,35 @@ distinct hashes, so a verdict computed at 12:00:00 failed to verify at 12:00:01)
 recomputes this hash from disk before an operator can approve, so a re-render invalidates a stale
 pass.
 
-### 10.4 `qa-contact-sheet.jpg` — one image, no padding cell
+### 10.4 `qa-contact-sheet.jpg` — optional legacy preview, not semantic proof
 
 One 1080-wide JPEG holding the keyframes: each scene's midpoint plus one still 0.5 s after each
 cut, capped at 6 distinct frames. The grid is sized to the count so no empty cell exists —
 1x1, 2x1, 3x1, 2x2, 3x2 for 5, 3x2 for 6. Only 5-in-3x2 leaves a cell, and that cell is filled with
 a neutral grey and labelled `no frame 6`. Black is never used: a black tile is indistinguishable
-from a black frame, and the vision prompt is instructed to report an unreadable tile as a finding.
+from a black frame, and the legacy vision prompt is instructed to report an unreadable tile as a finding.
+
+### 10.5 Rendered semantic evidence and explicit review permission (V3-E)
+
+`visual-evidence.json` contains actual MP4-derived PNG identities, timestamps, sample roles,
+image/render/input/context digests, requirement references, and the inspection receipt. Its
+immutable `evidence_hash()` excludes `created_at`, inspection status, provider and model so a
+receipt cannot change a journaled request's identity. The semantic inspector receives the
+individual checksum-checked PNGs, not the optional six-frame preview.
+
+`qc.json.semantic` is a strict `SemanticInspection`: exactly eight categories per scene, explicit
+PASS/FAIL/UNVERIFIED, reason/observation, confidence and actual frame references, plus served
+provider/model provenance for inspected conclusions. A FAIL includes severity and targeted
+repair scope; UNVERIFIED never requests creative repair. Scientific accuracy remains UNVERIFIED
+without independently retrieved source/quote evidence. B/M/E motion measurements cannot certify
+semantic correctness.
+
+`manual-review-policy.json` is an explicit named-operator/reason permission bound to the job,
+current render, technical inputs and semantic context, with `allow_unverified: true`. It neither
+approves the job nor changes its semantic result. The shared readiness evaluator rechecks current
+source bindings and PNG bytes before accepting inspection evidence; changed narration, research,
+storyboard, audio or render invalidates old permission. See [SEMANTIC_VISUAL_QA.md](SEMANTIC_VISUAL_QA.md)
+for the operator workflow, ownership and limitations. Exported schemas are authoritative.
 
 ## 11. Approval
 

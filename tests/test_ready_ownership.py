@@ -96,7 +96,8 @@ def test_readiness_validates_and_records_its_hash():
         inputs_sha256="a" * 64,
     )
     validate_artifact(ReadinessArtifact, readiness)
-    assert readiness["ready"] is True
+    assert readiness["ready"] is False
+    assert readiness["semantic_status"] == "UNVERIFIED"
     assert readiness["inputs_sha256"] == "a" * 64
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 class CreateJobBody(BaseModel):
@@ -54,6 +54,18 @@ class ApproveBody(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     operator: str = Field(min_length=1, max_length=120)
+
+
+class ManualReviewBody(ApproveBody):
+    reason: str = Field(min_length=1, max_length=1000)
+    render_sha256: str = Field(pattern=r"^[0-9a-f]{64}$")
+    allow_unverified: bool = Field(strict=True)
+
+    @model_validator(mode="after")
+    def explicit_permission(self) -> ManualReviewBody:
+        if not self.allow_unverified or not self.operator.strip() or not self.reason.strip():
+            raise ValueError("manual review requires explicit permission, operator and reason")
+        return self
 
 
 class RejectBody(BaseModel):
